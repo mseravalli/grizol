@@ -1,25 +1,18 @@
-use std::sync::Arc;
-
-use mio::net::{TcpListener, TcpStream};
-
 #[macro_use]
 extern crate log;
 
+use clap::Parser;
+use mio::net::{TcpListener, TcpStream};
+use rustls::server::{
+    AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
+};
+use rustls::{self, RootCertStore};
 use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::io::{BufReader, Read, Write};
 use std::net;
-
-#[macro_use]
-extern crate serde_derive;
-
-use docopt::Docopt;
-
-use rustls::server::{
-    AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
-};
-use rustls::{self, RootCertStore};
+use std::sync::Arc;
 
 // Token for our listening socket.
 const LISTENER: mio::Token = mio::Token(0);
@@ -404,62 +397,31 @@ impl OpenConnection {
     }
 }
 
-const USAGE: &str = "
-Runs a TLS server on :PORT.  The default PORT is 443.
-
-`--certs' names the full certificate chain, `--key' provides the
-RSA private key.
-
-Usage:
-  tlsserver-mio --certs CERTFILE --key KEYFILE [--suite SUITE ...] \
-     [--proto PROTO ...] [--protover PROTOVER ...] [options] echo
-  tlsserver-mio --certs CERTFILE --key KEYFILE [--suite SUITE ...] \
-     [--proto PROTO ...] [--protover PROTOVER ...] [options] http
-  tlsserver-mio --certs CERTFILE --key KEYFILE [--suite SUITE ...] \
-     [--proto PROTO ...] [--protover PROTOVER ...] [options] forward <fport>
-  tlsserver-mio (--version | -v)
-  tlsserver-mio (--help | -h)
-
-Options:
-    -p, --port PORT     Listen on PORT [default: 443].
-    --certs CERTFILE    Read server certificates from CERTFILE.
-                        This should contain PEM-format certificates
-                        in the right order (the first certificate should
-                        certify KEYFILE, the last should be a root CA).
-    --key KEYFILE       Read private key from KEYFILE.  This should be a RSA
-                        private key or PKCS8-encoded private key, in PEM format.
-    --ocsp OCSPFILE     Read DER-encoded OCSP response from OCSPFILE and staple
-                        to certificate.  Optional.
-    --auth CERTFILE     Enable client authentication, and accept certificates
-                        signed by those roots provided in CERTFILE.
-    --require-auth      Send a fatal alert if the client does not complete client
-                        authentication.
-    --resumption        Support session resumption.
-    --tickets           Support tickets.
-    --protover VERSION  Disable default TLS version list, and use
-                        VERSION instead.  May be used multiple times.
-    --suite SUITE       Disable default cipher suite list, and use
-                        SUITE instead.  May be used multiple times.
-    --proto PROTOCOL    Negotiate PROTOCOL using ALPN.
-                        May be used multiple times.
-    --verbose           Emit log output.
-    --version, -v       Show tool version.
-    --help, -h          Show this screen.
-";
-
-#[derive(Debug, Deserialize)]
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
 struct Args {
-    flag_port: Option<u16>,
-    flag_protover: Vec<String>,
-    flag_suite: Vec<String>,
-    flag_proto: Vec<String>,
-    flag_certs: Option<String>,
-    flag_key: Option<String>,
-    flag_ocsp: Option<String>,
-    flag_auth: Option<String>,
-    flag_require_auth: bool,
-    flag_resumption: bool,
-    flag_tickets: bool,
+    #[arg(long)]
+    key: String,
+    #[arg(long)]
+    certs: String,
+    #[arg(long)]
+    port: Option<u16>,
+    #[arg(long)]
+    protover: Vec<String>,
+    #[arg(long)]
+    suite: Vec<String>,
+    #[arg(long)]
+    proto: Vec<String>,
+    #[arg(long)]
+    ocsp: Option<String>,
+    #[arg(long)]
+    auth: Option<String>,
+    #[arg(long)]
+    require_auth: Option<bool>,
+    #[arg(long)]
+    resumption: Option<bool>,
+    #[arg(long)]
+    tickets: Option<bool>,
 }
 
 fn find_suite(name: &str) -> Option<rustls::SupportedCipherSuite> {
@@ -551,13 +513,13 @@ fn load_ocsp(filename: &Option<String>) -> Vec<u8> {
 }
 
 fn make_config(args: &Args) -> Arc<rustls::ServerConfig> {
-    let client_auth = if args.flag_auth.is_some() {
-        let roots = load_certs(args.flag_auth.as_ref().unwrap());
+    let client_auth = if args.auth.is_some() {
+        let roots = load_certs(args.auth.as_ref().unwrap());
         let mut client_auth_roots = RootCertStore::empty();
         for root in roots {
             client_auth_roots.add(&root).unwrap();
         }
-        if args.flag_require_auth {
+        if args.require_auth.unwrap() {
             AllowAnyAuthenticatedClient::new(client_auth_roots).boxed()
         } else {
             AllowAnyAnonymousOrAuthenticatedClient::new(client_auth_roots).boxed()
@@ -566,21 +528,21 @@ fn make_config(args: &Args) -> Arc<rustls::ServerConfig> {
         NoClientAuth::boxed()
     };
 
-    let suites = if !args.flag_suite.is_empty() {
-        lookup_suites(&args.flag_suite)
+    let suites = if !args.suite.is_empty() {
+        lookup_suites(&args.suite)
     } else {
         rustls::ALL_CIPHER_SUITES.to_vec()
     };
 
-    let versions = if !args.flag_protover.is_empty() {
-        lookup_versions(&args.flag_protover)
+    let versions = if !args.protover.is_empty() {
+        lookup_versions(&args.protover)
     } else {
         rustls::ALL_VERSIONS.to_vec()
     };
 
-    let certs = load_certs(args.flag_certs.as_ref().expect("--certs option missing"));
-    let privkey = load_private_key(args.flag_key.as_ref().expect("--key option missing"));
-    let ocsp = load_ocsp(&args.flag_ocsp);
+    let certs = load_certs(&args.certs);
+    let privkey = load_private_key(&args.key);
+    let ocsp = load_ocsp(&args.ocsp);
 
     let mut config = rustls::ServerConfig::builder()
         .with_cipher_suites(&suites)
@@ -593,16 +555,16 @@ fn make_config(args: &Args) -> Arc<rustls::ServerConfig> {
 
     config.key_log = Arc::new(rustls::KeyLogFile::new());
 
-    if args.flag_resumption {
+    if args.resumption.unwrap_or(false) {
         config.session_storage = rustls::server::ServerSessionMemoryCache::new(256);
     }
 
-    if args.flag_tickets {
+    if args.tickets.unwrap_or(false) {
         config.ticketer = rustls::Ticketer::new().unwrap();
     }
 
     config.alpn_protocols = args
-        .flag_proto
+        .proto
         .iter()
         .map(|proto| proto.as_bytes().to_vec())
         .collect::<Vec<_>>();
@@ -610,20 +572,15 @@ fn make_config(args: &Args) -> Arc<rustls::ServerConfig> {
     Arc::new(config)
 }
 
-// TODO: use clap instead of Docopt
 fn main() {
-    let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
+    // let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
 
-    let args: Args = Docopt::new(USAGE)
-        .map(|d| d.help(true))
-        .map(|d| d.version(Some(version)))
-        .and_then(|d| d.deserialize())
-        .unwrap_or_else(|e| e.exit());
+    let args: Args = Args::parse();
 
     env_logger::init();
 
     let mut addr: net::SocketAddr = "0.0.0.0:443".parse().unwrap();
-    addr.set_port(args.flag_port.unwrap_or(443));
+    addr.set_port(args.port.unwrap_or(443));
 
     let config = make_config(&args);
 
