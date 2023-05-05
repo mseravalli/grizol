@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package snazzy.items;
+package syncthing;
 
 message Hello {
     string device_name    = 1;

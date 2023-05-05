@@ -378,8 +378,6 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-types",
- "regex",
- "ring",
  "rustls",
  "rustls-pemfile",
  "sct",
