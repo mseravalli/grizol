@@ -6,7 +6,8 @@ mod core;
 
 use crate::connectivity::ServerConfigArgs;
 use crate::connectivity::TlsServer;
-use crate::core::BepProcessor;
+use crate::core::process_incoming_message;
+use actix::prelude::*;
 use clap::Parser;
 use mio::net::TcpListener;
 use rustls::server::{
@@ -65,10 +66,29 @@ impl Into<ServerConfigArgs> for Args {
     }
 }
 
-fn main() {
-    // let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
+fn setup_logging() {
+    env_logger::builder()
+        .format(|buf, record| {
+            let ts = buf.timestamp_micros();
+            writeln!(
+                buf,
+                "{} {} {:?} {}:{}: {}",
+                ts,
+                buf.default_level_style(record.level())
+                    .value(record.level()),
+                std::thread::current().id(),
+                record.file().unwrap_or("unknown"),
+                record.line().unwrap_or(0),
+                record.args()
+            )
+        })
+        .init();
+}
 
-    env_logger::init();
+#[actix_rt::main]
+async fn main() {
+    // let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
+    setup_logging();
 
     let args: Args = Args::parse();
 
@@ -88,21 +108,34 @@ fn main() {
     info!("Created tls server");
 
     let mut events = mio::Events::with_capacity(256);
+
     loop {
         poll.poll(&mut events, None).unwrap();
 
         for event in events.iter() {
+            trace!("Received event");
             match event.token() {
                 LISTENER => {
-                    let bep_processor = BepProcessor::default();
                     tlsserv
-                        .accept(poll.registry(), bep_processor)
+                        .accept(poll.registry())
                         .expect("error accepting socket");
                 }
-                _ => {
-                    tlsserv.conn_event(poll.registry(), event);
+                token => {
+                    let received_event = tlsserv.process_event(poll.registry(), event);
+                    match received_event {
+                        Ok(buf) => {
+                            // TODO: better handle None case
+                            tlsserv
+                                .get_connection(&token)
+                                .map(|c| process_incoming_message(&buf, c));
+                        }
+                        Err(e) => {
+                            trace!("Received event was {}", e);
+                        }
+                    };
                 }
             }
         }
     }
+    System::current().stop();
 }

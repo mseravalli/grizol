@@ -1,4 +1,3 @@
-use crate::core::BepProcessor;
 use clap::Parser;
 use mio::net::{TcpListener, TcpStream};
 use rustls::server::{
@@ -194,11 +193,17 @@ impl TlsServer {
         }
     }
 
-    pub fn accept(
-        &mut self,
-        registry: &mio::Registry,
-        bep_processor: BepProcessor,
-    ) -> Result<(), io::Error> {
+    pub fn get_connection(&mut self, id: &mio::Token) -> Option<&mut rustls::ServerConnection> {
+        debug!("Connection Token: {:?}", &id);
+        // TODO: construct
+        if self.connections.get(id).is_some() {
+            Some(&mut self.connections.get_mut(id).unwrap().tls_conn)
+        } else {
+            None
+        }
+    }
+
+    pub fn accept(&mut self, registry: &mio::Registry) -> Result<(), io::Error> {
         loop {
             match self.server.accept() {
                 Ok((socket, addr)) => {
@@ -210,8 +215,7 @@ impl TlsServer {
                     let token = mio::Token(self.next_id);
                     self.next_id += 1;
 
-                    let mut connection =
-                        OpenConnection::new(socket, token, tls_conn, bep_processor);
+                    let mut connection = OpenConnection::new(socket, token, tls_conn);
                     connection.register(registry);
                     self.connections.insert(token, connection);
                 }
@@ -227,18 +231,26 @@ impl TlsServer {
         }
     }
 
-    pub fn conn_event(&mut self, registry: &mio::Registry, event: &mio::event::Event) {
+    pub fn process_event(
+        &mut self,
+        registry: &mio::Registry,
+        event: &mio::event::Event,
+    ) -> Result<Vec<u8>, String> {
         let token = event.token();
 
         if self.connections.contains_key(&token) {
-            self.connections
+            let res = self
+                .connections
                 .get_mut(&token)
                 .unwrap()
-                .ready(registry, event);
+                .process_event(registry, event);
 
             if self.connections[&token].is_closed() {
                 self.connections.remove(&token);
             }
+            res
+        } else {
+            Err(format!("Token {:?} not found", token))
         }
     }
 }
@@ -254,35 +266,31 @@ struct OpenConnection {
     closing: bool,
     closed: bool,
     tls_conn: rustls::ServerConnection,
-    bep_processor: BepProcessor,
 }
 
 impl OpenConnection {
-    fn new(
-        socket: TcpStream,
-        token: mio::Token,
-        tls_conn: rustls::ServerConnection,
-        bep_processor: BepProcessor,
-    ) -> Self {
+    fn new(socket: TcpStream, token: mio::Token, tls_conn: rustls::ServerConnection) -> Self {
         Self {
             socket,
             token,
             closing: false,
             closed: false,
             tls_conn,
-            bep_processor,
         }
     }
 
     /// We're a connection, and we have something to do.
-    fn ready(&mut self, registry: &mio::Registry, ev: &mio::event::Event) {
-        // If we're readable: read some TLS.  Then
-        // see if that yielded new plaintext.  Then
-        // see if the backend is readable too.
-        if ev.is_readable() {
+    fn process_event(
+        &mut self,
+        registry: &mio::Registry,
+        ev: &mio::event::Event,
+    ) -> Result<Vec<u8>, String> {
+        let res = if ev.is_readable() {
             self.do_tls_read();
-            self.try_plain_read();
-        }
+            self.try_plain_read()
+        } else {
+            Err(format!("Not readable"))
+        };
 
         if ev.is_writable() {
             self.do_tls_write_and_handle_error();
@@ -295,6 +303,8 @@ impl OpenConnection {
         } else {
             self.reregister(registry);
         }
+
+        res
     }
 
     fn do_tls_read(&mut self) {
@@ -328,7 +338,7 @@ impl OpenConnection {
         }
     }
 
-    fn try_plain_read(&mut self) {
+    fn try_plain_read(&mut self) -> Result<Vec<u8>, String> {
         // Read and process all available plaintext.
         match self.tls_conn.process_new_packets() {
             Ok(io_state) => {
@@ -339,19 +349,19 @@ impl OpenConnection {
 
                     self.tls_conn.reader().read_exact(&mut buf).unwrap();
 
-                    self.incoming_plaintext(&buf);
+                    Ok(buf)
+                } else {
+                    Ok(Vec::new())
                 }
             }
-            Err(x) => {
-                warn!("not possible to read because of {:?}", x);
-            }
+            Err(x) => Err(format!("not possible to read because of {:?}", x)),
         }
     }
 
-    /// Process some amount of received plaintext.
-    fn incoming_plaintext(&mut self, buf: &[u8]) {
-        self.bep_processor.process_incoming_message(buf);
-    }
+    // /// Process some amount of received plaintext.
+    // fn incoming_plaintext(&mut self, buf: &[u8]) -> Result<&[u8], String> {
+    //     Ok(buf)
+    // }
 
     fn tls_write(&mut self) -> io::Result<usize> {
         self.tls_conn.write_tls(&mut self.socket)
@@ -366,36 +376,27 @@ impl OpenConnection {
     }
 
     fn register(&mut self, registry: &mio::Registry) {
-        let event_set = self.event_set();
         registry
-            .register(&mut self.socket, self.token, event_set)
+            .register(
+                &mut self.socket,
+                self.token,
+                mio::Interest::READABLE | mio::Interest::WRITABLE,
+            )
             .unwrap();
     }
 
     fn reregister(&mut self, registry: &mio::Registry) {
-        let event_set = self.event_set();
         registry
-            .reregister(&mut self.socket, self.token, event_set)
+            .reregister(
+                &mut self.socket,
+                self.token,
+                mio::Interest::READABLE | mio::Interest::WRITABLE,
+            )
             .unwrap();
     }
 
     fn deregister(&mut self, registry: &mio::Registry) {
         registry.deregister(&mut self.socket).unwrap();
-    }
-
-    /// What IO events we're currently waiting for,
-    /// based on wants_read/wants_write.
-    fn event_set(&self) -> mio::Interest {
-        let rd = self.tls_conn.wants_read();
-        let wr = self.tls_conn.wants_write();
-
-        if rd && wr {
-            mio::Interest::READABLE | mio::Interest::WRITABLE
-        } else if wr {
-            mio::Interest::WRITABLE
-        } else {
-            mio::Interest::READABLE
-        }
     }
 
     fn is_closed(&self) -> bool {
