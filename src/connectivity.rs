@@ -203,7 +203,14 @@ impl TlsServer {
         }
     }
 
-    pub fn accept(&mut self, registry: &mio::Registry) -> Result<(), io::Error> {
+    pub fn accept(
+        &mut self,
+        registry: &mio::Registry,
+    ) -> Result<(OpenConnection, mio::Token), io::Error> {
+        let mut res = Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Connection was not created",
+        ));
         loop {
             match self.server.accept() {
                 Ok((socket, addr)) => {
@@ -215,13 +222,18 @@ impl TlsServer {
                     let token = mio::Token(self.next_id);
                     self.next_id += 1;
 
-                    let mut connection = OpenConnection::new(socket, token, tls_conn);
-                    connection.register(registry);
-                    self.connections.insert(token, connection);
+                    res = Ok((OpenConnection::new(socket, token, tls_conn), token));
+                    // let mut connection = OpenConnection::new(socket, token, tls_conn);
+                    // connection.register(registry);
+                    // self.connections.insert(token, connection);
+                    // debug!("Added a new connection");
                 }
-                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                // This is triggered when the connection was successfully created.
+                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    return res;
+                }
                 Err(err) => {
-                    println!(
+                    debug!(
                         "encountered error while accepting connection; err={:?}",
                         err
                     );
@@ -229,6 +241,7 @@ impl TlsServer {
                 }
             }
         }
+        res
     }
 
     pub fn process_event(
@@ -243,7 +256,7 @@ impl TlsServer {
                 .connections
                 .get_mut(&token)
                 .unwrap()
-                .process_event(registry, event);
+                .read_event(registry, event);
 
             if self.connections[&token].is_closed() {
                 self.connections.remove(&token);
@@ -260,12 +273,12 @@ impl TlsServer {
 ///
 /// It has a TCP-level stream, a TLS-level connection state, and some
 /// other state/metadata.
-struct OpenConnection {
+pub struct OpenConnection {
     socket: TcpStream,
     token: mio::Token,
     closing: bool,
     closed: bool,
-    tls_conn: rustls::ServerConnection,
+    pub tls_conn: rustls::ServerConnection,
 }
 
 impl OpenConnection {
@@ -279,8 +292,26 @@ impl OpenConnection {
         }
     }
 
+    pub fn simplified_read(&mut self) -> Result<Vec<u8>, String> {
+        // pub fn simplified_read(&mut self, registry: &mio::Registry) -> Result<Vec<u8>, String> {
+        self.do_tls_read();
+        let res = self.try_plain_read();
+
+        self.do_tls_write_and_handle_error();
+
+        if self.closing {
+            let _ = self.socket.shutdown(net::Shutdown::Both);
+            self.closed = true;
+            // self.deregister(registry);
+        } else {
+            // self.reregister(registry);
+        }
+
+        res
+    }
+
     /// We're a connection, and we have something to do.
-    fn process_event(
+    fn read_event(
         &mut self,
         registry: &mio::Registry,
         ev: &mio::event::Event,
@@ -324,7 +355,9 @@ impl OpenConnection {
                 self.closing = true;
                 return;
             }
-            Ok(_) => {}
+            Ok(x) => {
+                // debug!("tls read: {:?}", x)
+            }
         };
 
         // Process newly-received TLS messages.
@@ -343,7 +376,7 @@ impl OpenConnection {
         match self.tls_conn.process_new_packets() {
             Ok(io_state) => {
                 if io_state.plaintext_bytes_to_read() > 0 {
-                    debug!("bytes to read: {}", io_state.plaintext_bytes_to_read());
+                    // debug!("bytes to read: {}", io_state.plaintext_bytes_to_read());
                     let mut buf = Vec::new();
                     buf.resize(io_state.plaintext_bytes_to_read(), 0u8);
 
@@ -375,7 +408,7 @@ impl OpenConnection {
         }
     }
 
-    fn register(&mut self, registry: &mio::Registry) {
+    pub fn register(&mut self, registry: &mio::Registry) {
         registry
             .register(
                 &mut self.socket,
@@ -395,11 +428,16 @@ impl OpenConnection {
             .unwrap();
     }
 
-    fn deregister(&mut self, registry: &mio::Registry) {
+    pub fn deregister(&mut self, registry: &mio::Registry) {
         registry.deregister(&mut self.socket).unwrap();
     }
 
-    fn is_closed(&self) -> bool {
+    pub fn is_closed(&self) -> bool {
         self.closed
+    }
+    pub fn write_all(&mut self, message: &[u8]) -> Result<(), io::Error> {
+        let res = self.tls_conn.writer().write_all(message);
+        self.tls_write();
+        res
     }
 }

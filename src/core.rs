@@ -4,20 +4,40 @@ pub mod syncthing {
     include!(concat!(env!("OUT_DIR"), "/syncthing.rs"));
 }
 
+use crate::connectivity::OpenConnection;
 use prost::Message;
-use rustls::ServerConnection;
 use std::io::Write;
+use std::sync::mpsc::{Receiver, Sender};
 use syncthing::Header;
 use syncthing::Hello;
 
-pub fn process_incoming_message(buf: &[u8], tls_conn: &mut rustls::ServerConnection) {
-    if starts_with_magic_number(buf) {
-        let hello = handle_hello(buf);
-        debug!("Received {:?}", hello);
+pub struct BepProcessor {}
 
-        trace!("Sending Hello");
-        send_hello(tls_conn);
-        trace!("Sent Hello");
+impl BepProcessor {
+    pub fn process(mut connection: OpenConnection, receiver: Receiver<i32>) -> OpenConnection {
+        loop {
+            let res = receiver.recv().unwrap();
+            match connection.simplified_read() {
+                Ok(buf) => {
+                    process_incoming_message(&buf, &mut connection);
+                }
+                Err(e) => {
+                    trace!("Received event was {}", e);
+                }
+            }
+
+            if connection.is_closed() {
+                // TODO: add more info
+                info!("Connection was closed");
+                return connection;
+            }
+        }
+    }
+}
+
+fn process_incoming_message(buf: &[u8], tls_conn: &mut OpenConnection) {
+    if starts_with_magic_number(buf) {
+        handle_hello(buf, tls_conn);
     } else {
         trace!("plaintext read {:#04x?}", &buf);
         decode_message(&buf);
@@ -28,9 +48,32 @@ fn starts_with_magic_number(buf: &[u8]) -> bool {
     buf.len() >= 4 && buf[0..4] == vec![0x2e, 0xa7, 0xd9, 0x0b]
 }
 
-fn handle_hello(buf: &[u8]) -> syncthing::Hello {
+fn handle_hello(buf: &[u8], tls_conn: &mut OpenConnection) {
     let message_byte_len: usize = u16::from_be_bytes(buf[4..6].try_into().unwrap()).into();
-    syncthing::Hello::decode(&buf[6..6 + message_byte_len]).unwrap()
+    let hello = syncthing::Hello::decode(&buf[6..6 + message_byte_len]).unwrap();
+
+    debug!("Received {:?}", hello);
+
+    send_hello(tls_conn);
+}
+
+fn send_hello(tls_conn: &mut OpenConnection) {
+    let mut hello = syncthing::Hello::default();
+    // TODO: use better data here
+    hello.device_name = format!("damorire");
+    // let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
+    hello.client_name = format!("mydama");
+    hello.client_version = format!("0.0.1");
+
+    trace!("{:#04x?}", &hello.encode_to_vec());
+
+    // TODO: use the right length
+    let message: Vec<u8> = vec![0x2e, 0xa7, 0xd9, 0x0b, 0x00, 0x19]
+        .into_iter()
+        .chain(hello.encode_to_vec().into_iter())
+        .collect();
+
+    tls_conn.write_all(&message).unwrap();
 }
 
 fn decode_message(buf: &[u8]) {
@@ -68,11 +111,6 @@ fn decode_message(buf: &[u8]) {
     } else {
         debug!("Received empty message");
     }
-
-    // let message_byte_len: usize = u16::from_be_bytes(buf[4..6].try_into().unwrap()).into();
-    // let message_start = 2 + header_byte_len;
-    // let message_end = message_start + message_byte_len;
-    // syncthing::Hello::decode(&buf[message_start..message_end]).unwrap()
 }
 
 fn handle_ping(buf: &[u8], message_byte_len: usize) {
@@ -88,21 +126,4 @@ fn handle_close(buf: &[u8], message_byte_len: usize) {
         let close_message = syncthing::Close::decode(&buf[..message_byte_len]).unwrap();
         debug!("{:?}", close_message);
     }
-}
-
-fn send_hello(tls_conn: &mut rustls::ServerConnection) {
-    let mut hello = syncthing::Hello::default();
-    hello.device_name = format!("damorire");
-    hello.client_name = format!("mydama");
-    hello.client_version = format!("0.0.1");
-
-    trace!("{:#04x?}", &hello.encode_to_vec());
-
-    // TODO: use the right length
-    let message: Vec<u8> = vec![0x2e, 0xa7, 0xd9, 0x0b, 0x00, 0x19]
-        .into_iter()
-        .chain(hello.encode_to_vec().into_iter())
-        .collect();
-
-    tls_conn.writer().write_all(&message).unwrap();
 }

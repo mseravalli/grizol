@@ -5,8 +5,8 @@ mod connectivity;
 mod core;
 
 use crate::connectivity::ServerConfigArgs;
-use crate::connectivity::TlsServer;
-use crate::core::process_incoming_message;
+use crate::connectivity::{OpenConnection, TlsServer};
+use crate::core::BepProcessor;
 use actix::prelude::*;
 use clap::Parser;
 use mio::net::TcpListener;
@@ -14,10 +14,16 @@ use rustls::server::{
     AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
 };
 use rustls::{self, RootCertStore};
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::net;
+use std::sync::mpsc::channel;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
+use std::thread;
+use std::thread::JoinHandle;
 
 // Token for our listening socket.
 const LISTENER: mio::Token = mio::Token(0);
@@ -85,8 +91,26 @@ fn setup_logging() {
         .init();
 }
 
-#[actix_rt::main]
-async fn main() {
+fn clean_finished_threads(
+    handlers: &mut HashMap<mio::Token, JoinHandle<OpenConnection>>,
+    token_senders: &mut HashMap<mio::Token, Sender<i32>>,
+    poll: &mio::Poll,
+) {
+    let finished_threads: Vec<mio::Token> = handlers
+        .iter()
+        .filter(|x| x.1.is_finished())
+        .map(|x| x.0.clone())
+        .collect();
+
+    for token in finished_threads.iter() {
+        let handler = handlers.remove(token).unwrap();
+        let mut c = handler.join().unwrap();
+        c.deregister(poll.registry());
+        token_senders.remove(token);
+    }
+}
+
+fn main() {
     // let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
     setup_logging();
 
@@ -109,6 +133,10 @@ async fn main() {
 
     let mut events = mio::Events::with_capacity(256);
 
+    // TODO: unify these two maps into one
+    let mut token_senders: HashMap<mio::Token, Sender<i32>> = Default::default();
+    let mut handlers: HashMap<mio::Token, JoinHandle<OpenConnection>> = Default::default();
+
     loop {
         poll.poll(&mut events, None).unwrap();
 
@@ -116,26 +144,31 @@ async fn main() {
             trace!("Received event");
             match event.token() {
                 LISTENER => {
-                    tlsserv
+                    let (mut connection, token) = tlsserv
                         .accept(poll.registry())
                         .expect("error accepting socket");
+
+                    connection.register(poll.registry());
+
+                    let (sender, receiver) = channel();
+
+                    let handler =
+                        thread::spawn(move || BepProcessor::process(connection, receiver));
+
+                    token_senders.insert(token, sender);
+                    handlers.insert(token, handler);
                 }
-                token => {
-                    let received_event = tlsserv.process_event(poll.registry(), event);
-                    match received_event {
-                        Ok(buf) => {
-                            // TODO: better handle None case
-                            tlsserv
-                                .get_connection(&token)
-                                .map(|c| process_incoming_message(&buf, c));
-                        }
-                        Err(e) => {
-                            trace!("Received event was {}", e);
-                        }
-                    };
-                }
+                token => match token_senders.get(&token) {
+                    Some(sender) => {
+                        sender.send(10).unwrap();
+                    }
+                    None => {
+                        debug!("No sender for token: {:?}", token);
+                    }
+                },
             }
+
+            clean_finished_threads(&mut handlers, &mut token_senders, &poll);
         }
     }
-    System::current().stop();
 }
