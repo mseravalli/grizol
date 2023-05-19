@@ -8,56 +8,118 @@ use crate::connectivity::OpenConnection;
 use prost::Message;
 use std::io::Write;
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::{Duration, Instant};
 use syncthing::Header;
 use syncthing::Hello;
 
-pub struct BepProcessor {}
+const PING_INTERVAL: Duration = Duration::from_secs(45);
+
+pub enum BepAction {
+    ReadClientMessage,
+}
+
+pub struct BepProcessor {
+    connection: OpenConnection,
+    receiver: Receiver<BepAction>,
+    // Last meaningful message
+    last_message_sent_time: Option<Instant>,
+}
 
 impl BepProcessor {
-    pub fn process(mut connection: OpenConnection, receiver: Receiver<i32>) -> OpenConnection {
+    pub fn new(connection: OpenConnection, receiver: Receiver<BepAction>) -> Self {
+        BepProcessor {
+            connection,
+            receiver,
+            last_message_sent_time: None,
+        }
+    }
+    pub fn run(mut self) -> OpenConnection {
         loop {
-            let res = receiver.recv().unwrap();
-            match connection.simplified_read() {
-                Ok(buf) => {
-                    process_incoming_message(&buf, &mut connection);
-                }
+            match self.receiver.recv_timeout(Duration::from_millis(100)) {
+                Ok(action) => match action {
+                    BepAction::ReadClientMessage => {
+                        self.read_client_message();
+                    }
+                },
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                 Err(e) => {
-                    trace!("Received event was {}", e);
+                    error!("There was an error receiving the action: {}", e)
+                }
+            };
+
+            if let Some(last_message_sent_time) = self.last_message_sent_time {
+                if Instant::now().duration_since(last_message_sent_time) > PING_INTERVAL {
+                    send_ping(&mut self.connection);
+                    self.last_message_sent_time = Some(Instant::now());
                 }
             }
 
-            if connection.is_closed() {
+            if self.connection.is_closed() {
                 // TODO: add more info
                 info!("Connection was closed");
-                return connection;
+                return self.connection;
+            }
+        }
+    }
+
+    fn read_client_message(&mut self) {
+        match self.connection.simplified_read() {
+            Ok(buf) => {
+                if starts_with_magic_number(&buf) {
+                    handle_hello(&buf, &mut self.connection);
+                    // TODO: should this go in handle error?
+                    self.last_message_sent_time = Some(Instant::now());
+                } else {
+                    trace!("plaintext read {:#04x?}", &buf);
+                    decode_message(&buf);
+                }
+            }
+            Err(e) => {
+                trace!("Received event was {}", e);
             }
         }
     }
 }
 
-fn process_incoming_message(buf: &[u8], tls_conn: &mut OpenConnection) {
-    if starts_with_magic_number(buf) {
-        handle_hello(buf, tls_conn);
-    } else {
-        trace!("plaintext read {:#04x?}", &buf);
-        decode_message(&buf);
-    }
+fn send_ping(connection: &mut OpenConnection) {
+    let mut header = syncthing::Header::default();
+    header.r#type = syncthing::MessageType::Ping.into();
+    header.compression = 0;
+    let header_bytes: Vec<u8> = header.encode_to_vec();
+    let header_len: u16 = header_bytes.len().try_into().unwrap();
+
+    let ping = syncthing::Ping::default();
+    let ping_bytes = ping.encode_to_vec();
+    let ping_len: u32 = ping_bytes.len().try_into().unwrap();
+
+    let message: Vec<u8> = vec![]
+        .into_iter()
+        .chain(header_len.to_be_bytes().into_iter())
+        .chain(header_bytes.into_iter())
+        .chain(ping_len.to_be_bytes().into_iter())
+        .chain(ping_bytes.into_iter())
+        .collect();
+
+    debug!("Outgoing ping message: {:?}", &message);
+
+    connection.write_all(&message).unwrap();
 }
 
 fn starts_with_magic_number(buf: &[u8]) -> bool {
     buf.len() >= 4 && buf[0..4] == vec![0x2e, 0xa7, 0xd9, 0x0b]
 }
 
-fn handle_hello(buf: &[u8], tls_conn: &mut OpenConnection) {
+fn handle_hello(buf: &[u8], connection: &mut OpenConnection) {
     let message_byte_len: usize = u16::from_be_bytes(buf[4..6].try_into().unwrap()).into();
     let hello = syncthing::Hello::decode(&buf[6..6 + message_byte_len]).unwrap();
 
     debug!("Received {:?}", hello);
 
-    send_hello(tls_conn);
+    send_hello(connection);
+    send_cluster_config(connection);
 }
 
-fn send_hello(tls_conn: &mut OpenConnection) {
+fn send_hello(connection: &mut OpenConnection) {
     let mut hello = syncthing::Hello::default();
     // TODO: use better data here
     hello.device_name = format!("damorire");
@@ -73,7 +135,31 @@ fn send_hello(tls_conn: &mut OpenConnection) {
         .chain(hello.encode_to_vec().into_iter())
         .collect();
 
-    tls_conn.write_all(&message).unwrap();
+    connection.write_all(&message).unwrap();
+}
+
+fn send_cluster_config(connection: &mut OpenConnection) {
+    let mut header = syncthing::Header::default();
+    header.r#type = syncthing::MessageType::ClusterConfig.into();
+    header.compression = 0;
+    let header_bytes: Vec<u8> = header.encode_to_vec();
+    let header_len: u16 = header_bytes.len().try_into().unwrap();
+
+    let mut cluster_config = syncthing::ClusterConfig::default();
+    let cluster_config_bytes = cluster_config.encode_to_vec();
+    let cluster_config_len: u32 = cluster_config_bytes.len().try_into().unwrap();
+
+    let message: Vec<u8> = vec![]
+        .into_iter()
+        .chain(header_len.to_be_bytes().into_iter())
+        .chain(header_bytes.into_iter())
+        .chain(cluster_config_len.to_be_bytes().into_iter())
+        .chain(cluster_config_bytes.into_iter())
+        .collect();
+
+    debug!("Outgoing cluster_config message: {:?}", &message);
+
+    connection.write_all(&message).unwrap();
 }
 
 fn decode_message(buf: &[u8]) {
@@ -85,6 +171,7 @@ fn decode_message(buf: &[u8]) {
     let header_byte_len: usize = u16::from_be_bytes(buf[0..2].try_into().unwrap()).into();
 
     if header_byte_len > 0 {
+        debug!("Received Message: {:?}", &buf);
         let header_start = 2;
         let header_end = 2 + header_byte_len;
         let header = syncthing::Header::decode(&buf[header_start..header_end]).unwrap();

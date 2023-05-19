@@ -6,7 +6,7 @@ mod core;
 
 use crate::connectivity::ServerConfigArgs;
 use crate::connectivity::{OpenConnection, TlsServer};
-use crate::core::BepProcessor;
+use crate::core::{BepAction, BepProcessor};
 use actix::prelude::*;
 use clap::Parser;
 use mio::net::TcpListener;
@@ -24,6 +24,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 // Token for our listening socket.
 const LISTENER: mio::Token = mio::Token(0);
@@ -91,22 +92,28 @@ fn setup_logging() {
         .init();
 }
 
-fn clean_finished_threads(
-    handlers: &mut HashMap<mio::Token, JoinHandle<OpenConnection>>,
-    token_senders: &mut HashMap<mio::Token, Sender<i32>>,
-    poll: &mio::Poll,
-) {
-    let finished_threads: Vec<mio::Token> = handlers
+struct ClientData {
+    handle: JoinHandle<OpenConnection>,
+    sender: Sender<BepAction>,
+}
+
+impl ClientData {
+    fn new(handle: JoinHandle<OpenConnection>, sender: Sender<BepAction>) -> Self {
+        ClientData { handle, sender }
+    }
+}
+
+fn clean_finished_threads(clients_data: &mut HashMap<mio::Token, ClientData>, poll: &mio::Poll) {
+    let finished_threads: Vec<mio::Token> = clients_data
         .iter()
-        .filter(|x| x.1.is_finished())
+        .filter(|x| x.1.handle.is_finished())
         .map(|x| x.0.clone())
         .collect();
 
     for token in finished_threads.iter() {
-        let handler = handlers.remove(token).unwrap();
-        let mut c = handler.join().unwrap();
+        let client_data = clients_data.remove(token).unwrap();
+        let mut c = client_data.handle.join().unwrap();
         c.deregister(poll.registry());
-        token_senders.remove(token);
     }
 }
 
@@ -133,12 +140,11 @@ fn main() {
 
     let mut events = mio::Events::with_capacity(256);
 
-    // TODO: unify these two maps into one
-    let mut token_senders: HashMap<mio::Token, Sender<i32>> = Default::default();
-    let mut handlers: HashMap<mio::Token, JoinHandle<OpenConnection>> = Default::default();
+    let mut clients_data: HashMap<mio::Token, ClientData> = Default::default();
 
     loop {
-        poll.poll(&mut events, None).unwrap();
+        poll.poll(&mut events, Some(Duration::from_millis(100)))
+            .unwrap();
 
         for event in events.iter() {
             trace!("Received event");
@@ -152,23 +158,24 @@ fn main() {
 
                     let (sender, receiver) = channel();
 
-                    let handler =
-                        thread::spawn(move || BepProcessor::process(connection, receiver));
+                    let handler = thread::spawn(move || {
+                        let bep_processor = BepProcessor::new(connection, receiver);
+                        bep_processor.run()
+                    });
 
-                    token_senders.insert(token, sender);
-                    handlers.insert(token, handler);
+                    clients_data.insert(token, ClientData::new(handler, sender));
                 }
-                token => match token_senders.get(&token) {
+                token => match clients_data.get(&token).as_ref().map(|x| &x.sender) {
                     Some(sender) => {
-                        sender.send(10).unwrap();
+                        sender.send(BepAction::ReadClientMessage).unwrap();
                     }
                     None => {
                         debug!("No sender for token: {:?}", token);
                     }
                 },
             }
-
-            clean_finished_threads(&mut handlers, &mut token_senders, &poll);
         }
+
+        clean_finished_threads(&mut clients_data, &poll);
     }
 }
