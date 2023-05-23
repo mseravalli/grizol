@@ -3,17 +3,17 @@ extern crate log;
 
 mod connectivity;
 mod core;
+mod device_id;
 
 use crate::connectivity::ServerConfigArgs;
 use crate::connectivity::{OpenConnection, TlsServer};
 use crate::core::{BepAction, BepProcessor};
 use actix::prelude::*;
 use clap::Parser;
+use data_encoding::BASE32;
 use mio::net::TcpListener;
-use rustls::server::{
-    AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
-};
 use rustls::{self, RootCertStore};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
@@ -117,6 +117,28 @@ fn clean_finished_threads(clients_data: &mut HashMap<mio::Token, ClientData>, po
     }
 }
 
+fn device_id_from_cert(cert_path: &str) -> [u8; 32] {
+    let certfile = fs::File::open(cert_path).expect("cannot open certificate file");
+    let mut reader = BufReader::new(certfile);
+
+    let certs: Vec<rustls::Certificate> = rustls_pemfile::certs(&mut reader)
+        .unwrap()
+        .iter()
+        .map(|v| rustls::Certificate(v.clone()))
+        .collect();
+
+    let mut hasher = Sha256::new();
+
+    // write input message
+    hasher.update(&certs[0].0);
+
+    // read hash digest and consume hasher
+    let result = hasher.finalize();
+
+    debug!("My id: {:?}", BASE32.encode(&result));
+    result.into()
+}
+
 fn main() {
     // let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
     setup_logging();
@@ -125,6 +147,7 @@ fn main() {
 
     let mut addr: net::SocketAddr = "0.0.0.0:443".parse().unwrap();
     addr.set_port(args.port.unwrap_or(443));
+    let device_id = device_id_from_cert(&args.certs);
 
     let server_config_args: ServerConfigArgs = args.into();
     let config = server_config_args.into();
@@ -159,7 +182,7 @@ fn main() {
                     let (sender, receiver) = channel();
 
                     let handler = thread::spawn(move || {
-                        let bep_processor = BepProcessor::new(connection, receiver);
+                        let bep_processor = BepProcessor::new(device_id, connection, receiver);
                         bep_processor.run()
                     });
 
@@ -167,7 +190,7 @@ fn main() {
                 }
                 token => match clients_data.get(&token).as_ref().map(|x| &x.sender) {
                     Some(sender) => {
-                        sender.send(BepAction::ReadClientMessage).unwrap();
+                        sender.send(BepAction::ReadClientMessage);
                     }
                     None => {
                         debug!("No sender for token: {:?}", token);

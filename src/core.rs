@@ -5,6 +5,7 @@ pub mod syncthing {
 }
 
 use crate::connectivity::OpenConnection;
+use crate::device_id::DeviceId;
 use prost::Message;
 use std::io::Write;
 use std::sync::mpsc::{Receiver, Sender};
@@ -19,6 +20,7 @@ pub enum BepAction {
 }
 
 pub struct BepProcessor {
+    device_id: [u8; 32],
     connection: OpenConnection,
     receiver: Receiver<BepAction>,
     // Last meaningful message
@@ -26,8 +28,13 @@ pub struct BepProcessor {
 }
 
 impl BepProcessor {
-    pub fn new(connection: OpenConnection, receiver: Receiver<BepAction>) -> Self {
+    pub fn new(
+        device_id: [u8; 32],
+        connection: OpenConnection,
+        receiver: Receiver<BepAction>,
+    ) -> Self {
         BepProcessor {
+            device_id,
             connection,
             receiver,
             last_message_sent_time: None,
@@ -66,7 +73,7 @@ impl BepProcessor {
         match self.connection.simplified_read() {
             Ok(buf) => {
                 if starts_with_magic_number(&buf) {
-                    handle_hello(&buf, &mut self.connection);
+                    self.handle_hello(&buf);
                     // TODO: should this go in handle error?
                     self.last_message_sent_time = Some(Instant::now());
                 } else {
@@ -78,6 +85,105 @@ impl BepProcessor {
                 trace!("Received event was {}", e);
             }
         }
+    }
+
+    fn handle_hello(&mut self, buf: &[u8]) {
+        let message_byte_len: usize = u16::from_be_bytes(buf[4..6].try_into().unwrap()).into();
+        let hello = syncthing::Hello::decode(&buf[6..6 + message_byte_len]).unwrap();
+
+        debug!("Received {:?}", hello);
+
+        self.send_hello();
+        self.send_cluster_config();
+    }
+
+    fn send_hello(&mut self) {
+        let mut hello = syncthing::Hello::default();
+        // TODO: use better data here
+        hello.device_name = format!("damorire");
+        // let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
+        hello.client_name = format!("mydama");
+        hello.client_version = format!("0.0.1");
+
+        trace!("{:#04x?}", &hello.encode_to_vec());
+
+        // TODO: use the right length
+        let message: Vec<u8> = vec![0x2e, 0xa7, 0xd9, 0x0b, 0x00, 0x19]
+            .into_iter()
+            .chain(hello.encode_to_vec().into_iter())
+            .collect();
+
+        self.connection.write_all(&message).unwrap();
+    }
+
+    fn send_cluster_config(&mut self) {
+        let mut header = syncthing::Header::default();
+        header.r#type = syncthing::MessageType::ClusterConfig.into();
+        header.compression = 0;
+        let header_bytes: Vec<u8> = header.encode_to_vec();
+        let header_len: u16 = header_bytes.len().try_into().unwrap();
+
+        let this_device = syncthing::Device {
+            id: (self.device_id).into(),
+            name: format!("damorire"),
+            addresses: vec![format!("127.0.0.1:23456")],
+            compression: syncthing::Compression::Never.into(),
+            max_sequence: 0,
+            index_id: 23423534524,
+            cert_name: String::new(),
+            encryption_password_token: vec![],
+            introducer: false,
+            skip_introduction_removals: true,
+            // ..Default::default()
+        };
+
+        let client_device = syncthing::Device {
+            id: (DeviceId::try_from(
+                "64ZCWTG-22LRVWS-XGRKFV2-OCKORKB-KXPOXIP-ZJRQVS2-5GCIRLH-YWEBFA5",
+            )
+            .unwrap()
+            .id)
+                .into(),
+            name: format!("syncthing"),
+            addresses: vec![format!("127.0.0.1:220000")],
+            compression: syncthing::Compression::Never.into(),
+            max_sequence: 0,
+            index_id: 2342353323423,
+            cert_name: String::new(),
+            encryption_password_token: vec![],
+            introducer: false,
+            skip_introduction_removals: true,
+            // ..Default::default()
+        };
+
+        let folder = syncthing::Folder {
+            id: format!("giovanni"),
+            label: format!("giovanni"),
+            read_only: false,
+            ignore_permissions: false,
+            ignore_delete: true,
+            disable_temp_indexes: false,
+            paused: false,
+            devices: vec![this_device, client_device],
+            // ..Default::default()
+        };
+
+        let mut cluster_config = syncthing::ClusterConfig::default();
+        cluster_config.folders = vec![folder];
+        let cluster_config_bytes = cluster_config.encode_to_vec();
+        let cluster_config_len: u32 = cluster_config_bytes.len().try_into().unwrap();
+
+        let message: Vec<u8> = vec![]
+            .into_iter()
+            .chain(header_len.to_be_bytes().into_iter())
+            .chain(header_bytes.into_iter())
+            .chain(cluster_config_len.to_be_bytes().into_iter())
+            .chain(cluster_config_bytes.into_iter())
+            .collect();
+
+        trace!("Outgoing cluster_config message: {:#04x?}", &message);
+
+        self.connection.write_all(&message).unwrap();
     }
 }
 
@@ -109,59 +215,6 @@ fn starts_with_magic_number(buf: &[u8]) -> bool {
     buf.len() >= 4 && buf[0..4] == vec![0x2e, 0xa7, 0xd9, 0x0b]
 }
 
-fn handle_hello(buf: &[u8], connection: &mut OpenConnection) {
-    let message_byte_len: usize = u16::from_be_bytes(buf[4..6].try_into().unwrap()).into();
-    let hello = syncthing::Hello::decode(&buf[6..6 + message_byte_len]).unwrap();
-
-    debug!("Received {:?}", hello);
-
-    send_hello(connection);
-    send_cluster_config(connection);
-}
-
-fn send_hello(connection: &mut OpenConnection) {
-    let mut hello = syncthing::Hello::default();
-    // TODO: use better data here
-    hello.device_name = format!("damorire");
-    // let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
-    hello.client_name = format!("mydama");
-    hello.client_version = format!("0.0.1");
-
-    trace!("{:#04x?}", &hello.encode_to_vec());
-
-    // TODO: use the right length
-    let message: Vec<u8> = vec![0x2e, 0xa7, 0xd9, 0x0b, 0x00, 0x19]
-        .into_iter()
-        .chain(hello.encode_to_vec().into_iter())
-        .collect();
-
-    connection.write_all(&message).unwrap();
-}
-
-fn send_cluster_config(connection: &mut OpenConnection) {
-    let mut header = syncthing::Header::default();
-    header.r#type = syncthing::MessageType::ClusterConfig.into();
-    header.compression = 0;
-    let header_bytes: Vec<u8> = header.encode_to_vec();
-    let header_len: u16 = header_bytes.len().try_into().unwrap();
-
-    let mut cluster_config = syncthing::ClusterConfig::default();
-    let cluster_config_bytes = cluster_config.encode_to_vec();
-    let cluster_config_len: u32 = cluster_config_bytes.len().try_into().unwrap();
-
-    let message: Vec<u8> = vec![]
-        .into_iter()
-        .chain(header_len.to_be_bytes().into_iter())
-        .chain(header_bytes.into_iter())
-        .chain(cluster_config_len.to_be_bytes().into_iter())
-        .chain(cluster_config_bytes.into_iter())
-        .collect();
-
-    debug!("Outgoing cluster_config message: {:?}", &message);
-
-    connection.write_all(&message).unwrap();
-}
-
 fn decode_message(buf: &[u8]) {
     if buf.len() < 2 {
         return;
@@ -171,7 +224,7 @@ fn decode_message(buf: &[u8]) {
     let header_byte_len: usize = u16::from_be_bytes(buf[0..2].try_into().unwrap()).into();
 
     if header_byte_len > 0 {
-        debug!("Received Message: {:?}", &buf);
+        trace!("Received Message: {:#04x?}", &buf);
         let header_start = 2;
         let header_end = 2 + header_byte_len;
         let header = syncthing::Header::decode(&buf[header_start..header_end]).unwrap();

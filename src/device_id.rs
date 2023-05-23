@@ -1,0 +1,127 @@
+use data_encoding::BASE32;
+use sha2::{Digest, Sha256};
+use std::convert::TryFrom;
+
+pub struct DeviceId {
+    pub id: [u8; 32],
+}
+
+impl DeviceId {
+    fn new(id: [u8; 32]) -> Self {
+        DeviceId { id }
+    }
+}
+
+impl TryFrom<&str> for DeviceId {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        if !value.is_ascii() {
+            return Err(format!(
+                "Invalid string provided, only ASCII characters allowed"
+            ));
+        }
+
+        let value = value
+            .to_uppercase()
+            // remove chunks
+            .replace("-", "")
+            .replace(" ", "")
+            // replace possible typos
+            .replace("0", "O")
+            .replace("1", "I")
+            .replace("8", "B");
+        let value = unluhnify(&value)?;
+        let dec = BASE32
+            .decode((value + "====").as_bytes())
+            .map_err(|x| x.to_string())?;
+
+        let mut id: [u8; 32] = Default::default();
+        id[..].clone_from_slice(&dec[..]);
+        Ok(DeviceId { id })
+    }
+}
+
+fn unluhnify(s: &str) -> Result<String, String> {
+    if s.len() != 56 {
+        return Err(format!("{}: unsupported string length {}", s, s.len()));
+    }
+
+    let mut res: [char; 52] = ['0'; 52];
+
+    let s: Vec<char> = s.chars().collect();
+
+    for i in 0..4 {
+        let p = &s[i * (13 + 1)..(i + 1) * (13 + 1) - 1];
+        res[i * 13..(i + 1) * 13].clone_from_slice(&p);
+        let l = luhn32(p)?;
+        let check_pos = (i + 1) * 14 - 1;
+        if s[check_pos] != l {
+            return Err(format!(
+                "Incorrect check digit at position {}. Was {}, expected {}.",
+                check_pos, s[check_pos], l
+            ));
+        }
+    }
+
+    Ok(String::from_iter(res.iter()))
+
+    // res := make([]byte, 52)
+    // for i := 0; i < 4; i++ {
+    // 	p := s[i*(13+1) : (i+1)*(13+1)-1]
+    // 	copy(res[i*13:], p)
+    // 	l, err := luhn32(p)
+    // 	if err != nil {
+    // 		return "", err
+    // 	}
+    // 	if s[(i+1)*14-1] != byte(l) {
+    // 		return "", fmt.Errorf("%q: check digit incorrect", s)
+    // 	}
+    // }
+    // return string(res), nil
+}
+
+const luhnBase32: [char; 32] = [
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
+    'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '2', '3', '4', '5', '6', '7',
+];
+
+fn codepoint32(b: char) -> Result<u32, String> {
+    if 'A' <= b && b <= 'Z' {
+        Ok(u32::from(b) - u32::from('A'))
+    } else if '2' <= b && b <= '7' {
+        Ok(u32::from(b) + 26 - u32::from('2'))
+    } else {
+        Err(format!("Invalid char {} in alphabet {:?}", b, luhnBase32))
+    }
+
+    // switch {
+    // case 'A' <= b && b <= 'Z':
+    // 	return int(b - 'A')
+    // case '2' <= b && b <= '7':
+    // 	return int(b + 26 - '2')
+    // default:
+    // 	return -1
+    // }
+}
+
+// luhn32 returns a check digit for the string s, which should be composed
+// of characters from the alphabet luhnBase32.
+// Doesn't follow the actual Luhn algorithm
+// see https://forum.syncthing.net/t/v0-9-0-new-node-id-format/478/6 for more.
+fn luhn32(s: &[char]) -> Result<char, String> {
+    let mut factor = 1;
+    let mut sum = 0;
+    let n = 32;
+
+    for i in 0..s.len() {
+        let codepoint = codepoint32(s[i])?;
+        let mut addend = factor * codepoint;
+        factor = if factor == 2 { 1 } else { 2 };
+        addend = (addend / n) + (addend % n);
+        sum += addend;
+    }
+    let remainder = sum % n;
+    let checkCodepoint = usize::try_from((n - remainder) % n).map_err(|e| e.to_string())?;
+    Ok(char::from(luhnBase32[checkCodepoint]))
+}

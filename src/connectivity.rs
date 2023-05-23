@@ -1,9 +1,11 @@
 use clap::Parser;
+use data_encoding::BASE32;
 use mio::net::{TcpListener, TcpStream};
 use rustls::server::{
     AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
 };
 use rustls::{self, RootCertStore};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -26,20 +28,23 @@ pub struct ServerConfigArgs {
 
 impl Into<Arc<rustls::ServerConfig>> for ServerConfigArgs {
     fn into(self) -> Arc<rustls::ServerConfig> {
-        let client_auth = if self.auth.is_some() {
-            let roots = load_certs(self.auth.as_ref().unwrap());
-            let mut client_auth_roots = RootCertStore::empty();
-            for root in roots {
-                client_auth_roots.add(&root).unwrap();
-            }
-            if self.require_auth.unwrap() {
-                AllowAnyAuthenticatedClient::new(client_auth_roots).boxed()
-            } else {
-                AllowAnyAnonymousOrAuthenticatedClient::new(client_auth_roots).boxed()
-            }
-        } else {
-            NoClientAuth::boxed()
-        };
+        // let client_auth = if self.auth.is_some() {
+        //     let roots = load_certs(self.auth.as_ref().unwrap());
+        //     let mut client_auth_roots = RootCertStore::empty();
+        //     for root in roots {
+        //         client_auth_roots.add(&root).unwrap();
+        //     }
+        //     if self.require_auth.unwrap() {
+        //         AllowAnyAuthenticatedClient::new(client_auth_roots).boxed()
+        //     } else {
+        //         AllowAnyAnonymousOrAuthenticatedClient::new(client_auth_roots).boxed()
+        //     }
+        // } else {
+        //     NoClientAuth::boxed()
+        // };
+        let client_auth =
+            // AllowAnyAnonymousOrAuthenticatedClient::new(RootCertStore::empty()).boxed();
+            NoClientAuth::boxed();
 
         let suites = if !self.suite.is_empty() {
             lookup_suites(&self.suite)
@@ -218,6 +223,25 @@ impl TlsServer {
 
                     let tls_conn =
                         rustls::ServerConnection::new(Arc::clone(&self.tls_config)).unwrap();
+
+                    let client_certs = tls_conn.peer_certificates();
+                    if let Some(client_cert) = client_certs.and_then(|x| x.get(0)) {
+                        let mut hasher = Sha256::new();
+
+                        // write input message
+                        hasher.update(&client_cert);
+
+                        // read hash digest and consume hasher
+                        let result = hasher.finalize();
+
+                        debug!("client id {:?}", BASE32.encode(&result));
+                    } else {
+                        warn!("Client did not provide any certificate.");
+                        // return Err(io::Error::new(
+                        //     io::ErrorKind::Other,
+                        //     format!("Client did not provide any certificate."),
+                        // ));
+                    };
 
                     let token = mio::Token(self.next_id);
                     self.next_id += 1;
