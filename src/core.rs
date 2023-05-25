@@ -235,7 +235,9 @@ fn decode_message(buf: &[u8]) {
                 .try_into()
                 .unwrap();
         match syncthing::MessageType::from_i32(header.r#type).unwrap() {
-            syncthing::MessageType::ClusterConfig => {}
+            syncthing::MessageType::ClusterConfig => {
+                handle_cluster_config(&buf[message_start..], message_byte_len);
+            }
             syncthing::MessageType::Index => {}
             syncthing::MessageType::IndexUpdate => {}
             syncthing::MessageType::Request => {}
@@ -252,9 +254,29 @@ fn decode_message(buf: &[u8]) {
         debug!("Received empty message");
     }
 }
+fn handle_cluster_config(buf: &[u8], message_byte_len: usize) {
+    debug!("Received Cluster Config");
+    if message_byte_len > 0 {
+        let decompressed_size: usize = u32::from_be_bytes(buf[..4].try_into().unwrap())
+            .try_into()
+            .unwrap();
+        debug!("decompressed_size {}", decompressed_size);
+        let decompressed_cluster_config =
+            lz4_flex::decompress(&buf[4..], decompressed_size).unwrap();
+
+        match syncthing::ClusterConfig::decode(&*decompressed_cluster_config) {
+            Ok(cluster_config) => {
+                debug!("{:?}", cluster_config)
+            }
+            Err(e) => {
+                error!("Error while decoding {:?}", e)
+            }
+        }
+    }
+}
 
 fn handle_ping(buf: &[u8], message_byte_len: usize) {
-    debug!("Received Ping len: {}", message_byte_len);
+    debug!("Received Ping len");
     if message_byte_len > 0 {
         syncthing::Ping::decode(&buf[..message_byte_len]).unwrap();
     }

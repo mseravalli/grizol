@@ -65,20 +65,6 @@ fn unluhnify(s: &str) -> Result<String, String> {
     }
 
     Ok(String::from_iter(res.iter()))
-
-    // res := make([]byte, 52)
-    // for i := 0; i < 4; i++ {
-    // 	p := s[i*(13+1) : (i+1)*(13+1)-1]
-    // 	copy(res[i*13:], p)
-    // 	l, err := luhn32(p)
-    // 	if err != nil {
-    // 		return "", err
-    // 	}
-    // 	if s[(i+1)*14-1] != byte(l) {
-    // 		return "", fmt.Errorf("%q: check digit incorrect", s)
-    // 	}
-    // }
-    // return string(res), nil
 }
 
 const luhnBase32: [char; 32] = [
@@ -87,6 +73,7 @@ const luhnBase32: [char; 32] = [
 ];
 
 fn codepoint32(b: char) -> Result<u32, String> {
+    // TODO: see if we can use match here instead
     if 'A' <= b && b <= 'Z' {
         Ok(u32::from(b) - u32::from('A'))
     } else if '2' <= b && b <= '7' {
@@ -94,15 +81,6 @@ fn codepoint32(b: char) -> Result<u32, String> {
     } else {
         Err(format!("Invalid char {} in alphabet {:?}", b, luhnBase32))
     }
-
-    // switch {
-    // case 'A' <= b && b <= 'Z':
-    // 	return int(b - 'A')
-    // case '2' <= b && b <= '7':
-    // 	return int(b + 26 - '2')
-    // default:
-    // 	return -1
-    // }
 }
 
 // luhn32 returns a check digit for the string s, which should be composed

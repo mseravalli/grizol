@@ -1,10 +1,13 @@
+use crate::rustls::Certificate;
 use clap::Parser;
 use data_encoding::BASE32;
 use mio::net::{TcpListener, TcpStream};
 use rustls::server::{
-    AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, NoClientAuth,
+    AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, ClientCertVerified,
+    ClientCertVerifier, NoClientAuth,
 };
-use rustls::{self, RootCertStore};
+use rustls::DistinguishedName;
+use rustls::{self, Error, RootCertStore, ServerConnection};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
@@ -12,6 +15,39 @@ use std::io;
 use std::io::{BufReader, Read, Write};
 use std::net;
 use std::sync::Arc;
+use std::time::SystemTime;
+
+struct PresharedAuth {
+    distinguished_names: Vec<DistinguishedName>,
+}
+
+impl PresharedAuth {
+    #[inline(always)]
+    fn boxed() -> Arc<dyn ClientCertVerifier> {
+        // This function is needed because `ClientCertVerifier` is only reachable if the
+        // `dangerous_configuration` feature is enabled, which makes coercing hard to outside users
+        Arc::new(Self {
+            distinguished_names: Default::default(),
+        })
+    }
+}
+
+impl ClientCertVerifier for PresharedAuth {
+    fn client_auth_root_subjects(&self) -> &[DistinguishedName] {
+        debug!("getting the distinguished names");
+        &self.distinguished_names
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &Certificate,
+        intermediates: &[Certificate],
+        now: SystemTime,
+    ) -> Result<ClientCertVerified, Error> {
+        debug!("verifying the certificate");
+        Ok(ClientCertVerified::assertion())
+    }
+}
 
 pub struct ServerConfigArgs {
     pub auth: Option<String>,
@@ -44,7 +80,7 @@ impl Into<Arc<rustls::ServerConfig>> for ServerConfigArgs {
         // };
         let client_auth =
             // AllowAnyAnonymousOrAuthenticatedClient::new(RootCertStore::empty()).boxed();
-            NoClientAuth::boxed();
+        PresharedAuth::boxed();
 
         let suites = if !self.suite.is_empty() {
             lookup_suites(&self.suite)
@@ -179,6 +215,24 @@ fn load_ocsp(filename: &Option<String>) -> Vec<u8> {
     ret
 }
 
+fn check_client_certs(tls_conn: &ServerConnection) {
+    debug!("Checking client cert");
+    let client_certs = tls_conn.peer_certificates();
+    if let Some(client_cert) = client_certs.and_then(|x| x.get(0)) {
+        let mut hasher = Sha256::new();
+
+        // write input message
+        hasher.update(&client_cert);
+
+        // read hash digest and consume hasher
+        let result = hasher.finalize();
+
+        debug!("client id {:?}", BASE32.encode(&result));
+    } else {
+        warn!("Client did not provide any certificate.");
+    };
+}
+
 /// This binds together a TCP listening socket, some outstanding
 /// connections, and a TLS server configuration.
 pub struct TlsServer {
@@ -223,25 +277,7 @@ impl TlsServer {
 
                     let tls_conn =
                         rustls::ServerConnection::new(Arc::clone(&self.tls_config)).unwrap();
-
-                    let client_certs = tls_conn.peer_certificates();
-                    if let Some(client_cert) = client_certs.and_then(|x| x.get(0)) {
-                        let mut hasher = Sha256::new();
-
-                        // write input message
-                        hasher.update(&client_cert);
-
-                        // read hash digest and consume hasher
-                        let result = hasher.finalize();
-
-                        debug!("client id {:?}", BASE32.encode(&result));
-                    } else {
-                        warn!("Client did not provide any certificate.");
-                        // return Err(io::Error::new(
-                        //     io::ErrorKind::Other,
-                        //     format!("Client did not provide any certificate."),
-                        // ));
-                    };
+                    check_client_certs(&tls_conn);
 
                     let token = mio::Token(self.next_id);
                     self.next_id += 1;
@@ -276,11 +312,12 @@ impl TlsServer {
         let token = event.token();
 
         if self.connections.contains_key(&token) {
-            let res = self
-                .connections
-                .get_mut(&token)
-                .unwrap()
-                .read_event(registry, event);
+            let res = if let Some(connection) = self.connections.get_mut(&token) {
+                check_client_certs(&connection.tls_conn);
+                connection.read_event(registry, event)
+            } else {
+                Err(format!("Connection not found"))
+            };
 
             if self.connections[&token].is_closed() {
                 self.connections.remove(&token);
@@ -302,11 +339,11 @@ pub struct OpenConnection {
     token: mio::Token,
     closing: bool,
     closed: bool,
-    pub tls_conn: rustls::ServerConnection,
+    pub tls_conn: ServerConnection,
 }
 
 impl OpenConnection {
-    fn new(socket: TcpStream, token: mio::Token, tls_conn: rustls::ServerConnection) -> Self {
+    fn new(socket: TcpStream, token: mio::Token, tls_conn: ServerConnection) -> Self {
         Self {
             socket,
             token,
