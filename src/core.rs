@@ -248,30 +248,30 @@ fn decode_message(buf: &[u8]) {
 
     let message_start = message_byte_size_end;
 
-    let decompressed_raw_message = if let Some(syncthing::MessageCompression::Lz4) =
-        syncthing::MessageCompression::from_i32(header.compression)
+    let decompressed_raw_message = match syncthing::MessageCompression::from_i32(header.compression)
     {
-        let decompress_byte_size_start = message_start;
-        let decompress_byte_size_end = decompress_byte_size_start + 4;
-        let decompressed_byte_size: usize = u32::from_be_bytes(
-            buf[decompress_byte_size_start..decompress_byte_size_end]
-                .try_into()
-                .unwrap(),
-        )
-        .try_into()
-        .unwrap();
-        let compressed_message_start = decompress_byte_size_end;
-        Some(
-            lz4_flex::decompress(&buf[compressed_message_start..], decompressed_byte_size).unwrap(),
-        )
-    } else {
-        None
+        Some(syncthing::MessageCompression::Lz4) => {
+            let decompress_byte_size_start = message_start;
+            let decompress_byte_size_end = decompress_byte_size_start + 4;
+            let decompressed_byte_size: usize = u32::from_be_bytes(
+                buf[decompress_byte_size_start..decompress_byte_size_end]
+                    .try_into()
+                    .unwrap(),
+            )
+            .try_into()
+            .unwrap();
+            let compressed_message_start = decompress_byte_size_end;
+            Some(
+                lz4_flex::decompress(&buf[compressed_message_start..], decompressed_byte_size)
+                    .unwrap(),
+            )
+        }
+        _ => None,
     };
 
-    let raw_message = if let Some(x) = decompressed_raw_message.as_ref() {
-        x
-    } else {
-        &buf[message_start..]
+    let raw_message = match decompressed_raw_message.as_ref() {
+        Some(x) => x,
+        None => &buf[message_start..],
     };
 
     match syncthing::MessageType::from_i32(header.r#type).unwrap() {
