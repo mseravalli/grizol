@@ -1,4 +1,4 @@
-use crate::rustls::Certificate;
+use crate::device_id::DeviceId;
 use clap::Parser;
 use data_encoding::BASE32;
 use mio::net::{TcpListener, TcpStream};
@@ -6,8 +6,9 @@ use rustls::server::{
     AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, ClientCertVerified,
     ClientCertVerifier, NoClientAuth,
 };
+use rustls::Certificate;
 use rustls::DistinguishedName;
-use rustls::{self, Error, RootCertStore, ServerConnection};
+use rustls::{self, RootCertStore, ServerConnection};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
@@ -18,7 +19,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 struct PresharedAuth {
-    distinguished_names: Vec<DistinguishedName>,
+    subjects: Vec<DistinguishedName>,
 }
 
 impl PresharedAuth {
@@ -27,25 +28,57 @@ impl PresharedAuth {
         // This function is needed because `ClientCertVerifier` is only reachable if the
         // `dangerous_configuration` feature is enabled, which makes coercing hard to outside users
         Arc::new(Self {
-            distinguished_names: Default::default(),
+            subjects: Default::default(),
         })
     }
 }
 
 impl ClientCertVerifier for PresharedAuth {
-    fn client_auth_root_subjects(&self) -> &[DistinguishedName] {
-        debug!("getting the distinguished names");
-        &self.distinguished_names
+    fn offer_client_auth(&self) -> bool {
+        true
     }
+
+    fn client_auth_root_subjects(&self) -> &[DistinguishedName] {
+        &self.subjects
+    }
+
+    // fn verify_client_cert(
+    //     &self,
+    //     end_entity: &Certificate,
+    //     intermediates: &[Certificate],
+    //     now: SystemTime,
+    // ) -> Result<ClientCertVerified, Error> {
+    //     let (cert, chain, trustroots) = prepare(end_entity, intermediates, &self.roots)?;
+    //     let now = webpki::Time::try_from(now).map_err(|_| Error::FailedToGetCurrentTime)?;
+    //     cert.verify_is_valid_tls_client_cert(
+    //         SUPPORTED_SIG_ALGS,
+    //         &webpki::TlsClientTrustAnchors(&trustroots),
+    //         &chain,
+    //         now,
+    //     )
+    //     .map_err(pki_error)
+    //     .map(|_| ClientCertVerified::assertion())
+    // }
 
     fn verify_client_cert(
         &self,
         end_entity: &Certificate,
         intermediates: &[Certificate],
         now: SystemTime,
-    ) -> Result<ClientCertVerified, Error> {
+    ) -> Result<ClientCertVerified, rustls::Error> {
         debug!("verifying the certificate");
-        Ok(ClientCertVerified::assertion())
+        let client_id = DeviceId::from(end_entity);
+        let control_client_id =
+            // FIXME: this is BAD
+            DeviceId::try_from("64ZCWTG-22LRVWS-XGRKFV2-OCKORKB-KXPOXIP-ZJRQVS2-5GCIRLH-YWEBFA5")
+                .map_err(|e| rustls::Error::General(e))?;
+        if client_id == control_client_id {
+            Ok(ClientCertVerified::assertion())
+        } else {
+            Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::InvalidPurpose,
+            ))
+        }
     }
 }
 

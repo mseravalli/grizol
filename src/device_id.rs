@@ -1,7 +1,10 @@
 use data_encoding::BASE32;
 use sha2::{Digest, Sha256};
+use std::convert::From;
+use std::convert::Into;
 use std::convert::TryFrom;
 
+#[derive(PartialEq, Eq)]
 pub struct DeviceId {
     pub id: [u8; 32],
 }
@@ -39,6 +42,32 @@ impl TryFrom<&str> for DeviceId {
         let mut id: [u8; 32] = Default::default();
         id[..].clone_from_slice(&dec[..]);
         Ok(DeviceId { id })
+    }
+}
+
+impl From<&rustls::Certificate> for DeviceId {
+    fn from(cert: &rustls::Certificate) -> Self {
+        let mut hasher = Sha256::new();
+
+        hasher.update(&cert.0);
+
+        let id: [u8; 32] = hasher.finalize().into();
+
+        debug!("My id: {:?}", BASE32.encode(&id));
+
+        DeviceId { id }
+    }
+}
+
+impl Into<Vec<u8>> for DeviceId {
+    fn into(self) -> Vec<u8> {
+        self.id.into()
+    }
+}
+
+impl Into<[u8; 32]> for DeviceId {
+    fn into(self) -> [u8; 32] {
+        self.id
     }
 }
 

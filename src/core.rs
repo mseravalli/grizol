@@ -138,12 +138,11 @@ impl BepProcessor {
         };
 
         let client_device = syncthing::Device {
-            id: (DeviceId::try_from(
+            id: DeviceId::try_from(
                 "64ZCWTG-22LRVWS-XGRKFV2-OCKORKB-KXPOXIP-ZJRQVS2-5GCIRLH-YWEBFA5",
             )
             .unwrap()
-            .id)
-                .into(),
+            .into(),
             name: format!("syncthing"),
             addresses: vec![format!("127.0.0.1:220000")],
             compression: syncthing::Compression::Never.into(),
@@ -262,6 +261,7 @@ fn handle_cluster_config(buf: &[u8], message_byte_len: usize) {
             .unwrap();
         debug!("decompressed_size {}", decompressed_size);
         let decompressed_cluster_config =
+            // FIXME: use this for all messages put it directly in decode message
             lz4_flex::decompress(&buf[4..], decompressed_size).unwrap();
 
         match syncthing::ClusterConfig::decode(&*decompressed_cluster_config) {

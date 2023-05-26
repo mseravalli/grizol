@@ -117,6 +117,7 @@ fn clean_finished_threads(clients_data: &mut HashMap<mio::Token, ClientData>, po
     }
 }
 
+// FIXME: remove in favor or DeviceId::from
 fn device_id_from_cert(cert_path: &str) -> [u8; 32] {
     let certfile = fs::File::open(cert_path).expect("cannot open certificate file");
     let mut reader = BufReader::new(certfile);
