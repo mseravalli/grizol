@@ -88,8 +88,8 @@ impl BepProcessor {
     }
 
     fn handle_hello(&mut self, buf: &[u8]) {
-        let message_byte_len: usize = u16::from_be_bytes(buf[4..6].try_into().unwrap()).into();
-        let hello = syncthing::Hello::decode(&buf[6..6 + message_byte_len]).unwrap();
+        let message_byte_size: usize = u16::from_be_bytes(buf[4..6].try_into().unwrap()).into();
+        let hello = syncthing::Hello::decode(&buf[6..6 + message_byte_size]).unwrap();
 
         debug!("Received {:?}", hello);
 
@@ -222,70 +222,89 @@ fn decode_message(buf: &[u8]) {
     // Length of the Header in bytes
     let header_byte_len: usize = u16::from_be_bytes(buf[0..2].try_into().unwrap()).into();
 
-    if header_byte_len > 0 {
-        trace!("Received Message: {:#04x?}", &buf);
-        let header_start = 2;
-        let header_end = 2 + header_byte_len;
-        let header = syncthing::Header::decode(&buf[header_start..header_end]).unwrap();
-        debug!("Received Header: {:?}", header);
-        let message_start = header_end + 4;
-        let message_byte_len: usize =
-            u32::from_be_bytes(buf[header_end..message_start].try_into().unwrap())
-                .try_into()
-                .unwrap();
-        match syncthing::MessageType::from_i32(header.r#type).unwrap() {
-            syncthing::MessageType::ClusterConfig => {
-                handle_cluster_config(&buf[message_start..], message_byte_len);
-            }
-            syncthing::MessageType::Index => {}
-            syncthing::MessageType::IndexUpdate => {}
-            syncthing::MessageType::Request => {}
-            syncthing::MessageType::Response => {}
-            syncthing::MessageType::DownloadProgress => {}
-            syncthing::MessageType::Ping => {
-                handle_ping(&buf[message_start..], message_byte_len);
-            }
-            syncthing::MessageType::Close => {
-                handle_close(&buf[message_start..], message_byte_len);
-            }
-        }
-    } else {
+    if header_byte_len == 0 {
         debug!("Received empty message");
+        return;
+    }
+
+    trace!("Received Message: {:#04x?}", &buf);
+    let header_start = 2;
+    let header_end = header_start + header_byte_len;
+    let header = syncthing::Header::decode(&buf[header_start..header_end]).unwrap();
+    debug!("Received Header: {:?}", header);
+    let message_byte_size_start = header_end;
+    let message_byte_size_end = message_byte_size_start + 4;
+    let message_byte_size: usize = u32::from_be_bytes(
+        buf[message_byte_size_start..message_byte_size_end]
+            .try_into()
+            .unwrap(),
+    )
+    .try_into()
+    .unwrap();
+
+    if message_byte_size == 0 {
+        return;
+    }
+
+    let message_start = message_byte_size_end;
+
+    let decompressed_raw_message = if let Some(syncthing::MessageCompression::Lz4) =
+        syncthing::MessageCompression::from_i32(header.compression)
+    {
+        let decompress_byte_size_start = message_start;
+        let decompress_byte_size_end = decompress_byte_size_start + 4;
+        let decompressed_byte_size: usize = u32::from_be_bytes(
+            buf[decompress_byte_size_start..decompress_byte_size_end]
+                .try_into()
+                .unwrap(),
+        )
+        .try_into()
+        .unwrap();
+        let compressed_message_start = decompress_byte_size_end;
+        Some(
+            lz4_flex::decompress(&buf[compressed_message_start..], decompressed_byte_size).unwrap(),
+        )
+    } else {
+        None
+    };
+
+    let raw_message = if let Some(x) = decompressed_raw_message.as_ref() {
+        x
+    } else {
+        &buf[message_start..]
+    };
+
+    match syncthing::MessageType::from_i32(header.r#type).unwrap() {
+        syncthing::MessageType::ClusterConfig => handle_cluster_config(raw_message),
+        syncthing::MessageType::Index => {}
+        syncthing::MessageType::IndexUpdate => {}
+        syncthing::MessageType::Request => {}
+        syncthing::MessageType::Response => {}
+        syncthing::MessageType::DownloadProgress => {}
+        syncthing::MessageType::Ping => handle_ping(raw_message),
+        syncthing::MessageType::Close => handle_close(raw_message),
     }
 }
-fn handle_cluster_config(buf: &[u8], message_byte_len: usize) {
+fn handle_cluster_config(buf: &[u8]) {
     debug!("Received Cluster Config");
-    if message_byte_len > 0 {
-        let decompressed_size: usize = u32::from_be_bytes(buf[..4].try_into().unwrap())
-            .try_into()
-            .unwrap();
-        debug!("decompressed_size {}", decompressed_size);
-        let decompressed_cluster_config =
-            // FIXME: use this for all messages put it directly in decode message
-            lz4_flex::decompress(&buf[4..], decompressed_size).unwrap();
 
-        match syncthing::ClusterConfig::decode(&*decompressed_cluster_config) {
-            Ok(cluster_config) => {
-                debug!("{:?}", cluster_config)
-            }
-            Err(e) => {
-                error!("Error while decoding {:?}", e)
-            }
+    match syncthing::ClusterConfig::decode(buf) {
+        Ok(cluster_config) => {
+            debug!("{:?}", cluster_config)
+        }
+        Err(e) => {
+            error!("Error while decoding {:?}", e)
         }
     }
 }
 
-fn handle_ping(buf: &[u8], message_byte_len: usize) {
+fn handle_ping(buf: &[u8]) {
     debug!("Received Ping len");
-    if message_byte_len > 0 {
-        syncthing::Ping::decode(&buf[..message_byte_len]).unwrap();
-    }
+    syncthing::Ping::decode(buf).unwrap();
 }
 
-fn handle_close(buf: &[u8], message_byte_len: usize) {
+fn handle_close(buf: &[u8]) {
     debug!("Received Close");
-    if message_byte_len > 0 {
-        let close_message = syncthing::Close::decode(&buf[..message_byte_len]).unwrap();
-        debug!("{:?}", close_message);
-    }
+    let close_message = syncthing::Close::decode(buf).unwrap();
+    debug!("{:?}", close_message);
 }

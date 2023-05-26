@@ -42,31 +42,13 @@ impl ClientCertVerifier for PresharedAuth {
         &self.subjects
     }
 
-    // fn verify_client_cert(
-    //     &self,
-    //     end_entity: &Certificate,
-    //     intermediates: &[Certificate],
-    //     now: SystemTime,
-    // ) -> Result<ClientCertVerified, Error> {
-    //     let (cert, chain, trustroots) = prepare(end_entity, intermediates, &self.roots)?;
-    //     let now = webpki::Time::try_from(now).map_err(|_| Error::FailedToGetCurrentTime)?;
-    //     cert.verify_is_valid_tls_client_cert(
-    //         SUPPORTED_SIG_ALGS,
-    //         &webpki::TlsClientTrustAnchors(&trustroots),
-    //         &chain,
-    //         now,
-    //     )
-    //     .map_err(pki_error)
-    //     .map(|_| ClientCertVerified::assertion())
-    // }
-
     fn verify_client_cert(
         &self,
         end_entity: &Certificate,
         intermediates: &[Certificate],
         now: SystemTime,
     ) -> Result<ClientCertVerified, rustls::Error> {
-        debug!("verifying the certificate");
+        trace!("verifying the certificate");
         let client_id = DeviceId::from(end_entity);
         let control_client_id =
             // FIXME: this is BAD
@@ -97,23 +79,7 @@ pub struct ServerConfigArgs {
 
 impl Into<Arc<rustls::ServerConfig>> for ServerConfigArgs {
     fn into(self) -> Arc<rustls::ServerConfig> {
-        // let client_auth = if self.auth.is_some() {
-        //     let roots = load_certs(self.auth.as_ref().unwrap());
-        //     let mut client_auth_roots = RootCertStore::empty();
-        //     for root in roots {
-        //         client_auth_roots.add(&root).unwrap();
-        //     }
-        //     if self.require_auth.unwrap() {
-        //         AllowAnyAuthenticatedClient::new(client_auth_roots).boxed()
-        //     } else {
-        //         AllowAnyAnonymousOrAuthenticatedClient::new(client_auth_roots).boxed()
-        //     }
-        // } else {
-        //     NoClientAuth::boxed()
-        // };
-        let client_auth =
-            // AllowAnyAnonymousOrAuthenticatedClient::new(RootCertStore::empty()).boxed();
-        PresharedAuth::boxed();
+        let client_auth = PresharedAuth::boxed();
 
         let suites = if !self.suite.is_empty() {
             lookup_suites(&self.suite)
