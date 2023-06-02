@@ -20,7 +20,7 @@ pub enum BepAction {
 }
 
 pub struct BepProcessor {
-    device_id: [u8; 32],
+    local_id: [u8; 32],
     connection: OpenConnection,
     receiver: Receiver<BepAction>,
     // Last meaningful message
@@ -29,12 +29,12 @@ pub struct BepProcessor {
 
 impl BepProcessor {
     pub fn new(
-        device_id: [u8; 32],
+        local_id: [u8; 32],
         connection: OpenConnection,
         receiver: Receiver<BepAction>,
     ) -> Self {
         BepProcessor {
-            device_id,
+            local_id,
             connection,
             receiver,
             last_message_sent_time: None,
@@ -95,6 +95,7 @@ impl BepProcessor {
 
         self.send_hello();
         self.send_cluster_config();
+        self.send_index();
     }
 
     fn send_hello(&mut self) {
@@ -117,19 +118,19 @@ impl BepProcessor {
     }
 
     fn send_cluster_config(&mut self) {
-        let mut header = syncthing::Header::default();
-        header.r#type = syncthing::MessageType::ClusterConfig.into();
-        header.compression = 0;
-        let header_bytes: Vec<u8> = header.encode_to_vec();
-        let header_len: u16 = header_bytes.len().try_into().unwrap();
+        let header = syncthing::Header {
+            compression: 0,
+            r#type: syncthing::MessageType::ClusterConfig.into(),
+        };
 
         let this_device = syncthing::Device {
-            id: (self.device_id).into(),
+            id: (self.local_id).into(),
             name: format!("damorire"),
             addresses: vec![format!("127.0.0.1:23456")],
             compression: syncthing::Compression::Never.into(),
             max_sequence: 0,
-            index_id: 23423534524,
+            // Delta Index Exchange is not supported yet hence index_id is zero.
+            index_id: 0,
             cert_name: String::new(),
             encryption_password_token: vec![],
             introducer: false,
@@ -147,7 +148,8 @@ impl BepProcessor {
             addresses: vec![format!("127.0.0.1:220000")],
             compression: syncthing::Compression::Never.into(),
             max_sequence: 0,
-            index_id: 2342353323423,
+            // Delta Index Exchange is not supported yet hence index_id is zero.
+            index_id: 0,
             cert_name: String::new(),
             encryption_password_token: vec![],
             introducer: false,
@@ -167,23 +169,89 @@ impl BepProcessor {
             // ..Default::default()
         };
 
-        let mut cluster_config = syncthing::ClusterConfig::default();
-        cluster_config.folders = vec![folder];
-        let cluster_config_bytes = cluster_config.encode_to_vec();
-        let cluster_config_len: u32 = cluster_config_bytes.len().try_into().unwrap();
+        let mut cluster_config = syncthing::ClusterConfig {
+            folders: vec![folder],
+        };
 
-        let message: Vec<u8> = vec![]
-            .into_iter()
-            .chain(header_len.to_be_bytes().into_iter())
-            .chain(header_bytes.into_iter())
-            .chain(cluster_config_len.to_be_bytes().into_iter())
-            .chain(cluster_config_bytes.into_iter())
-            .collect();
-
-        trace!("Outgoing cluster_config message: {:#04x?}", &message);
-
-        self.connection.write_all(&message).unwrap();
+        debug!("Sending Cluster Config");
+        send_message(header, cluster_config, &mut self.connection);
     }
+
+    fn send_index(&mut self) {
+        let header = syncthing::Header {
+            compression: 0,
+            r#type: syncthing::MessageType::Index.into(),
+        };
+
+        let blocks = vec![syncthing::BlockInfo {
+            offset: 0,
+            size: 100,
+            // This is the sha256sum of the block
+            hash: vec![
+                0xef, 0xd2, 0xc4, 0x6f, 0x61, 0xd3, 0x12, 0xc1, 0xfb, 0x88, 0x0f, 0xfc, 0x05, 0x89,
+                0x75, 0x9e, 0xff, 0x34, 0x40, 0x38, 0x64, 0xf9, 0x3d, 0x37, 0x6c, 0x7c, 0x3b, 0x7d,
+                0x81, 0x65, 0x28, 0xb5,
+            ],
+            weak_hash: 0xefd2c46f,
+        }];
+
+        let version = Some(syncthing::Vector {
+            counters: vec![syncthing::Counter { id: 0, value: 0 }],
+        });
+
+        let file_info = syncthing::FileInfo {
+            name: format!("test"),
+            r#type: syncthing::FileInfoType::File.into(),
+            size: 100,
+            modified_s: 1685736648,
+            modified_by: 1001,
+            deleted: false,
+            invalid: false,
+            no_permissions: true,
+            version,
+            sequence: 0,
+            block_size: 2 << 16,
+            blocks,
+
+            ..Default::default() // use the default for the other fields
+                                 // uint32       permissions    : ,
+                                 // int32        modified_ns    : ,
+                                 // string       symlink_target = 17;
+        };
+
+        let index = syncthing::Index {
+            folder: format!("giovanni"),
+            files: vec![file_info],
+        };
+
+        debug!("Sending Index");
+        send_message(header, index, &mut self.connection);
+    }
+}
+
+// TODO: evaluate if this should be a trait
+fn send_message<T: prost::Message>(
+    header: syncthing::Header,
+    mut raw_message: T,
+    connection: &mut OpenConnection,
+) {
+    let header_bytes: Vec<u8> = header.encode_to_vec();
+    let header_len: u16 = header_bytes.len().try_into().unwrap();
+
+    let message_bytes = raw_message.encode_to_vec();
+    let message_len: u32 = message_bytes.len().try_into().unwrap();
+
+    let message: Vec<u8> = vec![]
+        .into_iter()
+        .chain(header_len.to_be_bytes().into_iter())
+        .chain(header_bytes.into_iter())
+        .chain(message_len.to_be_bytes().into_iter())
+        .chain(message_bytes.into_iter())
+        .collect();
+
+    trace!("Outgoing message: {:#04x?}", &message);
+
+    connection.write_all(&message).unwrap();
 }
 
 fn send_ping(connection: &mut OpenConnection) {
@@ -276,21 +344,48 @@ fn decode_message(buf: &[u8]) {
 
     match syncthing::MessageType::from_i32(header.r#type).unwrap() {
         syncthing::MessageType::ClusterConfig => handle_cluster_config(raw_message),
-        syncthing::MessageType::Index => {}
-        syncthing::MessageType::IndexUpdate => {}
-        syncthing::MessageType::Request => {}
+        syncthing::MessageType::Index => handle_index(raw_message),
+        syncthing::MessageType::IndexUpdate => handle_index(raw_message),
+        syncthing::MessageType::Request => handle_request(raw_message),
         syncthing::MessageType::Response => {}
         syncthing::MessageType::DownloadProgress => {}
         syncthing::MessageType::Ping => handle_ping(raw_message),
         syncthing::MessageType::Close => handle_close(raw_message),
     }
 }
+
 fn handle_cluster_config(buf: &[u8]) {
     debug!("Received Cluster Config");
 
     match syncthing::ClusterConfig::decode(buf) {
         Ok(cluster_config) => {
-            debug!("{:?}", cluster_config)
+            trace!("{:?}", cluster_config)
+        }
+        Err(e) => {
+            error!("Error while decoding {:?}", e)
+        }
+    }
+}
+
+fn handle_index(buf: &[u8]) {
+    debug!("Received Index");
+
+    match syncthing::Index::decode(buf) {
+        Ok(index) => {
+            debug!("{:?}", index)
+        }
+        Err(e) => {
+            error!("Error while decoding {:?}", e)
+        }
+    }
+}
+
+fn handle_request(buf: &[u8]) {
+    debug!("Received Request");
+
+    match syncthing::Request::decode(buf) {
+        Ok(index) => {
+            debug!("{:?}", index)
         }
         Err(e) => {
             error!("Error while decoding {:?}", e)
