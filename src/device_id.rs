@@ -86,8 +86,8 @@ fn chunkify(s: &str) -> String {
         }
 
         let chunk_end = std::cmp::min((i + 1) * 7, s.len());
-        let p = &s[i * 7..chunk_end];
-        res[i * 8..i * 8 + p.len()].copy_from_slice(p);
+        let chunk = &s[i * 7..chunk_end];
+        res[i * 8..i * 8 + chunk.len()].copy_from_slice(chunk);
     }
     String::from_iter(res.iter())
 }
