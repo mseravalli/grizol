@@ -20,7 +20,7 @@ pub enum BepAction {
 }
 
 pub struct BepProcessor {
-    local_id: [u8; 32],
+    local_id: DeviceId,
     connection: OpenConnection,
     receiver: Receiver<BepAction>,
     // Last meaningful message
@@ -29,7 +29,7 @@ pub struct BepProcessor {
 
 impl BepProcessor {
     pub fn new(
-        local_id: [u8; 32],
+        local_id: DeviceId,
         connection: OpenConnection,
         receiver: Receiver<BepAction>,
     ) -> Self {
@@ -124,7 +124,7 @@ impl BepProcessor {
         };
 
         let this_device = syncthing::Device {
-            id: (self.local_id).into(),
+            id: self.local_id.into(),
             name: format!("damorire"),
             addresses: vec![format!("127.0.0.1:23456")],
             compression: syncthing::Compression::Never.into(),
@@ -359,7 +359,7 @@ fn handle_cluster_config(buf: &[u8]) {
 
     match syncthing::ClusterConfig::decode(buf) {
         Ok(cluster_config) => {
-            trace!("{:?}", cluster_config)
+            debug!("{:#?}", cluster_config)
         }
         Err(e) => {
             error!("Error while decoding {:?}", e)

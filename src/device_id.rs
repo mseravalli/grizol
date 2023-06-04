@@ -4,15 +4,9 @@ use std::convert::From;
 use std::convert::Into;
 use std::convert::TryFrom;
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct DeviceId {
     pub id: [u8; 32],
-}
-
-impl DeviceId {
-    fn new(id: [u8; 32]) -> Self {
-        DeviceId { id }
-    }
 }
 
 impl TryFrom<&str> for DeviceId {
@@ -40,7 +34,7 @@ impl TryFrom<&str> for DeviceId {
             .map_err(|x| x.to_string())?;
 
         let mut id: [u8; 32] = Default::default();
-        id[..].clone_from_slice(&dec[..]);
+        id[..].copy_from_slice(&dec[..]);
         Ok(DeviceId { id })
     }
 }
@@ -59,6 +53,15 @@ impl From<&rustls::Certificate> for DeviceId {
     }
 }
 
+impl ToString for DeviceId {
+    fn to_string(&self) -> String {
+        let res = BASE32.encode(&self.id);
+        let res = res.trim_end_matches("=");
+        let res = luhnify(res).expect("It must always be possible to lunhify");
+        chunkify(&res)
+    }
+}
+
 impl Into<Vec<u8>> for DeviceId {
     fn into(self) -> Vec<u8> {
         self.id.into()
@@ -69,6 +72,39 @@ impl Into<[u8; 32]> for DeviceId {
     fn into(self) -> [u8; 32] {
         self.id
     }
+}
+
+fn chunkify(s: &str) -> String {
+    let chunks = s.len() / 7;
+
+    let s: Vec<char> = s.chars().collect();
+    let mut res: Vec<char> = vec!['0'; chunks * (7 + 1) - 1];
+
+    for i in 0..chunks {
+        if i > 0 {
+            res[i * 8 - 1] = '-';
+        }
+
+        // FIXME: extend for chunks that are not multiple of 7
+        res[i * 8..(i + 1) * 8 - 1].copy_from_slice(&s[i * 7..(i + 1) * 7]);
+    }
+    String::from_iter(res.iter())
+}
+
+fn luhnify(s: &str) -> Result<String, String> {
+    if s.len() != 52 {
+        return Err(format!("{}: unsupported string length {}", s, s.len()));
+    }
+
+    let s: Vec<char> = s.chars().collect();
+    let mut res: [char; 56] = ['0'; 56];
+    for i in 0..4 {
+        let p = &s[i * 13..(i + 1) * 13];
+        res[i * 14..(i + 1) * 14 - 1].copy_from_slice(p);
+        let l = luhn32(p)?;
+        res[(i + 1) * 14 - 1] = l;
+    }
+    Ok(String::from_iter(res.iter()))
 }
 
 fn unluhnify(s: &str) -> Result<String, String> {
@@ -82,7 +118,7 @@ fn unluhnify(s: &str) -> Result<String, String> {
 
     for i in 0..4 {
         let p = &s[i * (13 + 1)..(i + 1) * (13 + 1) - 1];
-        res[i * 13..(i + 1) * 13].clone_from_slice(&p);
+        res[i * 13..(i + 1) * 13].copy_from_slice(&p);
         let l = luhn32(p)?;
         let check_pos = (i + 1) * 14 - 1;
         if s[check_pos] != l {

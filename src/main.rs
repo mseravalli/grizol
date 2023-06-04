@@ -8,6 +8,7 @@ mod device_id;
 use crate::connectivity::ServerConfigArgs;
 use crate::connectivity::{OpenConnection, TlsServer};
 use crate::core::{BepAction, BepProcessor};
+use crate::device_id::DeviceId;
 use actix::prelude::*;
 use clap::Parser;
 use data_encoding::BASE32;
@@ -118,7 +119,7 @@ fn clean_finished_threads(clients_data: &mut HashMap<mio::Token, ClientData>, po
 }
 
 // FIXME: remove in favor or DeviceId::from
-fn device_id_from_cert(cert_path: &str) -> [u8; 32] {
+fn device_id_from_cert(cert_path: &str) -> DeviceId {
     let certfile = fs::File::open(cert_path).expect("cannot open certificate file");
     let mut reader = BufReader::new(certfile);
 
@@ -128,16 +129,10 @@ fn device_id_from_cert(cert_path: &str) -> [u8; 32] {
         .map(|v| rustls::Certificate(v.clone()))
         .collect();
 
-    let mut hasher = Sha256::new();
+    let device_id = DeviceId::from(&certs[0]);
 
-    // write input message
-    hasher.update(&certs[0].0);
-
-    // read hash digest and consume hasher
-    let result = hasher.finalize();
-
-    debug!("My id: {:?}", BASE32.encode(&result));
-    result.into()
+    debug!("My id: {}", device_id.to_string());
+    device_id
 }
 
 fn main() {
