@@ -78,15 +78,16 @@ fn chunkify(s: &str) -> String {
     let chunks = s.len() / 7;
 
     let s: Vec<char> = s.chars().collect();
-    let mut res: Vec<char> = vec!['0'; chunks * (7 + 1) - 1];
+    let mut res: Vec<char> = vec!['0'; chunks * 8 - 1];
 
     for i in 0..chunks {
         if i > 0 {
             res[i * 8 - 1] = '-';
         }
 
-        // FIXME: extend for chunks that are not multiple of 7
-        res[i * 8..(i + 1) * 8 - 1].copy_from_slice(&s[i * 7..(i + 1) * 7]);
+        let chunk_end = std::cmp::min((i + 1) * 7, s.len());
+        let p = &s[i * 7..chunk_end];
+        res[i * 8..i * 8 + p.len()].copy_from_slice(p);
     }
     String::from_iter(res.iter())
 }
