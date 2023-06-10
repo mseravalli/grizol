@@ -159,11 +159,10 @@ impl BepProcessor {
 
     fn send_hello(&mut self) {
         let mut hello = syncthing::Hello::default();
-        // TODO: use better data here
-        hello.device_name = format!("damorire");
-        // let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
-        hello.client_name = format!("mydama");
-        hello.client_version = format!("0.0.1");
+        // TODO: read name from config file
+        hello.device_name = format!("testing_client");
+        hello.client_name = env!("CARGO_PKG_NAME").to_string();
+        hello.client_version = env!("CARGO_PKG_VERSION").to_string();
 
         trace!("{:#04x?}", &hello.encode_to_vec());
 

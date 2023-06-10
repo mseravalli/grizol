@@ -4,6 +4,7 @@ extern crate log;
 mod connectivity;
 mod core;
 mod device_id;
+mod storage;
 
 use crate::connectivity::ServerConfigArgs;
 use crate::connectivity::{OpenConnection, TlsServer};
@@ -128,7 +129,6 @@ fn client_device_ids() -> HashSet<DeviceId> {
     .collect()
 }
 
-// FIXME: remove in favor or DeviceId::from
 fn device_id_from_cert(cert_path: &str) -> DeviceId {
     let certfile = fs::File::open(cert_path).expect("cannot open certificate file");
     let mut reader = BufReader::new(certfile);

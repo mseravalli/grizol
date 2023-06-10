@@ -61,7 +61,7 @@ impl ClientCertVerifier for PresharedAuth {
         if any_match {
             Ok(ClientCertVerified::assertion())
         } else {
-            error!("Device id of the client is: {}", client_id.to_string());
+            error!("Unknown client device id: {}", client_id.to_string());
             Err(rustls::Error::InvalidCertificate(
                 rustls::CertificateError::InvalidPurpose,
             ))
