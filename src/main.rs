@@ -70,6 +70,7 @@ impl Into<ServerConfigArgs> for Args {
             resumption: self.resumption,
             suite: self.suite,
             tickets: self.tickets,
+            client_device_ids: HashSet::new(),
         }
     }
 }
@@ -118,6 +119,15 @@ fn clean_finished_threads(clients_data: &mut HashMap<mio::Token, ClientData>, po
     }
 }
 
+fn client_device_ids() -> HashSet<DeviceId> {
+    vec![
+        DeviceId::try_from("ZAGEYXA-B4AYFLH-EC24QIC-Y6WANYV-OGNU7DZ-PHU6KEO-K5XV4Z5-JWF7FAS")
+            .unwrap(),
+    ]
+    .into_iter()
+    .collect()
+}
+
 // FIXME: remove in favor or DeviceId::from
 fn device_id_from_cert(cert_path: &str) -> DeviceId {
     let certfile = fs::File::open(cert_path).expect("cannot open certificate file");
@@ -145,7 +155,8 @@ fn main() {
     addr.set_port(args.port.unwrap_or(443));
     let device_id = device_id_from_cert(&args.certs);
 
-    let server_config_args: ServerConfigArgs = args.into();
+    let mut server_config_args: ServerConfigArgs = args.into();
+    server_config_args.client_device_ids = client_device_ids();
     let config = server_config_args.into();
 
     let mut listener = TcpListener::bind(addr).expect("cannot listen on port");

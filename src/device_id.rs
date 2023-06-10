@@ -4,7 +4,7 @@ use std::convert::From;
 use std::convert::Into;
 use std::convert::TryFrom;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DeviceId {
     pub id: [u8; 32],
 }
@@ -46,8 +46,6 @@ impl From<&rustls::Certificate> for DeviceId {
         hasher.update(&cert.0);
 
         let id: [u8; 32] = hasher.finalize().into();
-
-        debug!("My id: {:?}", BASE32.encode(&id));
 
         DeviceId { id }
     }

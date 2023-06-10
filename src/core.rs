@@ -7,6 +7,7 @@ pub mod syncthing {
 use crate::connectivity::OpenConnection;
 use crate::device_id::DeviceId;
 use prost::Message;
+use rand::prelude::*;
 use std::io::Write;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -14,6 +15,28 @@ use syncthing::Header;
 use syncthing::Hello;
 
 const PING_INTERVAL: Duration = Duration::from_secs(45);
+
+#[derive(Debug)]
+struct ProcessingMessage {
+    message_type: syncthing::MessageType,
+    message_byte_size: usize,
+    received_message: Vec<u8>,
+    header: syncthing::Header,
+}
+
+impl ProcessingMessage {
+    fn missing_bytes(&self) -> usize {
+        trace!(
+            "type {:?} - message_byte_size {} - received_message.len() {} ",
+            self.message_type,
+            self.message_byte_size,
+            self.received_message.len()
+        );
+        let missing_bytes = self.message_byte_size - self.received_message.len();
+        assert!(missing_bytes >= 0);
+        missing_bytes
+    }
+}
 
 pub enum BepAction {
     ReadClientMessage,
@@ -25,6 +48,7 @@ pub struct BepProcessor {
     receiver: Receiver<BepAction>,
     // Last meaningful message
     last_message_sent_time: Option<Instant>,
+    processing_message: Option<ProcessingMessage>,
 }
 
 impl BepProcessor {
@@ -38,6 +62,7 @@ impl BepProcessor {
             connection,
             receiver,
             last_message_sent_time: None,
+            processing_message: None,
         }
     }
     pub fn run(mut self) -> OpenConnection {
@@ -78,7 +103,41 @@ impl BepProcessor {
                     self.last_message_sent_time = Some(Instant::now());
                 } else {
                     trace!("plaintext read {:#04x?}", &buf);
-                    decode_message(&buf);
+
+                    if let Some(ref mut pm) = self.processing_message.as_mut() {
+                        debug!("Extending message by {}", buf.len());
+                        pm.received_message.extend_from_slice(&buf);
+                    } else {
+                        self.processing_message = extract_header(&buf).ok().map(
+                            |(header, message_byte_size, message_pos_start)| {
+                                let message_pos_end = message_pos_start + message_byte_size;
+                                let message_pos_end = std::cmp::min(message_pos_end, buf.len());
+
+                                ProcessingMessage {
+                                    message_byte_size,
+                                    message_type: syncthing::MessageType::from_i32(header.r#type)
+                                        .unwrap(),
+                                    received_message: Vec::from(
+                                        &buf[message_pos_start..message_pos_end],
+                                    ),
+                                    header,
+                                }
+                            },
+                        );
+                    }
+
+                    // FIXME: report the errors that can occur when extracting the headers
+                    if let Some(pm) = &self.processing_message {
+                        if pm.missing_bytes() > 0 {
+                            debug!("Missing bytes {:?}", pm.missing_bytes());
+                        } else {
+                            debug!("Received whole message {:?}", pm.message_type);
+                            // TODO: it should be possible to move the header as it will be removed
+                            // later.
+                            self.decode_message(pm.header.clone(), &pm.received_message.clone());
+                            self.processing_message = None;
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -128,7 +187,7 @@ impl BepProcessor {
             name: format!("damorire"),
             addresses: vec![format!("127.0.0.1:23456")],
             compression: syncthing::Compression::Never.into(),
-            max_sequence: 0,
+            max_sequence: 100,
             // Delta Index Exchange is not supported yet hence index_id is zero.
             index_id: 0,
             cert_name: String::new(),
@@ -140,14 +199,14 @@ impl BepProcessor {
 
         let client_device = syncthing::Device {
             id: DeviceId::try_from(
-                "64ZCWTG-22LRVWS-XGRKFV2-OCKORKB-KXPOXIP-ZJRQVS2-5GCIRLH-YWEBFA5",
+                "ZAGEYXA-B4AYFLH-EC24QIC-Y6WANYV-OGNU7DZ-PHU6KEO-K5XV4Z5-JWF7FAS",
             )
             .unwrap()
             .into(),
             name: format!("syncthing"),
             addresses: vec![format!("127.0.0.1:220000")],
             compression: syncthing::Compression::Never.into(),
-            max_sequence: 0,
+            max_sequence: 100,
             // Delta Index Exchange is not supported yet hence index_id is zero.
             index_id: 0,
             cert_name: String::new(),
@@ -157,9 +216,11 @@ impl BepProcessor {
             // ..Default::default()
         };
 
+        let folder_name = "test_001";
+
         let folder = syncthing::Folder {
-            id: format!("giovanni"),
-            label: format!("giovanni"),
+            id: folder_name.to_string(),
+            label: folder_name.to_string(),
             read_only: false,
             ignore_permissions: false,
             ignore_delete: true,
@@ -183,50 +244,215 @@ impl BepProcessor {
             r#type: syncthing::MessageType::Index.into(),
         };
 
-        let blocks = vec![syncthing::BlockInfo {
-            offset: 0,
-            size: 100,
-            // This is the sha256sum of the block
-            hash: vec![
-                0xef, 0xd2, 0xc4, 0x6f, 0x61, 0xd3, 0x12, 0xc1, 0xfb, 0x88, 0x0f, 0xfc, 0x05, 0x89,
-                0x75, 0x9e, 0xff, 0x34, 0x40, 0x38, 0x64, 0xf9, 0x3d, 0x37, 0x6c, 0x7c, 0x3b, 0x7d,
-                0x81, 0x65, 0x28, 0xb5,
-            ],
-            weak_hash: 0xefd2c46f,
-        }];
-
         let version = Some(syncthing::Vector {
             counters: vec![syncthing::Counter { id: 0, value: 0 }],
         });
 
-        let file_info = syncthing::FileInfo {
-            name: format!("test"),
-            r#type: syncthing::FileInfoType::File.into(),
-            size: 100,
-            modified_s: 1685736648,
-            modified_by: 1001,
-            deleted: false,
-            invalid: false,
-            no_permissions: true,
-            version,
-            sequence: 0,
-            block_size: 2 << 16,
-            blocks,
+        let mut files: Vec<syncthing::FileInfo> = Vec::new();
+        for i in 0..10 {
+            let blocks = vec![syncthing::BlockInfo {
+                offset: 0,
+                size: 10,
+                // This is the sha256sum of
+                hash: vec![
+                    0x9a, 0x89, 0xc6, 0x8c, 0x4c, 0x5e, 0x28, 0xb8, 0xc4, 0xa5, 0x56, 0x76, 0x73,
+                    0xd4, 0x62, 0xff, 0xf5, 0x15, 0xdb, 0x46, 0x11, 0x6f, 0x99, 0x00, 0x62, 0x4d,
+                    0x09, 0xc4, 0x74, 0xf5, 0x93, i,
+                ],
+                weak_hash: 0xefd2c46f,
+            }];
+            let file_info = syncthing::FileInfo {
+                name: format!("test_{}", i),
+                r#type: syncthing::FileInfoType::File.into(),
+                size: 10,
+                modified_s: 1685736648,
+                modified_by: 1001,
+                deleted: false,
+                invalid: false,
+                no_permissions: true,
+                version: version.clone(),
+                sequence: i.into(),
+                block_size: 2 << 16,
+                blocks: blocks,
 
-            ..Default::default() // use the default for the other fields
-                                 // uint32       permissions    : ,
-                                 // int32        modified_ns    : ,
-                                 // string       symlink_target = 17;
-        };
+                ..Default::default() // use the default for the other fields
+                                     // uint32       permissions    : ,
+                                     // int32        modified_ns    : ,
+                                     // string       symlink_target = 17;
+            };
+            files.push(file_info);
+        }
 
         let index = syncthing::Index {
-            folder: format!("giovanni"),
-            files: vec![file_info],
+            folder: format!("test_001"),
+            files: files,
         };
 
         debug!("Sending Index");
+        debug!("Sending Index: {:?}", index);
         send_message(header, index, &mut self.connection);
     }
+
+    // FIXME: don't use index this way, read it from self or something
+    fn send_request(&mut self, index: syncthing::Index) {
+        let header = syncthing::Header {
+            compression: 0,
+            r#type: syncthing::MessageType::Request.into(),
+        };
+
+        if index.folder.starts_with("test_") {
+            return;
+        }
+
+        for file in index.files.iter() {
+            for block in file.blocks.iter() {
+                let id = rand::random::<i32>().abs();
+                let request = syncthing::Request {
+                    id,
+                    folder: index.folder.clone(),
+                    name: file.name.clone(),
+                    offset: block.offset,
+                    size: block.size,
+                    hash: block.hash.clone(),
+                    from_temporary: false,
+                };
+                debug!("Sending Request");
+                trace!("Sending Request {:?}", request);
+                send_message(header.clone(), request, &mut self.connection);
+            }
+        }
+    }
+
+    fn send_response(&mut self, request: &syncthing::Request) {
+        let header = syncthing::Header {
+            compression: 0,
+            r#type: syncthing::MessageType::Response.into(),
+        };
+
+        let response = syncthing::Response {
+            id: request.id,
+            data: vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x00],
+            code: syncthing::ErrorCode::NoError.into(),
+        };
+        debug!("Sending Response");
+        trace!("Sending Response {:?}", response);
+        send_message(header, response, &mut self.connection);
+    }
+
+    fn decode_message(&mut self, header: syncthing::Header, buf: &[u8]) {
+        if buf.len() == 0 {
+            return;
+        }
+
+        let decompressed_raw_message =
+            match syncthing::MessageCompression::from_i32(header.compression) {
+                Some(syncthing::MessageCompression::Lz4) => {
+                    let decompress_byte_size_start = 0;
+                    let decompress_byte_size_end = decompress_byte_size_start + 4;
+                    let decompressed_byte_size: usize = u32::from_be_bytes(
+                        buf[decompress_byte_size_start..decompress_byte_size_end]
+                            .try_into()
+                            .unwrap(),
+                    )
+                    .try_into()
+                    .unwrap();
+                    let compressed_message_start = decompress_byte_size_end;
+                    Some(
+                        lz4_flex::decompress(
+                            &buf[compressed_message_start..],
+                            decompressed_byte_size,
+                        )
+                        .unwrap(),
+                    )
+                }
+                _ => None,
+            };
+
+        let raw_message = match decompressed_raw_message.as_ref() {
+            Some(x) => x,
+            None => &buf[..],
+        };
+
+        match syncthing::MessageType::from_i32(header.r#type).unwrap() {
+            syncthing::MessageType::ClusterConfig => handle_cluster_config(raw_message),
+            syncthing::MessageType::Index => self.handle_index(raw_message),
+            syncthing::MessageType::IndexUpdate => self.handle_index(raw_message),
+            syncthing::MessageType::Request => self.handle_request(raw_message),
+            syncthing::MessageType::Response => handle_response(raw_message),
+            syncthing::MessageType::DownloadProgress => {}
+            syncthing::MessageType::Ping => handle_ping(raw_message),
+            syncthing::MessageType::Close => handle_close(raw_message),
+        }
+    }
+
+    fn handle_index(&mut self, buf: &[u8]) {
+        debug!("Received Index");
+
+        match syncthing::Index::decode(buf) {
+            Ok(index) => {
+                debug!("{:?}", index);
+                self.send_request(index)
+            }
+            Err(e) => {
+                error!("Error while decoding {:?}", e);
+            }
+        }
+    }
+
+    fn handle_request(&mut self, buf: &[u8]) {
+        debug!("Received Request");
+
+        match syncthing::Request::decode(buf) {
+            Ok(request) => {
+                debug!("{:?}", request);
+                self.send_response(&request);
+            }
+            Err(e) => {
+                error!("Error while decoding {:?}", e);
+            }
+        }
+    }
+}
+
+fn extract_header(buf: &[u8]) -> Result<(syncthing::Header, usize, usize), String> {
+    if buf.len() < 2 {
+        return Err(format!("Empty Header"));
+    }
+
+    // Length of the Header in bytes
+    let header_byte_len: usize = u16::from_be_bytes(buf[0..2].try_into().unwrap()).into();
+
+    if header_byte_len == 0 {
+        debug!("Received empty message");
+        return Err(format!("Empty Message"));
+    }
+
+    trace!("Received Message: {:#04x?}", &buf);
+
+    let header_start = 2;
+    let header_end = header_start + header_byte_len;
+    let header = syncthing::Header::decode(&buf[header_start..header_end]).unwrap();
+    debug!("Received Header: {:?}", &header);
+
+    let message_byte_size_pos_start = header_end;
+    let message_byte_size_pos_end = message_byte_size_pos_start + 4;
+    let message_byte_size: usize = u32::from_be_bytes(
+        buf[message_byte_size_pos_start..message_byte_size_pos_end]
+            .try_into()
+            .unwrap(),
+    )
+    .try_into()
+    .unwrap();
+    trace!(
+        "message_len in bytes: {:#04x?}",
+        &buf[message_byte_size_pos_start..message_byte_size_pos_end]
+    );
+
+    let message_pos_start = message_byte_size_pos_end;
+
+    let res = Ok((header, message_byte_size, message_pos_start));
+    debug!("{:?}", res);
+    res
 }
 
 // TODO: evaluate if this should be a trait
@@ -282,78 +508,6 @@ fn starts_with_magic_number(buf: &[u8]) -> bool {
     buf.len() >= 4 && buf[0..4] == vec![0x2e, 0xa7, 0xd9, 0x0b]
 }
 
-fn decode_message(buf: &[u8]) {
-    if buf.len() < 2 {
-        return;
-    }
-
-    // Length of the Header in bytes
-    let header_byte_len: usize = u16::from_be_bytes(buf[0..2].try_into().unwrap()).into();
-
-    if header_byte_len == 0 {
-        debug!("Received empty message");
-        return;
-    }
-
-    trace!("Received Message: {:#04x?}", &buf);
-    let header_start = 2;
-    let header_end = header_start + header_byte_len;
-    let header = syncthing::Header::decode(&buf[header_start..header_end]).unwrap();
-    debug!("Received Header: {:?}", header);
-    let message_byte_size_start = header_end;
-    let message_byte_size_end = message_byte_size_start + 4;
-    let message_byte_size: usize = u32::from_be_bytes(
-        buf[message_byte_size_start..message_byte_size_end]
-            .try_into()
-            .unwrap(),
-    )
-    .try_into()
-    .unwrap();
-
-    if message_byte_size == 0 {
-        return;
-    }
-
-    let message_start = message_byte_size_end;
-
-    let decompressed_raw_message = match syncthing::MessageCompression::from_i32(header.compression)
-    {
-        Some(syncthing::MessageCompression::Lz4) => {
-            let decompress_byte_size_start = message_start;
-            let decompress_byte_size_end = decompress_byte_size_start + 4;
-            let decompressed_byte_size: usize = u32::from_be_bytes(
-                buf[decompress_byte_size_start..decompress_byte_size_end]
-                    .try_into()
-                    .unwrap(),
-            )
-            .try_into()
-            .unwrap();
-            let compressed_message_start = decompress_byte_size_end;
-            Some(
-                lz4_flex::decompress(&buf[compressed_message_start..], decompressed_byte_size)
-                    .unwrap(),
-            )
-        }
-        _ => None,
-    };
-
-    let raw_message = match decompressed_raw_message.as_ref() {
-        Some(x) => x,
-        None => &buf[message_start..],
-    };
-
-    match syncthing::MessageType::from_i32(header.r#type).unwrap() {
-        syncthing::MessageType::ClusterConfig => handle_cluster_config(raw_message),
-        syncthing::MessageType::Index => handle_index(raw_message),
-        syncthing::MessageType::IndexUpdate => handle_index(raw_message),
-        syncthing::MessageType::Request => handle_request(raw_message),
-        syncthing::MessageType::Response => {}
-        syncthing::MessageType::DownloadProgress => {}
-        syncthing::MessageType::Ping => handle_ping(raw_message),
-        syncthing::MessageType::Close => handle_close(raw_message),
-    }
-}
-
 fn handle_cluster_config(buf: &[u8]) {
     debug!("Received Cluster Config");
 
@@ -367,25 +521,12 @@ fn handle_cluster_config(buf: &[u8]) {
     }
 }
 
-fn handle_index(buf: &[u8]) {
-    debug!("Received Index");
+fn handle_response(buf: &[u8]) {
+    debug!("Received Response");
 
-    match syncthing::Index::decode(buf) {
-        Ok(index) => {
-            debug!("{:?}", index)
-        }
-        Err(e) => {
-            error!("Error while decoding {:?}", e)
-        }
-    }
-}
-
-fn handle_request(buf: &[u8]) {
-    debug!("Received Request");
-
-    match syncthing::Request::decode(buf) {
-        Ok(index) => {
-            debug!("{:?}", index)
+    match syncthing::Response::decode(buf) {
+        Ok(response) => {
+            trace!("{:?}", response)
         }
         Err(e) => {
             error!("Error while decoding {:?}", e)

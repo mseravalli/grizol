@@ -11,6 +11,7 @@ use rustls::DistinguishedName;
 use rustls::{self, RootCertStore, ServerConnection};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::io::{BufReader, Read, Write};
@@ -20,15 +21,17 @@ use std::time::SystemTime;
 
 struct PresharedAuth {
     subjects: Vec<DistinguishedName>,
+    client_device_ids: HashSet<DeviceId>,
 }
 
 impl PresharedAuth {
     #[inline(always)]
-    fn boxed() -> Arc<dyn ClientCertVerifier> {
+    fn boxed(client_device_ids: HashSet<DeviceId>) -> Arc<dyn ClientCertVerifier> {
         // This function is needed because `ClientCertVerifier` is only reachable if the
         // `dangerous_configuration` feature is enabled, which makes coercing hard to outside users
         Arc::new(Self {
             subjects: Default::default(),
+            client_device_ids,
         })
     }
 }
@@ -50,13 +53,15 @@ impl ClientCertVerifier for PresharedAuth {
     ) -> Result<ClientCertVerified, rustls::Error> {
         trace!("verifying the certificate");
         let client_id = DeviceId::from(end_entity);
-        let control_client_id =
-            // FIXME: this is BAD
-            DeviceId::try_from("64ZCWTG-22LRVWS-XGRKFV2-OCKORKB-KXPOXIP-ZJRQVS2-5GCIRLH-YWEBFA5")
-                .map_err(|e| rustls::Error::General(e))?;
-        if client_id == control_client_id {
+
+        let any_match = self
+            .client_device_ids
+            .iter()
+            .any(|control_client_id| &client_id == control_client_id);
+        if any_match {
             Ok(ClientCertVerified::assertion())
         } else {
+            error!("Device id of the client is: {}", client_id.to_string());
             Err(rustls::Error::InvalidCertificate(
                 rustls::CertificateError::InvalidPurpose,
             ))
@@ -75,11 +80,12 @@ pub struct ServerConfigArgs {
     pub resumption: Option<bool>,
     pub suite: Vec<String>,
     pub tickets: Option<bool>,
+    pub client_device_ids: HashSet<DeviceId>,
 }
 
 impl Into<Arc<rustls::ServerConfig>> for ServerConfigArgs {
     fn into(self) -> Arc<rustls::ServerConfig> {
-        let client_auth = PresharedAuth::boxed();
+        let client_auth = PresharedAuth::boxed(self.client_device_ids);
 
         let suites = if !self.suite.is_empty() {
             lookup_suites(&self.suite)
@@ -303,29 +309,29 @@ impl TlsServer {
         res
     }
 
-    pub fn process_event(
-        &mut self,
-        registry: &mio::Registry,
-        event: &mio::event::Event,
-    ) -> Result<Vec<u8>, String> {
-        let token = event.token();
+    // pub fn process_event(
+    //     &mut self,
+    //     registry: &mio::Registry,
+    //     event: &mio::event::Event,
+    // ) -> Result<Vec<u8>, String> {
+    //     let token = event.token();
 
-        if self.connections.contains_key(&token) {
-            let res = if let Some(connection) = self.connections.get_mut(&token) {
-                check_client_certs(&connection.tls_conn);
-                connection.read_event(registry, event)
-            } else {
-                Err(format!("Connection not found"))
-            };
+    //     if self.connections.contains_key(&token) {
+    //         let res = if let Some(connection) = self.connections.get_mut(&token) {
+    //             check_client_certs(&connection.tls_conn);
+    //             connection.read_event(registry, event)
+    //         } else {
+    //             Err(format!("Connection not found"))
+    //         };
 
-            if self.connections[&token].is_closed() {
-                self.connections.remove(&token);
-            }
-            res
-        } else {
-            Err(format!("Token {:?} not found", token))
-        }
-    }
+    //         if self.connections[&token].is_closed() {
+    //             self.connections.remove(&token);
+    //         }
+    //         res
+    //     } else {
+    //         Err(format!("Token {:?} not found", token))
+    //     }
+    // }
 }
 
 /// This is a connection which has been accepted by the server,
@@ -353,7 +359,6 @@ impl OpenConnection {
     }
 
     pub fn simplified_read(&mut self) -> Result<Vec<u8>, String> {
-        // pub fn simplified_read(&mut self, registry: &mio::Registry) -> Result<Vec<u8>, String> {
         self.do_tls_read();
         let res = self.try_plain_read();
 
@@ -370,33 +375,33 @@ impl OpenConnection {
         res
     }
 
-    /// We're a connection, and we have something to do.
-    fn read_event(
-        &mut self,
-        registry: &mio::Registry,
-        ev: &mio::event::Event,
-    ) -> Result<Vec<u8>, String> {
-        let res = if ev.is_readable() {
-            self.do_tls_read();
-            self.try_plain_read()
-        } else {
-            Err(format!("Not readable"))
-        };
+    // /// We're a connection, and we have something to do.
+    // fn read_event(
+    //     &mut self,
+    //     registry: &mio::Registry,
+    //     ev: &mio::event::Event,
+    // ) -> Result<Vec<u8>, String> {
+    //     let res = if ev.is_readable() {
+    //         self.do_tls_read();
+    //         self.try_plain_read()
+    //     } else {
+    //         Err(format!("Not readable"))
+    //     };
 
-        if ev.is_writable() {
-            self.do_tls_write_and_handle_error();
-        }
+    //     if ev.is_writable() {
+    //         self.do_tls_write_and_handle_error();
+    //     }
 
-        if self.closing {
-            let _ = self.socket.shutdown(net::Shutdown::Both);
-            self.closed = true;
-            self.deregister(registry);
-        } else {
-            self.reregister(registry);
-        }
+    //     if self.closing {
+    //         let _ = self.socket.shutdown(net::Shutdown::Both);
+    //         self.closed = true;
+    //         self.deregister(registry);
+    //     } else {
+    //         self.reregister(registry);
+    //     }
 
-        res
-    }
+    //     res
+    // }
 
     fn do_tls_read(&mut self) {
         // Read some TLS data.
@@ -435,10 +440,10 @@ impl OpenConnection {
         // Read and process all available plaintext.
         match self.tls_conn.process_new_packets() {
             Ok(io_state) => {
+                debug!("io_state {:?}", io_state);
                 if io_state.plaintext_bytes_to_read() > 0 {
-                    // debug!("bytes to read: {}", io_state.plaintext_bytes_to_read());
-                    let mut buf = Vec::new();
-                    buf.resize(io_state.plaintext_bytes_to_read(), 0u8);
+                    let mut buf: Vec<u8> = Vec::new();
+                    buf.resize(io_state.plaintext_bytes_to_read(), 0);
 
                     self.tls_conn.reader().read_exact(&mut buf).unwrap();
 
