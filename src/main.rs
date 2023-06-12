@@ -6,6 +6,10 @@ mod core;
 mod device_id;
 mod storage;
 
+mod syncthing {
+    include!(concat!(env!("OUT_DIR"), "/syncthing.rs"));
+}
+
 use crate::connectivity::ServerConfigArgs;
 use crate::connectivity::{OpenConnection, TlsServer};
 use crate::core::{BepAction, BepProcessor};
@@ -122,7 +126,7 @@ fn clean_finished_threads(clients_data: &mut HashMap<mio::Token, ClientData>, po
 
 fn client_device_ids() -> HashSet<DeviceId> {
     vec![
-        DeviceId::try_from("ZAGEYXA-B4AYFLH-EC24QIC-Y6WANYV-OGNU7DZ-PHU6KEO-K5XV4Z5-JWF7FAS")
+        DeviceId::try_from("IBR3S3A-SCETLO7-QRPOGEV-4GBVE4F-CQMV7RI-ZVAMHHT-4VNSLPW-PNV5WAI")
             .unwrap(),
     ]
     .into_iter()

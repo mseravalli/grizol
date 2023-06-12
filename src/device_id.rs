@@ -72,6 +72,12 @@ impl Into<[u8; 32]> for DeviceId {
     }
 }
 
+impl Into<u64> for &DeviceId {
+    fn into(self) -> u64 {
+        u64::from_be_bytes(self.id[0..8].try_into().unwrap()).into()
+    }
+}
+
 fn chunkify(s: &str) -> String {
     let chunks = s.len() / 7;
 

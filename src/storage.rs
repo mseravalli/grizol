@@ -1,21 +1,161 @@
+use crate::syncthing;
+use crate::DeviceId;
 use sha2::{Digest, Sha256};
+use std::fs;
 use std::fs::File;
+use std::io;
 use std::io::prelude::*;
 use std::io::BufReader;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-
-pub mod syncthing {
-    include!(concat!(env!("OUT_DIR"), "/syncthing.rs"));
-}
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::SystemTime;
 
 // TODO: verify this is a reasonable size
-const BUF_SIZE: usize = 2 << 14; // 16 KiB
+const BUF_SIZE: usize = 1 << 14; // 16 KiB
 
-pub fn hash_file_blocks(
-    path: &Path,
+fn file_type(metadata: &fs::Metadata) -> Result<syncthing::FileInfoType, io::Error> {
+    if metadata.is_dir() {
+        return Ok(syncthing::FileInfoType::Directory);
+    }
+
+    if metadata.is_file() {
+        return Ok(syncthing::FileInfoType::File);
+    }
+
+    if metadata.is_symlink() {
+        return Ok(syncthing::FileInfoType::Symlink);
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!("File type not supported"),
+    ))
+}
+
+fn modified(metadata: &fs::Metadata) -> Result<(i64, i32), io::Error> {
+    let duration_since_unix = metadata
+        .modified()?
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Cannot establish last modification time: {}", e.to_string()),
+            )
+        })?;
+    let ns = duration_since_unix.as_nanos();
+    let s = (ns / 1_000_000_000) as i64;
+    let ns_part = (ns % 1_000_000_000) as i32;
+    Ok((s, ns_part))
+}
+
+struct Database {
+    ops_clock: AtomicI64,
+}
+
+impl Database {
+    // TODO: find a better name
+    fn perform_operation(&mut self) -> i64 {
+        self.ops_clock.fetch_add(1, Ordering::SeqCst)
+    }
+}
+
+pub fn index_from_path(
+    folder_name: &str,
+    dir_path: &Path,
+    device_id: &DeviceId,
+) -> Result<syncthing::Index, io::Error> {
+    if !fs::metadata("foo.txt")?.is_dir() {
+        todo!();
+    }
+
+    let mut db = Database {
+        ops_clock: 0.into(),
+    };
+
+    let mut files: Vec<syncthing::FileInfo> = vec![];
+
+    for entry in fs::read_dir(dir_path)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            let file_info = file_info_from_path(&path, &device_id, &mut db)?;
+            files.push(file_info);
+        } else {
+            todo!();
+        }
+    }
+
+    Ok(syncthing::Index {
+        folder: folder_name.to_string(),
+        files,
+    })
+}
+
+fn file_info_from_path(
+    file_path: &Path,
+    device_id: &DeviceId,
+    db: &mut Database,
+) -> Result<syncthing::FileInfo, io::Error> {
+    let metadata = fs::metadata(file_path)?;
+
+    // FIXME: this is wrong we want the relative position of the file to the folder
+    let file_name = file_path
+        .file_name()
+        .ok_or(io::Error::new(io::ErrorKind::Other, "Path not supported"))?
+        .to_str()
+        .ok_or(io::Error::new(
+            io::ErrorKind::Other,
+            "Path is not valid UTF",
+        ))?
+        .to_string();
+    let (modified_s, modified_ns) = modified(&metadata)?;
+
+    let version = Some(syncthing::Vector {
+        counters: vec![syncthing::Counter {
+            id: device_id.into(),
+            value: 0,
+        }],
+    });
+
+    let base = syncthing::FileInfo {
+        name: file_name,
+        permissions: metadata.permissions().mode(),
+        modified_s,
+        modified_ns,
+        deleted: false,
+        invalid: false,
+        no_permissions: false,
+        version,
+        ..Default::default()
+    };
+
+    match file_type(&metadata)? {
+        syncthing::FileInfoType::File => {
+            let block_size = 1 << 24; // 16 MiB
+            Ok(syncthing::FileInfo {
+                r#type: syncthing::FileInfoType::File.into(),
+                size: metadata.len() as i64,
+                sequence: db.perform_operation(),
+                block_size,
+                blocks: blocks_from_path(file_path, block_size as usize)?,
+                ..base
+            })
+        }
+        syncthing::FileInfoType::Directory => todo!(),
+        syncthing::FileInfoType::Symlink => todo!(),
+        _ => Err(io::Error::new(
+            io::ErrorKind::Other,
+            "File type not supported",
+        )),
+    }
+}
+
+fn blocks_from_path(
+    file_path: &Path,
     block_size: usize,
-) -> Result<Vec<syncthing::BlockInfo>, std::io::Error> {
-    let file = File::open(path)?;
+) -> Result<Vec<syncthing::BlockInfo>, io::Error> {
+    let file = File::open(file_path)?;
     let mut file_reader = BufReader::new(file);
     let mut buf: [u8; BUF_SIZE] = [0; BUF_SIZE];
     let mut res: Vec<syncthing::BlockInfo> = Default::default();
@@ -30,6 +170,8 @@ pub fn hash_file_blocks(
             for i in 0..((read_data_len + block_size - 1) / block_size) {
                 let start = i * block_size;
                 let end = std::cmp::min((i + 1) * block_size, read_data_len);
+                // TODO: check performance if we have a single hasher for all blocks instead of
+                // creating a new one for each block.
                 let hasher_sha256 = Sha256::new_with_prefix(&buf[start..end]);
                 let block = syncthing::BlockInfo {
                     offset,
@@ -90,10 +232,11 @@ pub fn hash_file_blocks(
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::hash_file_blocks;
+    use crate::storage::blocks_from_path;
     use crate::storage::syncthing;
     use std::path::Path;
 
+    // TODO: use a better file path
     fn file_path() -> String {
         "/home/marco/test_000/test_1".to_string()
     }
@@ -102,8 +245,7 @@ mod tests {
         let block_size = 2 << 16; // 128 KiB
 
         let blocks: Vec<syncthing::BlockInfo> =
-            hash_file_blocks(Path::new(&file_path()), block_size).unwrap();
-        println!("{:?}", blocks);
+            blocks_from_path(Path::new(&file_path()), block_size).unwrap();
 
         let blocks_control = vec![syncthing::BlockInfo {
             offset: 0,
@@ -116,7 +258,6 @@ mod tests {
             ],
             weak_hash: 0,
         }];
-        println!("{:?}", blocks_control);
         assert!(blocks == blocks_control);
     }
 }

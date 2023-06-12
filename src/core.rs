@@ -1,14 +1,13 @@
 // Include the `syncthing` module, which is generated from syncthing.proto.
 // It is important to maintain the same structure as in the proto.
-pub mod syncthing {
-    include!(concat!(env!("OUT_DIR"), "/syncthing.rs"));
-}
-
 use crate::connectivity::OpenConnection;
 use crate::device_id::DeviceId;
+use crate::storage::index_from_path;
+use crate::syncthing;
 use prost::Message;
 use rand::prelude::*;
 use std::io::Write;
+use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 use syncthing::Header;
@@ -43,12 +42,14 @@ pub enum BepAction {
 }
 
 pub struct BepProcessor {
-    local_id: DeviceId,
     connection: OpenConnection,
     receiver: Receiver<BepAction>,
     // Last meaningful message
     last_message_sent_time: Option<Instant>,
     processing_message: Option<ProcessingMessage>,
+    // TODO: think if we should have these in a ClientState struct
+    local_id: DeviceId,
+    index: syncthing::Index,
 }
 
 impl BepProcessor {
@@ -57,12 +58,20 @@ impl BepProcessor {
         connection: OpenConnection,
         receiver: Receiver<BepAction>,
     ) -> Self {
+        let index = index_from_path(
+            "test_a",
+            Path::new("/home/marco/workspace/hic-sunt-leones/syncthing-test"),
+            &local_id,
+        )
+        .unwrap();
+
         BepProcessor {
-            local_id,
             connection,
             receiver,
             last_message_sent_time: None,
             processing_message: None,
+            local_id,
+            index,
         }
     }
     pub fn run(mut self) -> OpenConnection {
@@ -243,53 +252,9 @@ impl BepProcessor {
             r#type: syncthing::MessageType::Index.into(),
         };
 
-        let version = Some(syncthing::Vector {
-            counters: vec![syncthing::Counter { id: 0, value: 0 }],
-        });
-
-        let mut files: Vec<syncthing::FileInfo> = Vec::new();
-        for i in 0..10 {
-            let blocks = vec![syncthing::BlockInfo {
-                offset: 0,
-                size: 10,
-                // This is the sha256sum of
-                hash: vec![
-                    0x9a, 0x89, 0xc6, 0x8c, 0x4c, 0x5e, 0x28, 0xb8, 0xc4, 0xa5, 0x56, 0x76, 0x73,
-                    0xd4, 0x62, 0xff, 0xf5, 0x15, 0xdb, 0x46, 0x11, 0x6f, 0x99, 0x00, 0x62, 0x4d,
-                    0x09, 0xc4, 0x74, 0xf5, 0x93, i,
-                ],
-                weak_hash: 0xefd2c46f,
-            }];
-            let file_info = syncthing::FileInfo {
-                name: format!("test_{}", i),
-                r#type: syncthing::FileInfoType::File.into(),
-                size: 10,
-                modified_s: 1685736648,
-                modified_by: 1001,
-                deleted: false,
-                invalid: false,
-                no_permissions: true,
-                version: version.clone(),
-                sequence: i.into(),
-                block_size: 2 << 16,
-                blocks: blocks,
-
-                ..Default::default() // use the default for the other fields
-                                     // uint32       permissions    : ,
-                                     // int32        modified_ns    : ,
-                                     // string       symlink_target = 17;
-            };
-            files.push(file_info);
-        }
-
-        let index = syncthing::Index {
-            folder: format!("test_001"),
-            files: files,
-        };
-
         debug!("Sending Index");
-        debug!("Sending Index: {:?}", index);
-        send_message(header, index, &mut self.connection);
+        debug!("Sending Index: {:?}", &self.index);
+        send_message(header, self.index.clone(), &mut self.connection);
     }
 
     // FIXME: don't use index this way, read it from self or something
