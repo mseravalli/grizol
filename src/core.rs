@@ -2,6 +2,7 @@
 // It is important to maintain the same structure as in the proto.
 use crate::connectivity::OpenConnection;
 use crate::device_id::DeviceId;
+use crate::storage;
 use crate::storage::index_from_path;
 use crate::syncthing;
 use prost::Message;
@@ -295,20 +296,61 @@ impl BepProcessor {
         }
     }
 
-    fn send_response(&mut self, request: &syncthing::Request) {
+    fn send_response(&mut self, request: &syncthing::Request) -> Result<(), String> {
         let header = syncthing::Header {
             compression: 0,
             r#type: syncthing::MessageType::Response.into(),
         };
 
+        let request_folder = if request.folder == self.index.folder {
+            Ok(&request.folder)
+        } else {
+            Err(syncthing::ErrorCode::Generic)
+        };
+
+        let file = request_folder.and_then(|x| {
+            self.index
+                .files
+                .iter()
+                .find(|&x| x.name == request.name)
+                .ok_or(syncthing::ErrorCode::NoSuchFile)
+        });
+
+        let data = file.and_then(|f| {
+            let block = f
+                .blocks
+                .iter()
+                .find(|&b| {
+                    b.offset == request.offset && b.size == request.size && b.hash == request.hash
+                })
+                .ok_or(syncthing::ErrorCode::NoSuchFile);
+
+            block.and_then(|b| {
+                storage::data_from_file_block(
+                    // FIXME: track the dir somewhere else
+                    "/home/marco/workspace/hic-sunt-leones/syncthing-test",
+                    &f,
+                    &b,
+                )
+                .map_err(|e| syncthing::ErrorCode::InvalidFile)
+            })
+        });
+
+        let code: i32 = data
+            .as_ref()
+            .err()
+            .unwrap_or(&syncthing::ErrorCode::NoError)
+            .to_owned()
+            .into();
+
         let response = syncthing::Response {
             id: request.id,
-            data: vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x00],
-            code: syncthing::ErrorCode::NoError.into(),
+            data: data.unwrap_or(Vec::new()),
+            code,
         };
-        debug!("Sending Response");
-        trace!("Sending Response {:?}", response);
-        send_message(header, response, &mut self.connection);
+        // debug!("Sending Response");
+        debug!("Sending Response {:?}", response);
+        send_message(header, response, &mut self.connection)
     }
 
     fn decode_message(&mut self, header: syncthing::Header, buf: &[u8]) {
@@ -432,7 +474,7 @@ fn send_message<T: prost::Message>(
     header: syncthing::Header,
     mut raw_message: T,
     connection: &mut OpenConnection,
-) {
+) -> Result<(), String> {
     let header_bytes: Vec<u8> = header.encode_to_vec();
     let header_len: u16 = header_bytes.len().try_into().unwrap();
 
@@ -449,7 +491,7 @@ fn send_message<T: prost::Message>(
 
     trace!("Outgoing message: {:#04x?}", &message);
 
-    connection.write_all(&message).unwrap();
+    connection.write_all(&message).map_err(|e| e.to_string())
 }
 
 fn send_ping(connection: &mut OpenConnection) {

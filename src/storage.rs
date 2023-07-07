@@ -14,6 +14,23 @@ use std::time::SystemTime;
 // TODO: verify this is a reasonable size
 const BUF_SIZE: usize = 1 << 14; // 16 KiB
 
+pub fn data_from_file_block(
+    dir_path: &str,
+    file_info: &syncthing::FileInfo,
+    block_info: &syncthing::BlockInfo,
+) -> Result<Vec<u8>, String> {
+    let mut file =
+        File::open(format!("{}/{}", dir_path, &file_info.name)).map_err(|e| e.to_string())?;
+    file.seek(io::SeekFrom::Start(block_info.offset as u64))
+        .map_err(|e| e.to_string())?;
+
+    let mut data: Vec<u8> = vec![0; block_info.size as usize];
+
+    file.read_exact(&mut data[..]).map_err(|e| e.to_string())?;
+
+    Ok(data)
+}
+
 fn file_type(metadata: &fs::Metadata) -> Result<syncthing::FileInfoType, io::Error> {
     if metadata.is_dir() {
         return Ok(syncthing::FileInfoType::Directory);
