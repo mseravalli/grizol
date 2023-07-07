@@ -220,24 +220,6 @@ fn load_ocsp(filename: &Option<String>) -> Vec<u8> {
     ret
 }
 
-fn check_client_certs(tls_conn: &ServerConnection) {
-    debug!("Checking client cert");
-    let client_certs = tls_conn.peer_certificates();
-    if let Some(client_cert) = client_certs.and_then(|x| x.get(0)) {
-        let mut hasher = Sha256::new();
-
-        // write input message
-        hasher.update(&client_cert);
-
-        // read hash digest and consume hasher
-        let result = hasher.finalize();
-
-        debug!("client id {:?}", BASE32.encode(&result));
-    } else {
-        warn!("Client did not provide any certificate.");
-    };
-}
-
 /// This binds together a TCP listening socket, some outstanding
 /// connections, and a TLS server configuration.
 pub struct TlsServer {
@@ -282,7 +264,6 @@ impl TlsServer {
 
                     let tls_conn =
                         rustls::ServerConnection::new(Arc::clone(&self.tls_config)).unwrap();
-                    check_client_certs(&tls_conn);
 
                     let token = mio::Token(self.next_id);
                     self.next_id += 1;
@@ -440,7 +421,7 @@ impl OpenConnection {
         // Read and process all available plaintext.
         match self.tls_conn.process_new_packets() {
             Ok(io_state) => {
-                debug!("io_state {:?}", io_state);
+                trace!("io_state {:?}", io_state);
                 if io_state.plaintext_bytes_to_read() > 0 {
                     let mut buf: Vec<u8> = Vec::new();
                     buf.resize(io_state.plaintext_bytes_to_read(), 0);

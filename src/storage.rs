@@ -65,7 +65,7 @@ pub fn index_from_path(
     dir_path: &Path,
     device_id: &DeviceId,
 ) -> Result<syncthing::Index, io::Error> {
-    if !fs::metadata("foo.txt")?.is_dir() {
+    if !fs::metadata(dir_path)?.is_dir() {
         todo!();
     }
 

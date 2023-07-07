@@ -14,6 +14,7 @@ use syncthing::Header;
 use syncthing::Hello;
 
 const PING_INTERVAL: Duration = Duration::from_secs(45);
+const MAGIC_NUMBER: [u8; 4] = [0x2e, 0xa7, 0xd9, 0x0b];
 
 #[derive(Debug)]
 struct ProcessingMessage {
@@ -167,20 +168,27 @@ impl BepProcessor {
     }
 
     fn send_hello(&mut self) {
-        let mut hello = syncthing::Hello::default();
-        // TODO: read name from config file
-        hello.device_name = format!("testing_client");
-        hello.client_name = env!("CARGO_PKG_NAME").to_string();
-        hello.client_version = env!("CARGO_PKG_VERSION").to_string();
+        let hello = syncthing::Hello {
+            // TODO: read name from config file
+            device_name: format!("testing_client"),
+            client_name: format!("mydama"), // env!("CARGO_PKG_NAME").to_string(),
+            client_version: format!("v0.0.2"), //env!("CARGO_PKG_VERSION").to_string(),
+        };
+
+        let message_bytes = hello.encode_to_vec();
+        let message_len: u16 = message_bytes.len().try_into().unwrap();
 
         trace!("{:#04x?}", &hello.encode_to_vec());
 
         // TODO: use the right length
-        let message: Vec<u8> = vec![0x2e, 0xa7, 0xd9, 0x0b, 0x00, 0x19]
+        let message: Vec<u8> = vec![]
             .into_iter()
-            .chain(hello.encode_to_vec().into_iter())
+            .chain(MAGIC_NUMBER.into_iter())
+            .chain(message_len.to_be_bytes().into_iter())
+            .chain(message_bytes.into_iter())
             .collect();
 
+        debug!("Sending Hello");
         self.connection.write_all(&message).unwrap();
     }
 
@@ -207,7 +215,7 @@ impl BepProcessor {
 
         let client_device = syncthing::Device {
             id: DeviceId::try_from(
-                "ZAGEYXA-B4AYFLH-EC24QIC-Y6WANYV-OGNU7DZ-PHU6KEO-K5XV4Z5-JWF7FAS",
+                "IBR3S3A-SCETLO7-QRPOGEV-4GBVE4F-CQMV7RI-ZVAMHHT-4VNSLPW-PNV5WAI",
             )
             .unwrap()
             .into(),
@@ -224,7 +232,7 @@ impl BepProcessor {
             // ..Default::default()
         };
 
-        let folder_name = "test_001";
+        let folder_name = "test_a";
 
         let folder = syncthing::Folder {
             id: folder_name.to_string(),
@@ -469,7 +477,7 @@ fn send_ping(connection: &mut OpenConnection) {
 }
 
 fn starts_with_magic_number(buf: &[u8]) -> bool {
-    buf.len() >= 4 && buf[0..4] == vec![0x2e, 0xa7, 0xd9, 0x0b]
+    buf.len() >= 4 && buf[0..4] == MAGIC_NUMBER
 }
 
 fn handle_cluster_config(buf: &[u8]) {
