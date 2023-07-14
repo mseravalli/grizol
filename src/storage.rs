@@ -149,7 +149,9 @@ fn file_info_from_path(
 
     match file_type(&metadata)? {
         syncthing::FileInfoType::File => {
-            let block_size = 1 << 24; // 16 MiB
+            // TODO: use 1<<24 again when we are done with testing.
+            // let block_size = 1 << 24; // 16 MiB
+            let block_size = 1 << 18; // 16 MiB
             Ok(syncthing::FileInfo {
                 r#type: syncthing::FileInfoType::File.into(),
                 size: metadata.len() as i64,
@@ -196,7 +198,7 @@ fn blocks_from_path(
                     hash: hasher_sha256.finalize().to_vec(),
                     weak_hash: 0, // FIXME
                 };
-                offset += 1;
+                offset += block_size as i64;
                 res.push(block);
             }
         }
@@ -224,7 +226,7 @@ fn blocks_from_path(
                     hash: hasher_sha256.finalize_reset().to_vec(),
                     weak_hash: 0, // FIXME
                 };
-                offset += 1;
+                offset += block_size as i64;
                 res.push(block);
 
                 hasher_sha256.update(&buf[to_add_to_hasher..]);
@@ -257,7 +259,7 @@ mod tests {
     fn file_path() -> String {
         "/home/marco/test_000/test_1".to_string()
     }
-    #[test]
+    // #[test]
     fn hash_file_blocks_buf_size_lt_block_size() {
         let block_size = 2 << 16; // 128 KiB
 

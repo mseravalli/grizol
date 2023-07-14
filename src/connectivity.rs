@@ -483,6 +483,8 @@ impl OpenConnection {
     }
     pub fn write_all(&mut self, message: &[u8]) -> Result<(), io::Error> {
         let res = self.tls_conn.writer().write_all(message);
+        // TODO: check if we need to flush Not sure
+        // self.tls_conn.writer().flush();
         self.tls_write();
         res
     }

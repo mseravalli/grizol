@@ -66,7 +66,19 @@ impl Into<Vec<u8>> for DeviceId {
     }
 }
 
+impl Into<Vec<u8>> for &DeviceId {
+    fn into(self) -> Vec<u8> {
+        self.id.into()
+    }
+}
+
 impl Into<[u8; 32]> for DeviceId {
+    fn into(self) -> [u8; 32] {
+        self.id
+    }
+}
+
+impl Into<[u8; 32]> for &DeviceId {
     fn into(self) -> [u8; 32] {
         self.id
     }

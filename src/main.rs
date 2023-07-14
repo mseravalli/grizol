@@ -14,7 +14,6 @@ use crate::connectivity::ServerConfigArgs;
 use crate::connectivity::{OpenConnection, TlsServer};
 use crate::core::{BepAction, BepProcessor};
 use crate::device_id::DeviceId;
-use actix::prelude::*;
 use clap::Parser;
 use data_encoding::BASE32;
 use mio::net::TcpListener;
@@ -126,7 +125,7 @@ fn clean_finished_threads(clients_data: &mut HashMap<mio::Token, ClientData>, po
 
 fn client_device_ids() -> HashSet<DeviceId> {
     vec![
-        DeviceId::try_from("IBR3S3A-SCETLO7-QRPOGEV-4GBVE4F-CQMV7RI-ZVAMHHT-4VNSLPW-PNV5WAI")
+        DeviceId::try_from("P27XKDE-ZZTZXNS-BDZDV4X-SYIRALM-FDKK5FQ-4IVTONY-URENMYK-EXIFSQ3")
             .unwrap(),
     ]
     .into_iter()
@@ -160,7 +159,7 @@ fn main() {
     let device_id = device_id_from_cert(&args.certs);
 
     let mut server_config_args: ServerConfigArgs = args.into();
-    server_config_args.client_device_ids = client_device_ids();
+    server_config_args.client_device_ids = client_device_ids().clone();
     let config = server_config_args.into();
 
     let mut listener = TcpListener::bind(addr).expect("cannot listen on port");
@@ -193,7 +192,8 @@ fn main() {
                     let (sender, receiver) = channel();
 
                     let handler = thread::spawn(move || {
-                        let bep_processor = BepProcessor::new(device_id, connection, receiver);
+                        let bep_processor =
+                            BepProcessor::new(device_id, connection, receiver, client_device_ids());
                         bep_processor.run()
                     });
 
@@ -204,7 +204,7 @@ fn main() {
                         sender.send(BepAction::ReadClientMessage);
                     }
                     None => {
-                        debug!("No sender for token: {:?}", token);
+                        error!("No sender for token: {:?}", token);
                     }
                 },
             }
