@@ -282,17 +282,13 @@ fn decode_post_hello_message(im: &IncomingMessage) -> Result<CompleteMessage, Be
     trace!("Raw message to decode len {}", &raw_message.len());
     // println!("Raw message to decode {:#04x?}", &raw_message);
 
-    // TODO: simplify the code, put map_error at the end or something.
     let complete_message: CompleteMessage =
         match syncthing::MessageType::from_i32(header.r#type).unwrap() {
-            syncthing::MessageType::ClusterConfig => CompleteMessage::ClusterConfig(
-                syncthing::ClusterConfig::decode(raw_message)
-                    .map_err(|e| BepError::Generic(format!("Error: {:?}", e)))?,
-            ),
-            syncthing::MessageType::Index => CompleteMessage::Index(
-                syncthing::Index::decode(raw_message)
-                    .map_err(|e| BepError::Generic(format!("Error: {:?}", e)))?,
-            ),
+            syncthing::MessageType::ClusterConfig => syncthing::ClusterConfig::decode(raw_message)
+                .map(|m| CompleteMessage::ClusterConfig(m)),
+            syncthing::MessageType::Index => {
+                syncthing::Index::decode(raw_message).map(|m| CompleteMessage::Index(m))
+            }
             // syncthing::MessageType::IndexUpdate => self.handle_index(raw_message),
             // syncthing::MessageType::Request => self.handle_request(raw_message),
             // syncthing::MessageType::Response => handle_response(raw_message),
@@ -300,7 +296,8 @@ fn decode_post_hello_message(im: &IncomingMessage) -> Result<CompleteMessage, Be
             // syncthing::MessageType::Ping => handle_ping(raw_message),
             // syncthing::MessageType::Close => handle_close(raw_message),
             _ => todo!(),
-        };
+        }
+        .map_err(|e| BepError::Generic(format!("Error: {:?}", e)))?;
     println!("Complete message: {:?}", complete_message);
     Ok(complete_message)
 }
