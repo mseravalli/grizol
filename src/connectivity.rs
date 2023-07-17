@@ -262,8 +262,7 @@ impl TlsServer {
                 Ok((socket, addr)) => {
                     debug!("Accepting new connection from {:?}", addr);
 
-                    let tls_conn =
-                        rustls::ServerConnection::new(Arc::clone(&self.tls_config)).unwrap();
+                    let tls_conn = ServerConnection::new(Arc::clone(&self.tls_config)).unwrap();
 
                     let token = mio::Token(self.next_id);
                     self.next_id += 1;
@@ -325,7 +324,7 @@ pub struct OpenConnection {
     token: mio::Token,
     closing: bool,
     closed: bool,
-    pub tls_conn: ServerConnection,
+    tls_conn: ServerConnection,
 }
 
 impl OpenConnection {
@@ -481,11 +480,28 @@ impl OpenConnection {
     pub fn is_closed(&self) -> bool {
         self.closed
     }
-    pub fn write_all(&mut self, message: &[u8]) -> Result<(), io::Error> {
-        let res = self.tls_conn.writer().write_all(message);
-        // TODO: check if we need to flush Not sure
-        // self.tls_conn.writer().flush();
-        self.tls_write();
-        res
+
+    // TODO: check if and we need to flush
+    pub fn write_all(&mut self, message: &[u8]) -> Result<usize, io::Error> {
+        // TODO: check if another size makes more sense
+        let block = 2 << 14;
+        let mut written = 0;
+
+        for i in 0..(message.len() / block) + 1 {
+            let to_write = if message.len() > (i + 1) * block {
+                block
+            } else {
+                message.len() - (i * block)
+            };
+
+            let write_res = self
+                .tls_conn
+                .writer()
+                .write(&message[i * block..i * block + to_write]);
+            trace!("write res {:?}", write_res);
+            written += write_res.unwrap_or(0);
+            self.tls_write();
+        }
+        Ok(written)
     }
 }

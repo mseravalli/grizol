@@ -566,7 +566,7 @@ impl BepProcessor {
             Err(e) => Err(format!("Received event was {}", e)),
         };
         match res {
-            Err(e) => warn!("Reading incoming data failed with {}", e),
+            Err(e) => warn!("Encountered error when processing the data: {}", e),
             _ => {}
         }
     }
@@ -662,6 +662,7 @@ impl BepProcessor {
         debug!("Sending Hello");
         self.connection
             .write_all(&message)
+            .map(|_| ())
             .map_err(|e| e.to_string())
     }
 
@@ -860,7 +861,6 @@ fn try_parse_header(buf: &[u8]) -> Result<syncthing::Header, BepError> {
     Ok(header)
 }
 
-// TODO: evaluate if this should be a trait
 fn send_message<T: prost::Message>(
     header: syncthing::Header,
     mut raw_message: T,
@@ -872,8 +872,8 @@ fn send_message<T: prost::Message>(
     let message_bytes = raw_message.encode_to_vec();
     let message_len: u32 = message_bytes.len().try_into().unwrap();
 
-    trace!(
-        "Sending message with header len: {:?}, {:#04x?}",
+    debug!(
+        "Sending message with header len: {:?}, {:02x?}",
         header_len,
         header_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
     );
@@ -886,13 +886,42 @@ fn send_message<T: prost::Message>(
         .chain(message_bytes.into_iter())
         .collect();
 
+    debug!(
+        "Sending message with len: {:?}, {:02x?}",
+        message_len,
+        message_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
+    );
     trace!(
         // "Outgoing message: {:#04x?}",
-        "Outgoing message: {:02x?}",
+        // "Outgoing message: {:02x?}",
+        "Outgoing message: {:?}",
         &message.clone().into_iter().collect::<Vec<u8>>()
     );
 
-    connection.write_all(&message).map_err(|e| e.to_string())
+    let res = connection
+        .write_all(&message)
+        .map_err(|e| e.to_string())
+        .and_then(|written_bytes| {
+            let total_bytes_to_be_written: usize = (message_len + header_len as u32 + 2 + 4)
+                .try_into()
+                .unwrap();
+            trace!(
+                "written bytes {}, total_bytes_to_be_written {}",
+                written_bytes,
+                total_bytes_to_be_written
+            );
+            if written_bytes < total_bytes_to_be_written {
+                Err(format!(
+                    "written {} out of {} bytes",
+                    written_bytes, total_bytes_to_be_written
+                ))
+            } else {
+                Ok(())
+            }
+        });
+
+    debug!("Sending res: {:?}", res);
+    res
 }
 
 fn send_ping(connection: &mut OpenConnection) {
