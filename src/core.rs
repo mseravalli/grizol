@@ -28,21 +28,16 @@ enum BepError {
     NoIncomingMessageYet,
     // Signals that we don't have enough data to parse the header length
     ParseNotEnoughHeaderLenData,
-    // Signals that we don't have enough data to parse the message
-    ParseZeroLengthHeader,
     // Signals that we don't have enough data to parse the header
     ParseNotEnoughHeaderData,
     // The hello message does not start with the magic number
     NoMagicHello,
-    // The incoming message has some data, but the provided len is 0, so the message is empty
-    EmptyMessage,
     Generic(String),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum IncomingMessageStatus {
     Incomplete,
-    Empty,
     Complete,
 }
 
@@ -88,9 +83,6 @@ impl IncomingMessage {
             BepAuthStatus::PostHello => {
                 trace!("status: incoming message: {:02x?}", &self);
                 if self.header.is_none() {
-                    if let Err(BepError::ParseZeroLengthHeader) = try_parse_header(&self.data) {
-                        return IncomingMessageStatus::Empty;
-                    }
                     return IncomingMessageStatus::Incomplete;
                 } else {
                     if let Some(0) = self.missing_message_bytes() {
@@ -154,16 +146,7 @@ impl IncomingMessage {
         self.data.extend_from_slice(&buf);
 
         match self.auth_status {
-            BepAuthStatus::PreHello => {
-                // if self.data.len() >= HELLO_START && self.message_byte_len.is_none() {
-                //     self.message_byte_len = Some(
-                //         u16::from_be_bytes(
-                //             self.data[HELLO_LEN_START..HELLO_START].try_into().unwrap(),
-                //         )
-                //         .into(),
-                //     );
-                // }
-            }
+            BepAuthStatus::PreHello => {}
             BepAuthStatus::PostHello => {
                 if self.header.is_none() {
                     match try_parse_header(&self.data) {
@@ -175,7 +158,6 @@ impl IncomingMessage {
                             debug!("Encountered error when parsing header {:?}", e);
                         }
                     }
-                } else {
                 }
             }
         };
@@ -384,16 +366,12 @@ impl BepDataProcessor {
                     }
                     complete_message
                 }
-                Some((im, IncomingMessageStatus::Empty)) => Err(BepError::EmptyMessage),
                 _ => Err(BepError::NoIncomingMessageYet),
             };
 
             match complete_message {
                 Ok(cm) => {
                     res.push(cm);
-                    self.incoming_message = None;
-                }
-                Err(BepError::EmptyMessage) => {
                     self.incoming_message = None;
                 }
                 Err(BepError::NoIncomingMessageYet) => {
@@ -794,61 +772,60 @@ impl BepProcessor {
     }
 
     fn send_response(&mut self, request: &syncthing::Request) -> Result<(), String> {
-        Ok(())
-        // let header = syncthing::Header {
-        //     compression: 0,
-        //     r#type: syncthing::MessageType::Response.into(),
-        // };
+        let header = syncthing::Header {
+            compression: 0,
+            r#type: syncthing::MessageType::Response.into(),
+        };
 
-        // let request_folder = if request.folder == self.index.folder {
-        //     Ok(&request.folder)
-        // } else {
-        //     Err(syncthing::ErrorCode::Generic)
-        // };
+        let request_folder = if request.folder == self.index.folder {
+            Ok(&request.folder)
+        } else {
+            Err(syncthing::ErrorCode::Generic)
+        };
 
-        // let file = request_folder.and_then(|x| {
-        //     self.index
-        //         .files
-        //         .iter()
-        //         .find(|&x| x.name == request.name)
-        //         .ok_or(syncthing::ErrorCode::NoSuchFile)
-        // });
+        let file = request_folder.and_then(|x| {
+            self.index
+                .files
+                .iter()
+                .find(|&x| x.name == request.name)
+                .ok_or(syncthing::ErrorCode::NoSuchFile)
+        });
 
-        // let data = file.and_then(|f| {
-        //     let block = f
-        //         .blocks
-        //         .iter()
-        //         .find(|&b| {
-        //             b.offset == request.offset && b.size == request.size && b.hash == request.hash
-        //         })
-        //         .ok_or(syncthing::ErrorCode::NoSuchFile);
+        let data = file.and_then(|f| {
+            let block = f
+                .blocks
+                .iter()
+                .find(|&b| {
+                    b.offset == request.offset && b.size == request.size && b.hash == request.hash
+                })
+                .ok_or(syncthing::ErrorCode::NoSuchFile);
 
-        //     block.and_then(|b| {
-        //         storage::data_from_file_block(
-        //             // FIXME: track the dir somewhere else
-        //             "/home/marco/workspace/hic-sunt-leones/syncthing-test",
-        //             &f,
-        //             &b,
-        //         )
-        //         .map_err(|e| syncthing::ErrorCode::InvalidFile)
-        //     })
-        // });
+            block.and_then(|b| {
+                storage::data_from_file_block(
+                    // FIXME: track the dir somewhere else
+                    "/home/marco/workspace/hic-sunt-leones/syncthing-test",
+                    &f,
+                    &b,
+                )
+                .map_err(|e| syncthing::ErrorCode::InvalidFile)
+            })
+        });
 
-        // let code: i32 = data
-        //     .as_ref()
-        //     .err()
-        //     .unwrap_or(&syncthing::ErrorCode::NoError)
-        //     .to_owned()
-        //     .into();
+        let code: i32 = data
+            .as_ref()
+            .err()
+            .unwrap_or(&syncthing::ErrorCode::NoError)
+            .to_owned()
+            .into();
 
-        // let response = syncthing::Response {
-        //     id: request.id,
-        //     data: data.unwrap_or(Vec::new()),
-        //     code,
-        // };
-        // debug!("Sending Response");
-        // // debug!("Sending Response {:?}", response);
-        // send_message(header, response, &mut self.connection)
+        let response = syncthing::Response {
+            id: request.id,
+            data: data.unwrap_or(Vec::new()),
+            code,
+        };
+        debug!("Sending Response");
+        // debug!("Sending Response {:?}", response);
+        send_message(header, response, &mut self.connection)
     }
 
     fn handle_download_progress(&self, raw_message: &[u8]) {
@@ -895,11 +872,11 @@ fn send_message<T: prost::Message>(
     let message_bytes = raw_message.encode_to_vec();
     let message_len: u32 = message_bytes.len().try_into().unwrap();
 
-    // debug!(
-    //     "Sending message with header len: {:?}, {:#04x?}",
-    //     header_len,
-    //     header_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
-    // );
+    trace!(
+        "Sending message with header len: {:?}, {:#04x?}",
+        header_len,
+        header_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
+    );
 
     let message: Vec<u8> = vec![]
         .into_iter()
