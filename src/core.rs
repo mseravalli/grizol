@@ -168,6 +168,9 @@ impl IncomingMessage {
                 if self.header.is_none() {
                     match try_parse_header(&self.data) {
                         Ok(header) => self.header = Some(header),
+                        Err(BepError::ParseNotEnoughHeaderData) => {
+                            trace!("Not enough data to parse the header yet.");
+                        }
                         Err(e) => {
                             debug!("Encountered error when parsing header {:?}", e);
                         }
@@ -219,6 +222,12 @@ enum CompleteMessage {
     Hello(syncthing::Hello),
     ClusterConfig(syncthing::ClusterConfig),
     Index(syncthing::Index),
+    IndexUpdate(syncthing::IndexUpdate),
+    Request(syncthing::Request),
+    Response(syncthing::Response),
+    DownloadProgress(syncthing::DownloadProgress),
+    Ping(syncthing::Ping),
+    Close(syncthing::Close),
 }
 
 impl TryFrom<&IncomingMessage> for CompleteMessage {
@@ -274,31 +283,43 @@ fn decode_post_hello_message(im: &IncomingMessage) -> Result<CompleteMessage, Be
         _ => None,
     };
 
-    let raw_message = match decompressed_raw_message.as_ref() {
+    let raw_msg = match decompressed_raw_message.as_ref() {
         Some(x) => x,
         None => &im.data[message_start_pos..],
     };
 
-    trace!("Raw message to decode len {}", &raw_message.len());
-    // println!("Raw message to decode {:#04x?}", &raw_message);
+    trace!("Raw message to decode len {}", &raw_msg.len());
 
-    let complete_message: CompleteMessage =
-        match syncthing::MessageType::from_i32(header.r#type).unwrap() {
-            syncthing::MessageType::ClusterConfig => syncthing::ClusterConfig::decode(raw_message)
-                .map(|m| CompleteMessage::ClusterConfig(m)),
-            syncthing::MessageType::Index => {
-                syncthing::Index::decode(raw_message).map(|m| CompleteMessage::Index(m))
-            }
-            // syncthing::MessageType::IndexUpdate => self.handle_index(raw_message),
-            // syncthing::MessageType::Request => self.handle_request(raw_message),
-            // syncthing::MessageType::Response => handle_response(raw_message),
-            // syncthing::MessageType::DownloadProgress => self.handle_download_progress(raw_message),
-            // syncthing::MessageType::Ping => handle_ping(raw_message),
-            // syncthing::MessageType::Close => handle_close(raw_message),
-            _ => todo!(),
+    let complete_message: CompleteMessage = match syncthing::MessageType::from_i32(header.r#type)
+        .unwrap()
+    {
+        syncthing::MessageType::ClusterConfig => {
+            syncthing::ClusterConfig::decode(raw_msg).map(|m| CompleteMessage::ClusterConfig(m))
         }
-        .map_err(|e| BepError::Generic(format!("Error: {:?}", e)))?;
-    println!("Complete message: {:?}", complete_message);
+        syncthing::MessageType::Index => {
+            syncthing::Index::decode(raw_msg).map(|m| CompleteMessage::Index(m))
+        }
+        syncthing::MessageType::IndexUpdate => {
+            syncthing::IndexUpdate::decode(raw_msg).map(|m| CompleteMessage::IndexUpdate(m))
+        }
+        syncthing::MessageType::Request => {
+            syncthing::Request::decode(raw_msg).map(|m| CompleteMessage::Request(m))
+        }
+        syncthing::MessageType::Response => {
+            syncthing::Response::decode(raw_msg).map(|m| CompleteMessage::Response(m))
+        }
+        syncthing::MessageType::DownloadProgress => syncthing::DownloadProgress::decode(raw_msg)
+            .map(|m| CompleteMessage::DownloadProgress(m)),
+        syncthing::MessageType::Ping => {
+            syncthing::Ping::decode(raw_msg).map(|m| CompleteMessage::Ping(m))
+        }
+        syncthing::MessageType::Close => {
+            syncthing::Close::decode(raw_msg).map(|m| CompleteMessage::Close(m))
+        }
+    }
+    .map_err(|e| BepError::Generic(format!("Error: {:?}", e)))?;
+
+    trace!("Post auth message: {:?}", complete_message);
     Ok(complete_message)
 }
 
@@ -559,7 +580,7 @@ impl BepProcessor {
     fn read_incoming_data(&mut self) {
         let res = match self.connection.simplified_read() {
             Ok(buf) => {
-                debug!("plaintext read {:#04x?}", &buf);
+                trace!("plaintext read {:#04x?}", &buf);
                 self.data_processor
                     .process_incoming_data(&buf)
                     .map(|cm| self.handle_complete_messages(cm))
@@ -576,13 +597,70 @@ impl BepProcessor {
         &mut self,
         complete_messages: Vec<CompleteMessage>,
     ) -> Result<(), String> {
-        todo!();
-        // self.send_hello();
-        // self.send_cluster_config();
-        // self.send_index();
+        let res: Result<Vec<()>, String> = complete_messages
+            .iter()
+            .map(|complete_message| match complete_message {
+                CompleteMessage::Hello(hello) => self.handle_hello(&hello),
+                CompleteMessage::ClusterConfig(cluster_config) => {
+                    self.handle_cluster_config(&cluster_config)
+                }
+                CompleteMessage::Index(index) => self.handle_index(&index),
+                CompleteMessage::IndexUpdate(index_update) => todo!(),
+                CompleteMessage::Request(request) => self.handle_request(&request),
+                CompleteMessage::Response(response) => self.handle_response(&response),
+                CompleteMessage::DownloadProgress(download_progress) => todo!(),
+                CompleteMessage::Ping(ping) => self.handle_ping(&ping),
+                CompleteMessage::Close(close) => self.handle_close(&close),
+            })
+            .collect();
+
+        res.map(|_| ())
     }
 
-    fn send_hello(&mut self) {
+    fn handle_hello(&mut self, hello: &syncthing::Hello) -> Result<(), String> {
+        self.send_hello()
+            .and(self.send_cluster_config())
+            .and(self.send_index())
+    }
+
+    fn handle_cluster_config(
+        &mut self,
+        cluster_config: &syncthing::ClusterConfig,
+    ) -> Result<(), String> {
+        debug!("Received Cluster Config");
+        Ok(())
+    }
+
+    fn handle_index(&mut self, index: &syncthing::Index) -> Result<(), String> {
+        debug!("Received Index");
+        trace!("{:?}", index);
+        self.request_files(index)
+    }
+
+    fn handle_request(&mut self, request: &syncthing::Request) -> Result<(), String> {
+        debug!("Received Request");
+        debug!("{:?}", request);
+        self.send_response(&request)
+    }
+
+    fn handle_response(&mut self, response: &syncthing::Response) -> Result<(), String> {
+        debug!("Received Response");
+        trace!("{:?}", response);
+        Ok(())
+    }
+    fn handle_ping(&mut self, ping: &syncthing::Ping) -> Result<(), String> {
+        debug!("Received Ping");
+        trace!("{:?}", ping);
+        Ok(())
+    }
+
+    fn handle_close(&mut self, close: &syncthing::Close) -> Result<(), String> {
+        debug!("Received Close");
+        trace!("{:?}", close);
+        Ok(())
+    }
+
+    fn send_hello(&mut self) -> Result<(), String> {
         let hello = syncthing::Hello {
             // TODO: read name from config file
             device_name: format!("testing_client"),
@@ -604,10 +682,12 @@ impl BepProcessor {
             .collect();
 
         debug!("Sending Hello");
-        self.connection.write_all(&message).unwrap();
+        self.connection
+            .write_all(&message)
+            .map_err(|e| e.to_string())
     }
 
-    fn send_cluster_config(&mut self) {
+    fn send_cluster_config(&mut self) -> Result<(), String> {
         let header = syncthing::Header {
             compression: 0,
             r#type: syncthing::MessageType::ClusterConfig.into(),
@@ -664,29 +744,30 @@ impl BepProcessor {
         };
 
         debug!("Sending Cluster Config");
-        send_message(header, cluster_config, &mut self.connection);
+        send_message(header, cluster_config, &mut self.connection)
     }
 
-    fn send_index(&mut self) {
+    fn send_index(&mut self) -> Result<(), String> {
         let header = syncthing::Header {
             compression: 0,
             r#type: syncthing::MessageType::Index.into(),
         };
 
         debug!("Sending Index");
-        debug!("Sending Index: {:?}", &self.index);
-        send_message(header, self.index.clone(), &mut self.connection);
+        trace!("Sending Index: {:?}", &self.index);
+        send_message(header, self.index.clone(), &mut self.connection)
     }
 
     // FIXME: don't use index this way, read it from self or something
-    fn send_request(&mut self, index: syncthing::Index) {
+    // TODO: fix returns
+    fn request_files(&mut self, index: &syncthing::Index) -> Result<(), String> {
         let header = syncthing::Header {
             compression: 0,
             r#type: syncthing::MessageType::Request.into(),
         };
 
         if index.folder.starts_with("test_") {
-            return;
+            return Ok(());
         }
 
         for file in index.files.iter() {
@@ -709,6 +790,7 @@ impl BepProcessor {
                 send_message(header.clone(), request, &mut self.connection);
             }
         }
+        Ok(())
     }
 
     fn send_response(&mut self, request: &syncthing::Request) -> Result<(), String> {
@@ -769,80 +851,6 @@ impl BepProcessor {
         // send_message(header, response, &mut self.connection)
     }
 
-    fn decode_message(&mut self, header: syncthing::Header, buf: &[u8]) {
-        if buf.len() == 0 {
-            return;
-        }
-
-        let decompressed_raw_message =
-            match syncthing::MessageCompression::from_i32(header.compression) {
-                Some(syncthing::MessageCompression::Lz4) => {
-                    let decompress_byte_size_start = 0;
-                    let decompress_byte_size_end = decompress_byte_size_start + 4;
-                    let decompressed_byte_size: usize = u32::from_be_bytes(
-                        buf[decompress_byte_size_start..decompress_byte_size_end]
-                            .try_into()
-                            .unwrap(),
-                    )
-                    .try_into()
-                    .unwrap();
-                    let compressed_message_start = decompress_byte_size_end;
-                    Some(
-                        lz4_flex::decompress(
-                            &buf[compressed_message_start..],
-                            decompressed_byte_size,
-                        )
-                        .unwrap(),
-                    )
-                }
-                _ => None,
-            };
-
-        let raw_message = match decompressed_raw_message.as_ref() {
-            Some(x) => x,
-            None => &buf[..],
-        };
-
-        match syncthing::MessageType::from_i32(header.r#type).unwrap() {
-            syncthing::MessageType::ClusterConfig => handle_cluster_config(raw_message),
-            syncthing::MessageType::Index => self.handle_index(raw_message),
-            syncthing::MessageType::IndexUpdate => self.handle_index(raw_message),
-            syncthing::MessageType::Request => self.handle_request(raw_message),
-            syncthing::MessageType::Response => handle_response(raw_message),
-            syncthing::MessageType::DownloadProgress => self.handle_download_progress(raw_message),
-            syncthing::MessageType::Ping => handle_ping(raw_message),
-            syncthing::MessageType::Close => handle_close(raw_message),
-        }
-    }
-
-    fn handle_index(&mut self, buf: &[u8]) {
-        debug!("Received Index");
-
-        match syncthing::Index::decode(buf) {
-            Ok(index) => {
-                debug!("{:?}", index);
-                self.send_request(index)
-            }
-            Err(e) => {
-                error!("Error while decoding {:?}", e);
-            }
-        }
-    }
-
-    fn handle_request(&mut self, buf: &[u8]) {
-        debug!("Received Request");
-
-        match syncthing::Request::decode(buf) {
-            Ok(request) => {
-                debug!("{:?}", request);
-                self.send_response(&request);
-            }
-            Err(e) => {
-                error!("Error while decoding {:?}", e);
-            }
-        }
-    }
-
     fn handle_download_progress(&self, raw_message: &[u8]) {
         debug!("Received DownloadProgress");
 
@@ -871,7 +879,7 @@ fn try_parse_header(buf: &[u8]) -> Result<syncthing::Header, BepError> {
     }
 
     let header = syncthing::Header::decode(&buf[HEADER_START..header_end]).unwrap();
-    debug!("Received Header: {:?}", &header);
+    trace!("Received Header: {:?}", &header);
     Ok(header)
 }
 
@@ -901,7 +909,7 @@ fn send_message<T: prost::Message>(
         .chain(message_bytes.into_iter())
         .collect();
 
-    debug!(
+    trace!(
         // "Outgoing message: {:#04x?}",
         "Outgoing message: {:02x?}",
         &message.clone().into_iter().collect::<Vec<u8>>()
@@ -932,43 +940,6 @@ fn send_ping(connection: &mut OpenConnection) {
     debug!("Outgoing ping message: {:?}", &message);
 
     connection.write_all(&message).unwrap();
-}
-
-fn handle_cluster_config(buf: &[u8]) {
-    debug!("Received Cluster Config");
-
-    match syncthing::ClusterConfig::decode(buf) {
-        Ok(cluster_config) => {
-            debug!("{:#?}", cluster_config)
-        }
-        Err(e) => {
-            error!("Error while decoding {:?}", e)
-        }
-    }
-}
-
-fn handle_response(buf: &[u8]) {
-    debug!("Received Response");
-
-    match syncthing::Response::decode(buf) {
-        Ok(response) => {
-            debug!("{:?}", response)
-        }
-        Err(e) => {
-            error!("Error while decoding {:?}", e)
-        }
-    }
-}
-
-fn handle_ping(buf: &[u8]) {
-    debug!("Received Ping len");
-    syncthing::Ping::decode(buf).unwrap();
-}
-
-fn handle_close(buf: &[u8]) {
-    debug!("Received Close");
-    let close_message = syncthing::Close::decode(buf).unwrap();
-    debug!("{:?}", close_message);
 }
 
 #[cfg(test)]
