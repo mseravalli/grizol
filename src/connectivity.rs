@@ -482,6 +482,8 @@ impl OpenConnection {
     }
 
     // TODO: check if and we need to flush
+    // FIXME: handle errors
+    // TODO: https://docs.rs/rustls/latest/rustls/struct.CommonState.html#method.set_buffer_limit
     pub fn write_all(&mut self, message: &[u8]) -> Result<usize, io::Error> {
         // TODO: check if another size makes more sense
         let block = 2 << 14;
