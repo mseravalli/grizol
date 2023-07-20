@@ -82,7 +82,7 @@ impl BepProcessor {
 
             if let Some(last_message_sent_time) = self.last_message_sent_time {
                 if Instant::now().duration_since(last_message_sent_time) > PING_INTERVAL {
-                    send_ping(&mut self.connection);
+                    self.send_ping();
                     self.last_message_sent_time = Some(Instant::now());
                 }
             }
@@ -153,13 +153,75 @@ impl BepProcessor {
     fn handle_index(&mut self, index: &syncthing::Index) -> Result<(), String> {
         debug!("Handling Index");
         trace!("{:?}", index);
-        self.request_files(index)
+        let requests = self.update_index(index)?;
+        let header = syncthing::Header {
+            compression: 0,
+            r#type: syncthing::MessageType::Response.into(),
+        };
+        for request in requests.into_iter() {
+            self.send_message(header.clone(), request)?;
+        }
+        Ok(())
     }
 
     fn handle_request(&mut self, request: &syncthing::Request) -> Result<(), String> {
         debug!("Handling Request");
         debug!("{:?}", request);
-        self.send_response(&request)
+
+        let request_folder = if request.folder == self.index.folder {
+            Ok(&request.folder)
+        } else {
+            Err(syncthing::ErrorCode::Generic)
+        };
+
+        let file = request_folder.and_then(|x| {
+            self.index
+                .files
+                .iter()
+                .find(|&x| x.name == request.name)
+                .ok_or(syncthing::ErrorCode::NoSuchFile)
+        });
+
+        let data = file.and_then(|f| {
+            let block = f
+                .blocks
+                .iter()
+                .find(|&b| {
+                    b.offset == request.offset && b.size == request.size && b.hash == request.hash
+                })
+                .ok_or(syncthing::ErrorCode::NoSuchFile);
+
+            block.and_then(|b| {
+                storage::data_from_file_block(
+                    // FIXME: track the dir somewhere else
+                    "/home/marco/workspace/hic-sunt-leones/syncthing-test",
+                    &f,
+                    &b,
+                )
+                .map_err(|e| syncthing::ErrorCode::InvalidFile)
+            })
+        });
+
+        let code: i32 = data
+            .as_ref()
+            .err()
+            .unwrap_or(&syncthing::ErrorCode::NoError)
+            .to_owned()
+            .into();
+
+        let response = syncthing::Response {
+            id: request.id,
+            data: data.unwrap_or(Vec::new()),
+            code,
+        };
+        debug!("Sending Response");
+        // debug!("Sending Response {:?}", response);
+
+        let header = syncthing::Header {
+            compression: 0,
+            r#type: syncthing::MessageType::Response.into(),
+        };
+        self.send_message(header, response)
     }
 
     fn handle_response(&mut self, response: &syncthing::Response) -> Result<(), String> {
@@ -264,7 +326,7 @@ impl BepProcessor {
         };
 
         debug!("Sending Cluster Config");
-        send_message(header, cluster_config, &mut self.connection)
+        self.send_message(header, cluster_config)
     }
 
     fn send_index(&mut self) -> Result<(), String> {
@@ -275,100 +337,61 @@ impl BepProcessor {
 
         debug!("Sending Index");
         trace!("Sending Index: {:?}", &self.index);
-        send_message(header, self.index.clone(), &mut self.connection)
+        self.send_message(header, self.index.clone())
+    }
+
+    fn send_ping(&mut self) -> Result<(), String> {
+        let header = syncthing::Header {
+            r#type: syncthing::MessageType::Ping.into(),
+            compression: 0,
+        };
+
+        let ping = syncthing::Ping::default();
+
+        self.send_message(header, ping)
+    }
+
+    fn update_index(
+        &mut self,
+        index: &syncthing::Index,
+    ) -> Result<Vec<syncthing::Request>, String> {
+        todo!();
     }
 
     // FIXME: don't use index this way, read it from self or something
     // TODO: fix returns
-    fn request_files(&mut self, index: &syncthing::Index) -> Result<(), String> {
-        let header = syncthing::Header {
-            compression: 0,
-            r#type: syncthing::MessageType::Request.into(),
-        };
+    // fn request_files(&mut self, index: &syncthing::Index) -> Result<(), String> {
+    //     let header = syncthing::Header {
+    //         compression: 0,
+    //         r#type: syncthing::MessageType::Request.into(),
+    //     };
 
-        if index.folder.starts_with("test_") {
-            return Ok(());
-        }
+    //     if index.folder.starts_with("test_") {
+    //         return Ok(());
+    //     }
 
-        for file in index.files.iter() {
-            if file.name != "EBPLEATKTYXKCPEASMCJ" {
-                continue;
-            }
-            for block in file.blocks.iter() {
-                let id = rand::random::<i32>().abs();
-                let request = syncthing::Request {
-                    id,
-                    folder: index.folder.clone(),
-                    name: file.name.clone(),
-                    offset: block.offset,
-                    size: block.size,
-                    hash: block.hash.clone(),
-                    from_temporary: false,
-                };
-                debug!("Sending Request");
-                trace!("Sending Request {:?}", request);
-                send_message(header.clone(), request, &mut self.connection);
-            }
-        }
-        Ok(())
-    }
-
-    fn send_response(&mut self, request: &syncthing::Request) -> Result<(), String> {
-        let header = syncthing::Header {
-            compression: 0,
-            r#type: syncthing::MessageType::Response.into(),
-        };
-
-        let request_folder = if request.folder == self.index.folder {
-            Ok(&request.folder)
-        } else {
-            Err(syncthing::ErrorCode::Generic)
-        };
-
-        let file = request_folder.and_then(|x| {
-            self.index
-                .files
-                .iter()
-                .find(|&x| x.name == request.name)
-                .ok_or(syncthing::ErrorCode::NoSuchFile)
-        });
-
-        let data = file.and_then(|f| {
-            let block = f
-                .blocks
-                .iter()
-                .find(|&b| {
-                    b.offset == request.offset && b.size == request.size && b.hash == request.hash
-                })
-                .ok_or(syncthing::ErrorCode::NoSuchFile);
-
-            block.and_then(|b| {
-                storage::data_from_file_block(
-                    // FIXME: track the dir somewhere else
-                    "/home/marco/workspace/hic-sunt-leones/syncthing-test",
-                    &f,
-                    &b,
-                )
-                .map_err(|e| syncthing::ErrorCode::InvalidFile)
-            })
-        });
-
-        let code: i32 = data
-            .as_ref()
-            .err()
-            .unwrap_or(&syncthing::ErrorCode::NoError)
-            .to_owned()
-            .into();
-
-        let response = syncthing::Response {
-            id: request.id,
-            data: data.unwrap_or(Vec::new()),
-            code,
-        };
-        debug!("Sending Response");
-        // debug!("Sending Response {:?}", response);
-        send_message(header, response, &mut self.connection)
-    }
+    //     for file in index.files.iter() {
+    //         if file.name != "EBPLEATKTYXKCPEASMCJ" {
+    //             continue;
+    //         }
+    //         for block in file.blocks.iter() {
+    //             let id = rand::random::<i32>().abs();
+    //             let request = syncthing::Request {
+    //                 id,
+    //                 folder: index.folder.clone(),
+    //                 name: file.name.clone(),
+    //                 offset: block.offset,
+    //                 size: block.size,
+    //                 hash: block.hash.clone(),
+    //                 from_temporary: false,
+    //             };
+    //             debug!("Sending Request");
+    //             trace!("Sending Request {:?}", request);
+    //             self.send_message(header.clone(), request);
+    //         }
+    //     }
+    //     Ok(())
+    // }
 
     fn handle_download_progress(&self, raw_message: &[u8]) {
         debug!("Handling DownloadProgress");
@@ -382,91 +405,68 @@ impl BepProcessor {
             }
         }
     }
-}
 
-fn send_message<T: prost::Message>(
-    header: syncthing::Header,
-    mut raw_message: T,
-    connection: &mut OpenConnection,
-) -> Result<(), String> {
-    let header_bytes: Vec<u8> = header.encode_to_vec();
-    let header_len: u16 = header_bytes.len().try_into().unwrap();
+    fn send_message<T: prost::Message>(
+        &mut self,
+        header: syncthing::Header,
+        message: T,
+    ) -> Result<(), String> {
+        let header_bytes: Vec<u8> = header.encode_to_vec();
+        let header_len: u16 = header_bytes.len().try_into().unwrap();
 
-    let message_bytes = raw_message.encode_to_vec();
-    let message_len: u32 = message_bytes.len().try_into().unwrap();
+        let message_bytes = message.encode_to_vec();
+        let message_len: u32 = message_bytes.len().try_into().unwrap();
 
-    trace!(
-        "Sending message with header len: {:?}, {:02x?}",
-        header_len,
-        header_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
-    );
+        trace!(
+            "Sending message with header len: {:?}, {:02x?}",
+            header_len,
+            header_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
+        );
 
-    let message: Vec<u8> = vec![]
-        .into_iter()
-        .chain(header_len.to_be_bytes().into_iter())
-        .chain(header_bytes.into_iter())
-        .chain(message_len.to_be_bytes().into_iter())
-        .chain(message_bytes.into_iter())
-        .collect();
+        let message: Vec<u8> = vec![]
+            .into_iter()
+            .chain(header_len.to_be_bytes().into_iter())
+            .chain(header_bytes.into_iter())
+            .chain(message_len.to_be_bytes().into_iter())
+            .chain(message_bytes.into_iter())
+            .collect();
 
-    trace!(
-        "Sending message with len: {:?}, {:02x?}",
-        message_len,
-        message_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
-    );
-    trace!(
-        // "Outgoing message: {:#04x?}",
-        // "Outgoing message: {:02x?}",
-        "Outgoing message: {:?}",
-        &message.clone().into_iter().collect::<Vec<u8>>()
-    );
+        trace!(
+            "Sending message with len: {:?}, {:02x?}",
+            message_len,
+            message_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
+        );
+        trace!(
+            // "Outgoing message: {:#04x?}",
+            // "Outgoing message: {:02x?}",
+            "Outgoing message: {:?}",
+            &message.clone().into_iter().collect::<Vec<u8>>()
+        );
 
-    let res = connection
-        .write_all(&message)
-        .map_err(|e| e.to_string())
-        .and_then(|written_bytes| {
-            let total_bytes_to_be_written: usize = (message_len + header_len as u32 + 2 + 4)
-                .try_into()
-                .unwrap();
-            trace!(
-                "written bytes {}, total_bytes_to_be_written {}",
-                written_bytes,
-                total_bytes_to_be_written
-            );
-            if written_bytes < total_bytes_to_be_written {
-                Err(format!(
-                    "written {} out of {} bytes",
-                    written_bytes, total_bytes_to_be_written
-                ))
-            } else {
-                Ok(())
-            }
-        });
+        let res = self
+            .connection
+            .write_all(&message)
+            .map_err(|e| e.to_string())
+            .and_then(|written_bytes| {
+                let total_bytes_to_be_written: usize = (message_len + header_len as u32 + 2 + 4)
+                    .try_into()
+                    .unwrap();
+                trace!(
+                    "written bytes {}, total_bytes_to_be_written {}",
+                    written_bytes,
+                    total_bytes_to_be_written
+                );
+                if written_bytes < total_bytes_to_be_written {
+                    Err(format!(
+                        "written {} out of {} bytes",
+                        written_bytes, total_bytes_to_be_written
+                    ))
+                } else {
+                    Ok(())
+                }
+            });
 
-    trace!("Sending res: {:?}", res);
-    res
-}
-
-fn send_ping(connection: &mut OpenConnection) {
-    let mut header = syncthing::Header::default();
-    header.r#type = syncthing::MessageType::Ping.into();
-    header.compression = 0;
-    let header_bytes: Vec<u8> = header.encode_to_vec();
-    let header_len: u16 = header_bytes.len().try_into().unwrap();
-
-    let ping = syncthing::Ping::default();
-    let ping_bytes = ping.encode_to_vec();
-    let ping_len: u32 = ping_bytes.len().try_into().unwrap();
-
-    let message: Vec<u8> = vec![]
-        .into_iter()
-        .chain(header_len.to_be_bytes().into_iter())
-        .chain(header_bytes.into_iter())
-        .chain(ping_len.to_be_bytes().into_iter())
-        .chain(ping_bytes.into_iter())
-        .collect();
-
-    debug!("Outgoing ping message: {:?}", &message);
-
-    connection.write_all(&message).unwrap();
+        trace!("Sending res: {:?}", res);
+        res
+    }
 }

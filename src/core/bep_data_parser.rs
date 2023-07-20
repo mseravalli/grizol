@@ -23,13 +23,13 @@ const HELLO_START: usize = 6;
 const HEADER_START: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum BepError {
+enum ParseError {
     // TODO: explain this, this is used when checking if the message is complete
     NoIncomingMessageYet,
     // Signals that we don't have enough data to parse the header length
-    ParseNotEnoughHeaderLenData,
+    NotEnoughHeaderLenData,
     // Signals that we don't have enough data to parse the header
-    ParseNotEnoughHeaderData,
+    NotEnoughHeaderData,
     // The hello message does not start with the magic number
     NoMagicHello,
     Generic(String),
@@ -151,7 +151,7 @@ impl IncomingMessage {
                 if self.header.is_none() {
                     match try_parse_header(&self.data) {
                         Ok(header) => self.header = Some(header),
-                        Err(BepError::ParseNotEnoughHeaderData) => {
+                        Err(ParseError::NotEnoughHeaderData) => {
                             trace!("Not enough data to parse the header yet.");
                         }
                         Err(e) => {
@@ -213,7 +213,7 @@ pub enum CompleteMessage {
 }
 
 impl TryFrom<&IncomingMessage> for CompleteMessage {
-    type Error = BepError;
+    type Error = ParseError;
     fn try_from(input: &IncomingMessage) -> Result<Self, Self::Error> {
         match input.auth_status {
             BepAuthStatus::PreHello => decode_hello(&input.data),
@@ -226,9 +226,9 @@ fn starts_with_magic_number(buf: &[u8]) -> bool {
     buf.len() >= HELLO_LEN_START && buf[..HELLO_LEN_START] == MAGIC_NUMBER
 }
 
-fn decode_hello(buf: &[u8]) -> Result<CompleteMessage, BepError> {
+fn decode_hello(buf: &[u8]) -> Result<CompleteMessage, ParseError> {
     if !starts_with_magic_number(&buf) {
-        return Err(BepError::NoMagicHello);
+        return Err(ParseError::NoMagicHello);
     }
     // FIXME: return the errors
     let message_byte_size: usize =
@@ -238,7 +238,7 @@ fn decode_hello(buf: &[u8]) -> Result<CompleteMessage, BepError> {
     Ok(CompleteMessage::Hello(hello))
 }
 
-fn decode_post_hello_message(im: &IncomingMessage) -> Result<CompleteMessage, BepError> {
+fn decode_post_hello_message(im: &IncomingMessage) -> Result<CompleteMessage, ParseError> {
     trace!("message size: {:?}", &im.message_byte_len());
     trace!("data.len() {:?}", &im.data.len());
     let message_start_pos = im.message_start_pos().unwrap();
@@ -299,7 +299,7 @@ fn decode_post_hello_message(im: &IncomingMessage) -> Result<CompleteMessage, Be
             syncthing::Close::decode(raw_msg).map(|m| CompleteMessage::Close(m))
         }
     }
-    .map_err(|e| BepError::Generic(format!("Error: {:?}", e)))?;
+    .map_err(|e| ParseError::Generic(format!("Error: {:?}", e)))?;
 
     trace!("Post auth message: {:?}", complete_message);
     Ok(complete_message)
@@ -355,13 +355,13 @@ impl BepDataParser {
             let complete_message = match self.incoming_message.as_ref().map(|im| (im, im.status()))
             {
                 Some((im, IncomingMessageStatus::Complete)) => {
-                    let complete_message: Result<CompleteMessage, BepError> = im.try_into();
+                    let complete_message: Result<CompleteMessage, ParseError> = im.try_into();
                     if self.bep_auth_status == BepAuthStatus::PreHello {
                         self.bep_auth_status = BepAuthStatus::PostHello;
                     }
                     complete_message
                 }
-                _ => Err(BepError::NoIncomingMessageYet),
+                _ => Err(ParseError::NoIncomingMessageYet),
             };
 
             match complete_message {
@@ -369,7 +369,7 @@ impl BepDataParser {
                     res.push(cm);
                     self.incoming_message = None;
                 }
-                Err(BepError::NoIncomingMessageYet) => {
+                Err(ParseError::NoIncomingMessageYet) => {
                     trace!("Haven't received enough data to proceed.");
                 }
                 Err(e) => {
@@ -655,9 +655,9 @@ mod tests {
         assert_eq!(complete_messages.as_ref().unwrap().len(), 3);
     }
 }
-fn try_parse_header(buf: &[u8]) -> Result<syncthing::Header, BepError> {
+fn try_parse_header(buf: &[u8]) -> Result<syncthing::Header, ParseError> {
     if buf.len() < HEADER_START {
-        return Err(BepError::ParseNotEnoughHeaderLenData);
+        return Err(ParseError::NotEnoughHeaderLenData);
     }
 
     // Length of the Header in bytes
@@ -665,7 +665,7 @@ fn try_parse_header(buf: &[u8]) -> Result<syncthing::Header, BepError> {
 
     let header_end = HEADER_START + header_byte_len;
     if buf.len() < header_end {
-        return Err(BepError::ParseNotEnoughHeaderData);
+        return Err(ParseError::NotEnoughHeaderData);
     }
 
     let header = syncthing::Header::decode(&buf[HEADER_START..header_end]).unwrap();
