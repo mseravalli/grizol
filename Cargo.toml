@@ -10,6 +10,7 @@ publish = false
 clap = { version ="4", features = ["derive"] }
 data-encoding = "2"
 env_logger = "0.9.0" # 0.10 requires an MSRV bump to 1.60
+futures = "0"
 log = { version = "0.4.4" }
 lz4_flex = { version = "0.10" }
 mio = { version = "0.8", features = ["net", "os-poll"] }
@@ -20,6 +21,9 @@ rustls-pemfile = "1.0.0"
 rustls = { version = "0.21", features = [ "logging", "dangerous_configuration" ]}
 sct = "0.7"
 sha2 = "0"
+tokio = { version = "1", features = ["full"] }
+tokio-rustls = "0"
+tokio-util = { version = "0", features = ["io"] }
 webpki-roots = "0.23"
 
 [build-dependencies]

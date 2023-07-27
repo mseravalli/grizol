@@ -1,7 +1,7 @@
 // Include the `syncthing` module, which is generated from syncthing.proto.
 // It is important to maintain the same structure as in the proto.
 
-mod bep_data_parser;
+pub mod bep_data_parser;
 
 use crate::connectivity::OpenConnection;
 use crate::core::bep_data_parser::{BepDataParser, CompleteMessage, MAGIC_NUMBER};
@@ -12,10 +12,12 @@ use crate::syncthing;
 use prost::Message;
 use rand::prelude::*;
 use std::array::TryFromSliceError;
+use std::collections::HashMap;
 use std::collections::HashSet;
+use std::future::Future;
 use std::io::Write;
 use std::path::Path;
-use std::sync::mpsc::{Receiver, Sender};
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 use syncthing::Header;
 use syncthing::Hello;
@@ -24,29 +26,39 @@ const PING_INTERVAL: Duration = Duration::from_secs(45);
 
 #[derive(Debug)]
 pub enum BepAction {
-    ReadClientMessage,
+    Connection(OpenConnection),
+    ReadClientMessage(mio::Token),
 }
+
+#[derive(Debug, Clone)]
+pub struct EncodedMessage {
+    data: Vec<u8>,
+}
+
+impl EncodedMessage {
+    fn new(data: Vec<u8>) -> Self {
+        EncodedMessage { data }
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data[..]
+    }
+}
+
+type FutureEncodedMessage<'a> = Pin<Box<dyn Future<Output = EncodedMessage> + Send + 'a>>;
 
 // TODO: maybe change name to something like BepConnectionHandler
 pub struct BepProcessor {
-    connection: OpenConnection,
-    receiver: Receiver<BepAction>,
     // Last meaningful message
     last_message_sent_time: Option<Instant>,
     // TODO: think if we should have these in a ClientState struct
     local_id: DeviceId,
     index: syncthing::Index,
     client_id: HashSet<DeviceId>,
-    data_parser: BepDataParser,
 }
 
 impl BepProcessor {
-    pub fn new(
-        local_id: DeviceId,
-        connection: OpenConnection,
-        receiver: Receiver<BepAction>,
-        client_id: HashSet<DeviceId>,
-    ) -> Self {
+    pub fn new(local_id: DeviceId, client_id: HashSet<DeviceId>) -> Self {
         let index = index_from_path(
             "test_a",
             Path::new("/home/marco/workspace/hic-sunt-leones/syncthing-test"),
@@ -55,116 +67,76 @@ impl BepProcessor {
         .unwrap();
 
         BepProcessor {
-            connection,
-            receiver,
             last_message_sent_time: None,
             local_id,
             client_id,
             index,
-            data_parser: BepDataParser::new(),
-        }
-    }
-    pub fn run(mut self) -> OpenConnection {
-        loop {
-            match self.receiver.recv_timeout(Duration::from_millis(100)) {
-                Ok(action) => match action {
-                    BepAction::ReadClientMessage => {
-                        self.read_incoming_data();
-                    }
-                },
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    // It is expected to get timeouts if e.g. no messages were sent.
-                }
-                Err(e) => {
-                    error!("There was an error receiving the action: {}", e)
-                }
-            };
-
-            if let Some(last_message_sent_time) = self.last_message_sent_time {
-                if Instant::now().duration_since(last_message_sent_time) > PING_INTERVAL {
-                    self.send_ping();
-                    self.last_message_sent_time = Some(Instant::now());
-                }
-            }
-
-            if self.connection.is_closed() {
-                // TODO: add more info
-                info!("Connection was closed");
-                return self.connection;
-            }
         }
     }
 
-    fn read_incoming_data(&mut self) {
-        let res = match self.connection.simplified_read() {
-            Ok(buf) => {
-                trace!("plaintext read {:#04x?}", &buf);
-                self.data_parser
-                    .process_incoming_data(&buf)
-                    .map(|cm| self.handle_complete_messages(cm))
-            }
-            Err(e) => Err(format!("Received event was {}", e)),
-        };
-        match res {
-            Err(e) => warn!("Encountered error when processing the data: {}", e),
-            _ => {}
+    pub fn handle_complete_message(
+        &self,
+        complete_message: CompleteMessage,
+    ) -> Vec<FutureEncodedMessage> {
+        match complete_message {
+            CompleteMessage::Hello(x) => self.handle_hello(x),
+            CompleteMessage::ClusterConfig(x) => self.handle_cluster_config(x),
+            CompleteMessage::Index(x) => self.handle_index(x),
+            CompleteMessage::IndexUpdate(x) => self.handle_index_update(x),
+            _ => todo!(),
+            // CompleteMessage::Request(x) => self.handle_request(x),
+            // CompleteMessage::Response(x) => self.handle_response(x),
+            // CompleteMessage::DownloadProgress(x) => todo!(),
+            // CompleteMessage::Ping(x) => self.handle_ping(x),
+            // CompleteMessage::Close(x) => self.handle_close(x),
         }
     }
 
-    fn handle_complete_messages(
-        &mut self,
-        complete_messages: Vec<CompleteMessage>,
-    ) -> Result<(), String> {
-        let res: Result<Vec<()>, String> = complete_messages
-            .iter()
-            .map(|complete_message| match complete_message {
-                CompleteMessage::Hello(hello) => self.handle_hello(&hello),
-                CompleteMessage::ClusterConfig(cluster_config) => {
-                    self.handle_cluster_config(&cluster_config)
-                }
-                CompleteMessage::Index(index) => self.handle_index(&index),
-                CompleteMessage::IndexUpdate(index_update) => todo!(),
-                CompleteMessage::Request(request) => self.handle_request(&request),
-                CompleteMessage::Response(response) => self.handle_response(&response),
-                CompleteMessage::DownloadProgress(download_progress) => todo!(),
-                CompleteMessage::Ping(ping) => self.handle_ping(&ping),
-                CompleteMessage::Close(close) => self.handle_close(&close),
-            })
-            .collect();
-
-        res.map(|_| ())
-    }
-
-    fn handle_hello(&mut self, hello: &syncthing::Hello) -> Result<(), String> {
+    fn handle_hello(&self, hello: syncthing::Hello) -> Vec<FutureEncodedMessage> {
         debug!("Handling Hello");
-        self.send_hello()
-            .and(self.send_cluster_config())
-            .and(self.send_index())
+        vec![Box::pin(self.hello()), Box::pin(self.cluster_config())]
+        // let messages = vec![self.hello()?, self.cluster_config()?, self.index()?];
     }
 
     fn handle_cluster_config(
-        &mut self,
-        cluster_config: &syncthing::ClusterConfig,
-    ) -> Result<(), String> {
+        &self,
+        cluster_config: syncthing::ClusterConfig,
+    ) -> Vec<FutureEncodedMessage> {
         debug!("Handling Cluster Config");
-        Ok(())
+        vec![]
     }
 
-    fn handle_index(&mut self, index: &syncthing::Index) -> Result<(), String> {
-        debug!("Handling Index");
-        trace!("{:?}", index);
-        let requests = self.update_index(index)?;
-        let header = syncthing::Header {
-            compression: 0,
-            r#type: syncthing::MessageType::Response.into(),
+    fn handle_index_update(
+        &self,
+        index_update: syncthing::IndexUpdate,
+    ) -> Vec<FutureEncodedMessage> {
+        let index = syncthing::Index {
+            folder: index_update.folder,
+            files: index_update.files,
         };
-        for request in requests.into_iter() {
-            self.send_message(header.clone(), request)?;
-        }
-        Ok(())
+        self.handle_index(index)
     }
 
-    fn handle_request(&mut self, request: &syncthing::Request) -> Result<(), String> {
+    fn handle_index(&self, index: syncthing::Index) -> Vec<FutureEncodedMessage> {
+        debug!("Handling Index");
+        vec![]
+
+        // trace!("{:?}", index);
+        // let requests = self.update_index(index)?;
+        // let header = syncthing::Header {
+        //     compression: 0,
+        //     r#type: syncthing::MessageType::Response.into(),
+        // };
+        // requests
+        //     .into_iter()
+        //     .map(|request| self.encode_message(header.clone(), request))
+        //     .collect()
+    }
+
+    fn handle_request(
+        &mut self,
+        request: syncthing::Request,
+    ) -> Result<Vec<EncodedMessage>, String> {
         debug!("Handling Request");
         debug!("{:?}", request);
 
@@ -221,27 +193,30 @@ impl BepProcessor {
             compression: 0,
             r#type: syncthing::MessageType::Response.into(),
         };
-        self.send_message(header, response)
+        Ok(vec![self.encode_message(header, response)?])
     }
 
-    fn handle_response(&mut self, response: &syncthing::Response) -> Result<(), String> {
+    fn handle_response(
+        &mut self,
+        response: syncthing::Response,
+    ) -> Result<Vec<EncodedMessage>, String> {
         debug!("Handling Response");
         trace!("{:?}", response);
-        Ok(())
+        Ok(vec![])
     }
-    fn handle_ping(&mut self, ping: &syncthing::Ping) -> Result<(), String> {
+    fn handle_ping(&mut self, ping: syncthing::Ping) -> Result<Vec<EncodedMessage>, String> {
         debug!("Handling Ping");
         trace!("{:?}", ping);
-        Ok(())
+        Ok(vec![])
     }
 
-    fn handle_close(&mut self, close: &syncthing::Close) -> Result<(), String> {
+    fn handle_close(&mut self, close: syncthing::Close) -> Result<Vec<EncodedMessage>, String> {
         debug!("Handling Close");
         trace!("{:?}", close);
-        Ok(())
+        Ok(vec![])
     }
 
-    fn send_hello(&mut self) -> Result<(), String> {
+    async fn hello(&self) -> EncodedMessage {
         let hello = syncthing::Hello {
             // TODO: read name from config file
             device_name: format!("testing_client"),
@@ -254,7 +229,6 @@ impl BepProcessor {
 
         trace!("{:#04x?}", &hello.encode_to_vec());
 
-        // TODO: use the right length
         let message: Vec<u8> = vec![]
             .into_iter()
             .chain(MAGIC_NUMBER.into_iter())
@@ -262,14 +236,10 @@ impl BepProcessor {
             .chain(message_bytes.into_iter())
             .collect();
 
-        debug!("Sending Hello");
-        self.connection
-            .write_all(&message)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        EncodedMessage::new(message)
     }
 
-    fn send_cluster_config(&mut self) -> Result<(), String> {
+    async fn cluster_config(&self) -> EncodedMessage {
         let header = syncthing::Header {
             compression: 0,
             r#type: syncthing::MessageType::ClusterConfig.into(),
@@ -326,10 +296,10 @@ impl BepProcessor {
         };
 
         debug!("Sending Cluster Config");
-        self.send_message(header, cluster_config)
+        self.encode_message(header, cluster_config).unwrap()
     }
 
-    fn send_index(&mut self) -> Result<(), String> {
+    fn index(&mut self) -> Result<EncodedMessage, String> {
         let header = syncthing::Header {
             compression: 0,
             r#type: syncthing::MessageType::Index.into(),
@@ -337,24 +307,30 @@ impl BepProcessor {
 
         debug!("Sending Index");
         trace!("Sending Index: {:?}", &self.index);
-        self.send_message(header, self.index.clone())
+        self.encode_message(header, self.index.clone())
     }
 
     fn send_ping(&mut self) -> Result<(), String> {
-        let header = syncthing::Header {
-            r#type: syncthing::MessageType::Ping.into(),
-            compression: 0,
-        };
+        todo!();
+        // if let Some(last_message_sent_time) = self.last_message_sent_time {
+        //     if Instant::now().duration_since(last_message_sent_time) > PING_INTERVAL {
+        //         self.send_ping();
+        //         self.last_message_sent_time = Some(Instant::now());
+        //     }
+        // }
+        //
+        // let header = syncthing::Header {
+        //     r#type: syncthing::MessageType::Ping.into(),
+        //     compression: 0,
+        // };
 
-        let ping = syncthing::Ping::default();
+        // let ping = syncthing::Ping::default();
 
-        self.send_message(header, ping)
+        // let message = self.encode_message(header, ping)?;
+        // self.send_message(message)
     }
 
-    fn update_index(
-        &mut self,
-        index: &syncthing::Index,
-    ) -> Result<Vec<syncthing::Request>, String> {
+    fn update_index(&mut self, index: syncthing::Index) -> Result<Vec<syncthing::Request>, String> {
         todo!();
     }
 
@@ -393,24 +369,11 @@ impl BepProcessor {
     //     Ok(())
     // }
 
-    fn handle_download_progress(&self, raw_message: &[u8]) {
-        debug!("Handling DownloadProgress");
-
-        match syncthing::DownloadProgress::decode(raw_message) {
-            Ok(download_progress) => {
-                debug!("{:?}", download_progress);
-            }
-            Err(e) => {
-                error!("Error while decoding {:?}", e);
-            }
-        }
-    }
-
-    fn send_message<T: prost::Message>(
-        &mut self,
+    fn encode_message<T: prost::Message>(
+        &self,
         header: syncthing::Header,
         message: T,
-    ) -> Result<(), String> {
+    ) -> Result<EncodedMessage, String> {
         let header_bytes: Vec<u8> = header.encode_to_vec();
         let header_len: u16 = header_bytes.len().try_into().unwrap();
 
@@ -443,30 +406,6 @@ impl BepProcessor {
             &message.clone().into_iter().collect::<Vec<u8>>()
         );
 
-        let res = self
-            .connection
-            .write_all(&message)
-            .map_err(|e| e.to_string())
-            .and_then(|written_bytes| {
-                let total_bytes_to_be_written: usize = (message_len + header_len as u32 + 2 + 4)
-                    .try_into()
-                    .unwrap();
-                trace!(
-                    "written bytes {}, total_bytes_to_be_written {}",
-                    written_bytes,
-                    total_bytes_to_be_written
-                );
-                if written_bytes < total_bytes_to_be_written {
-                    Err(format!(
-                        "written {} out of {} bytes",
-                        written_bytes, total_bytes_to_be_written
-                    ))
-                } else {
-                    Ok(())
-                }
-            });
-
-        trace!("Sending res: {:?}", res);
-        res
+        Ok(EncodedMessage { data: message })
     }
 }

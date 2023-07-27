@@ -199,7 +199,7 @@ impl IncomingMessage {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum CompleteMessage {
     Hello(syncthing::Hello),
     ClusterConfig(syncthing::ClusterConfig),
@@ -324,7 +324,7 @@ impl BepDataParser {
             incoming_message: None,
         }
     }
-    pub fn process_incoming_data(&mut self, buf: &[u8]) -> Result<Vec<CompleteMessage>, String> {
+    pub fn parse_incoming_data(&mut self, buf: &[u8]) -> Result<Vec<CompleteMessage>, String> {
         let mut processed_bytes: usize = 0;
         let mut res: Vec<CompleteMessage> = Default::default();
         while processed_bytes < buf.len() {
@@ -608,11 +608,11 @@ mod tests {
     }
 
     #[test]
-    fn process_incoming_data__hello_single_block__succeeds() {
+    fn parse_incoming_data__hello_single_block__succeeds() {
         let mut data_parser = BepDataParser::new();
         let incoming_data: Vec<u8> = raw_hello_message();
 
-        let complete_messages = data_parser.process_incoming_data(&incoming_data);
+        let complete_messages = data_parser.parse_incoming_data(&incoming_data);
 
         assert_eq!(complete_messages.as_ref().unwrap().len(), 1);
         let hello = syncthing::Hello {
@@ -624,15 +624,15 @@ mod tests {
     }
 
     #[test]
-    fn process_incoming_data__hello_multiple_blocks__succeeds() {
+    fn parse_incoming_data__hello_multiple_blocks__succeeds() {
         let mut data_parser = BepDataParser::new();
         let incoming_data: Vec<u8> = raw_hello_message();
 
-        let complete_messages = data_parser.process_incoming_data(&incoming_data[..1]);
-        let complete_messages = data_parser.process_incoming_data(&incoming_data[1..4]);
-        let complete_messages = data_parser.process_incoming_data(&incoming_data[4..10]);
-        let complete_messages = data_parser.process_incoming_data(&incoming_data[10..20]);
-        let complete_messages = data_parser.process_incoming_data(&incoming_data[20..]);
+        let complete_messages = data_parser.parse_incoming_data(&incoming_data[..1]);
+        let complete_messages = data_parser.parse_incoming_data(&incoming_data[1..4]);
+        let complete_messages = data_parser.parse_incoming_data(&incoming_data[4..10]);
+        let complete_messages = data_parser.parse_incoming_data(&incoming_data[10..20]);
+        let complete_messages = data_parser.parse_incoming_data(&incoming_data[20..]);
 
         assert_eq!(complete_messages.as_ref().unwrap().len(), 1);
         let hello = syncthing::Hello {
@@ -644,13 +644,13 @@ mod tests {
     }
 
     #[test]
-    fn process_incoming_data__cluster_single_block__succeeds() {
+    fn parse_incoming_data__cluster_single_block__succeeds() {
         let mut data_parser = BepDataParser::new();
         let mut incoming_data: Vec<u8> = vec![];
         incoming_data.extend(raw_hello_message());
         incoming_data.extend(raw_cluster_message());
 
-        let complete_messages = data_parser.process_incoming_data(&incoming_data);
+        let complete_messages = data_parser.parse_incoming_data(&incoming_data);
 
         assert_eq!(complete_messages.as_ref().unwrap().len(), 3);
     }

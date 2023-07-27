@@ -21,17 +21,17 @@ use std::time::SystemTime;
 
 struct PresharedAuth {
     subjects: Vec<DistinguishedName>,
-    client_device_ids: HashSet<DeviceId>,
+    trusted_peers: HashSet<DeviceId>,
 }
 
 impl PresharedAuth {
     #[inline(always)]
-    fn boxed(client_device_ids: HashSet<DeviceId>) -> Arc<dyn ClientCertVerifier> {
+    fn boxed(trusted_peers: HashSet<DeviceId>) -> Arc<dyn ClientCertVerifier> {
         // This function is needed because `ClientCertVerifier` is only reachable if the
         // `dangerous_configuration` feature is enabled, which makes coercing hard to outside users
         Arc::new(Self {
             subjects: Default::default(),
-            client_device_ids,
+            trusted_peers,
         })
     }
 }
@@ -55,7 +55,7 @@ impl ClientCertVerifier for PresharedAuth {
         let client_id = DeviceId::from(end_entity);
 
         let any_match = self
-            .client_device_ids
+            .trusted_peers
             .iter()
             .any(|control_client_id| &client_id == control_client_id);
         if any_match {
@@ -80,12 +80,12 @@ pub struct ServerConfigArgs {
     pub resumption: Option<bool>,
     pub suite: Vec<String>,
     pub tickets: Option<bool>,
-    pub client_device_ids: HashSet<DeviceId>,
+    pub trusted_peers: HashSet<DeviceId>,
 }
 
-impl Into<Arc<rustls::ServerConfig>> for ServerConfigArgs {
-    fn into(self) -> Arc<rustls::ServerConfig> {
-        let client_auth = PresharedAuth::boxed(self.client_device_ids);
+impl Into<rustls::ServerConfig> for ServerConfigArgs {
+    fn into(self) -> rustls::ServerConfig {
+        let client_auth = PresharedAuth::boxed(self.trusted_peers);
 
         let suites = if !self.suite.is_empty() {
             lookup_suites(&self.suite)
@@ -128,6 +128,13 @@ impl Into<Arc<rustls::ServerConfig>> for ServerConfigArgs {
             .map(|proto| proto.as_bytes().to_vec())
             .collect::<Vec<_>>();
 
+        config
+    }
+}
+
+impl Into<Arc<rustls::ServerConfig>> for ServerConfigArgs {
+    fn into(self) -> Arc<rustls::ServerConfig> {
+        let config: rustls::ServerConfig = self.into();
         Arc::new(config)
     }
 }
@@ -319,6 +326,7 @@ impl TlsServer {
 ///
 /// It has a TCP-level stream, a TLS-level connection state, and some
 /// other state/metadata.
+#[derive(Debug)]
 pub struct OpenConnection {
     socket: TcpStream,
     token: mio::Token,
@@ -338,7 +346,12 @@ impl OpenConnection {
         }
     }
 
+    pub fn token(&self) -> mio::Token {
+        self.token
+    }
+
     pub fn simplified_read(&mut self) -> Result<Vec<u8>, String> {
+        debug!("simplified_read");
         self.do_tls_read();
         let res = self.try_plain_read();
 
