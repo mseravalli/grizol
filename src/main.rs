@@ -13,8 +13,7 @@ mod syncthing {
 use crate::connectivity::ServerConfigArgs;
 use crate::connectivity::{OpenConnection, TlsServer};
 use crate::core::bep_data_parser::{BepDataParser, CompleteMessage};
-use crate::core::EncodedMessage;
-use crate::core::{BepAction, BepProcessor};
+use crate::core::{BepConfig, BepProcessor, EncodedMessage};
 use crate::device_id::DeviceId;
 use clap::Parser;
 use data_encoding::BASE32;
@@ -109,16 +108,6 @@ fn setup_logging() {
         .init();
 }
 
-struct ClientData {
-    sender: Sender<BepAction>,
-}
-
-impl ClientData {
-    fn new(sender: Sender<BepAction>) -> Self {
-        ClientData { sender }
-    }
-}
-
 fn trusted_peers() -> HashSet<DeviceId> {
     vec![
         DeviceId::try_from("P27XKDE-ZZTZXNS-BDZDV4X-SYIRALM-FDKK5FQ-4IVTONY-URENMYK-EXIFSQ3")
@@ -162,7 +151,14 @@ async fn main() -> io::Result<()> {
 
     let listener = TcpListener::bind(&addr).await?;
 
-    let bep_processor = Arc::new(BepProcessor::new(device_id, trusted_peers()));
+    // TODO: get the name from the app config.
+    let bep_config = BepConfig {
+        id: device_id,
+        name: format!("Grizol Server"),
+        trusted_peers: trusted_peers(),
+    };
+
+    let bep_processor = Arc::new(BepProcessor::new(bep_config));
 
     loop {
         debug!("wating for a new connection");
@@ -219,4 +215,3 @@ async fn handle_incoming_data(
 
     Ok(())
 }
-
