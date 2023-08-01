@@ -338,12 +338,27 @@ impl BepProcessor {
             // ..Default::default()
         };
 
-        let mut cluster_config = syncthing::ClusterConfig {
+        let cluster_config = syncthing::ClusterConfig {
             folders: vec![folder],
         };
 
         debug!("Sending Cluster Config");
         self.encode_message(header, cluster_config).unwrap()
+    }
+
+    pub async fn ping(&self) -> EncodedMessage {
+        let header = syncthing::Header {
+            compression: 0,
+            r#type: syncthing::MessageType::Ping.into(),
+        };
+
+        let ping = syncthing::Ping {};
+
+        let message_bytes = ping.encode_to_vec();
+        let message_len: u16 = message_bytes.len().try_into().unwrap();
+
+        debug!("Sending Ping");
+        self.encode_message(header, ping).unwrap()
     }
 
     fn update_index(&mut self, index: syncthing::Index) -> Result<Vec<syncthing::Request>, String> {

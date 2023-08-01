@@ -33,8 +33,7 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use tokio::io::{copy, sink, split, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_rustls::rustls::{self, Certificate, PrivateKey};
@@ -190,31 +189,63 @@ async fn handle_incoming_data(
 
     let mut data_parser = BepDataParser::new();
     // TODO: check if 2<<8 makes sense
-    let (tx, mut rx) = mpsc::channel::<EncodedMessage>(2 << 8);
+    let (em_sender, mut em_receiver) = mpsc::channel::<EncodedMessage>(2 << 8);
 
-    // TODO: check if 2<<16 makes sense
-    let mut buf = [0u8; 2 << 16];
-    loop {
-        let n = reader.read(&mut buf[..]).await?;
+    let bep_processor_clone = bep_processor.clone();
+    let em_sender_clone = em_sender.clone();
+    // FIXME: add a handle here and in case it is reached, return the error
+    tokio::spawn(async move {
+        let bep_processor = bep_processor_clone;
+        let em_sender = em_sender_clone;
+        // TODO: check if 2<<16 makes sense
+        let mut buf = [0u8; 2 << 16];
+        loop {
+            let n = reader.read(&mut buf[..]).await?;
 
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "Unexpectedly reached end of the stream",
-            ));
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Unexpectedly reached end of the stream",
+                )) as io::Result<()>;
+            }
+            // TODO: remove unwrap
+            let complete_messages = data_parser.parse_incoming_data(&buf[..n]).unwrap();
+
+            let encoded_messages: Vec<_> = complete_messages
+                .into_iter()
+                .map(|cm| bep_processor.handle_complete_message(cm))
+                .flatten()
+                .collect();
+
+            for em in encoded_messages.into_iter() {
+                if let Err(e) = em_sender.send(em.await).await {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        format!("Failed to send message due to {:?}", e),
+                    )) as io::Result<()>;
+                }
+            }
         }
-        // TODO: remove unwrap
-        let complete_messages = data_parser.parse_incoming_data(&buf[..n]).unwrap();
+    });
 
-        let encoded_messages: Vec<_> = complete_messages
-            .into_iter()
-            .map(|cm| bep_processor.handle_complete_message(cm))
-            .flatten()
-            .collect();
+    // TODO: this is too rudimentary, we need to track the last sent message and act upon that.
+    // FIXME: add a handle here and in case it is reached, return the error
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(45));
 
-        for em in encoded_messages.into_iter() {
-            writer.write_all(em.await.data()).await?;
+            let ping = bep_processor.ping().await;
+            if let Err(e) = em_sender.send(ping).await {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("Failed to send message due to {:?}", e),
+                )) as io::Result<()>;
+            }
         }
+    });
+
+    while let Some(em) = em_receiver.recv().await {
+        writer.write_all(em.data()).await?;
         writer.flush().await?;
     }
 
