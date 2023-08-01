@@ -72,14 +72,17 @@ impl BepState {
                         .entry(other_folder.id.clone())
                         .or_insert(HashMap::new());
 
-                    self.indices
-                        .get_mut(&other_folder.id)
-                        .expect(&format!(
-                            "Entry for folder {} must be there",
-                            &other_folder.id
-                        ))
-                        .entry(my_device_id)
-                        .or_insert(syncthing::Index::default());
+                    let mut folder_devices = self.indices.get_mut(&other_folder.id).expect(
+                        &format!("Entry for folder {} must be there", &other_folder.id),
+                    );
+                    for device in other_folder.devices.iter() {
+                        let device_id =
+                            DeviceId::try_from(&device.id).expect("Wrong device id format");
+
+                        folder_devices
+                            .entry(device_id)
+                            .or_insert(syncthing::Index::default());
+                    }
                 }
             }
         }

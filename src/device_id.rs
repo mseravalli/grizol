@@ -4,9 +4,11 @@ use std::convert::From;
 use std::convert::Into;
 use std::convert::TryFrom;
 
+const DEVICE_ID_LEN: usize = 32;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DeviceId {
-    pub id: [u8; 32],
+    pub id: [u8; DEVICE_ID_LEN],
 }
 
 impl TryFrom<&str> for DeviceId {
@@ -33,37 +35,8 @@ impl TryFrom<&str> for DeviceId {
             .decode((value + "====").as_bytes())
             .map_err(|x| x.to_string())?;
 
-        let mut id: [u8; 32] = Default::default();
+        let mut id: [u8; DEVICE_ID_LEN] = Default::default();
         id[..].copy_from_slice(&dec[..]);
-        Ok(DeviceId { id })
-    }
-}
-
-impl From<&rustls::Certificate> for DeviceId {
-    fn from(cert: &rustls::Certificate) -> Self {
-        let mut hasher = Sha256::new();
-
-        hasher.update(&cert.0);
-
-        let id: [u8; 32] = hasher.finalize().into();
-
-        DeviceId { id }
-    }
-}
-
-impl TryFrom<&[u8]> for DeviceId {
-    type Error = String;
-
-    fn try_from(input: &[u8]) -> Result<Self, Self::Error> {
-        if input.len() != 32 {
-            return Err(format!(
-                "Expected a Vec<u8> of len 32, and got instead: {}",
-                input.len()
-            ));
-        }
-
-        let id: [u8; 32] = input[..32].try_into().map_err(|e| format!("{:?}", e))?;
-
         Ok(DeviceId { id })
     }
 }
@@ -74,6 +47,46 @@ impl ToString for DeviceId {
         let res = res.trim_end_matches("=");
         let res = luhnify(res).expect("It must always be possible to lunhify");
         chunkify(&res)
+    }
+}
+
+impl From<&rustls::Certificate> for DeviceId {
+    fn from(cert: &rustls::Certificate) -> Self {
+        let mut hasher = Sha256::new();
+
+        hasher.update(&cert.0);
+
+        let id: [u8; DEVICE_ID_LEN] = hasher.finalize().into();
+
+        DeviceId { id }
+    }
+}
+
+impl TryFrom<&[u8]> for DeviceId {
+    type Error = String;
+
+    fn try_from(input: &[u8]) -> Result<Self, Self::Error> {
+        if input.len() != DEVICE_ID_LEN {
+            return Err(format!(
+                "Expected a Vec<u8> of len {}, and got instead: {}",
+                DEVICE_ID_LEN,
+                input.len()
+            ));
+        }
+
+        let id: [u8; DEVICE_ID_LEN] = input[..DEVICE_ID_LEN]
+            .try_into()
+            .map_err(|e| format!("{:?}", e))?;
+
+        Ok(DeviceId { id })
+    }
+}
+
+impl TryFrom<&Vec<u8>> for DeviceId {
+    type Error = String;
+
+    fn try_from(input: &Vec<u8>) -> Result<Self, Self::Error> {
+        return DeviceId::try_from(&input[..]);
     }
 }
 
@@ -89,14 +102,14 @@ impl Into<Vec<u8>> for &DeviceId {
     }
 }
 
-impl Into<[u8; 32]> for DeviceId {
-    fn into(self) -> [u8; 32] {
+impl Into<[u8; DEVICE_ID_LEN]> for DeviceId {
+    fn into(self) -> [u8; DEVICE_ID_LEN] {
         self.id
     }
 }
 
-impl Into<[u8; 32]> for &DeviceId {
-    fn into(self) -> [u8; 32] {
+impl Into<[u8; DEVICE_ID_LEN]> for &DeviceId {
+    fn into(self) -> [u8; DEVICE_ID_LEN] {
         self.id
     }
 }
