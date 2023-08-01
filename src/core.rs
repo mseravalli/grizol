@@ -9,16 +9,18 @@ use crate::device_id::DeviceId;
 use crate::storage;
 use crate::storage::index_from_path;
 use crate::syncthing;
+use core::future::IntoFuture;
 use prost::Message;
 use rand::prelude::*;
 use std::array::TryFromSliceError;
-use std::collections::{HashMap, HashSet};
-use std::future::Future;
+use std::collections::{BTreeMap, HashMap, HashSet};
+// use std::future::Future;
+use futures::future::{Future, FutureExt};
 use std::io::Write;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 const PING_INTERVAL: Duration = Duration::from_secs(45);
 
@@ -32,6 +34,10 @@ impl EncodedMessage {
         EncodedMessage { data }
     }
 
+    fn empty() -> Self {
+        EncodedMessage { data: vec![] }
+    }
+
     pub fn data(&self) -> &[u8] {
         &self.data[..]
     }
@@ -42,11 +48,42 @@ pub struct BepConfig {
     pub id: DeviceId,
     pub name: String,
     pub trusted_peers: HashSet<DeviceId>,
+    pub base_dir: String,
+    pub net_address: String,
 }
 
 struct BepState {
-    indexes: HashMap<String, syncthing::Index>,
+    indices: HashMap<String, HashMap<DeviceId, syncthing::Index>>,
     cluster: syncthing::ClusterConfig,
+    sequence: u64,
+}
+
+impl BepState {
+    fn update_cluster_config(&mut self, my_device_id: DeviceId, other: &syncthing::ClusterConfig) {
+        for other_folder in other.folders.iter() {
+            if !self.cluster.folders.iter().any(|f| f.id == other_folder.id) {
+                if other_folder.devices.iter().any(|d| {
+                    DeviceId::try_from(&d.id[..]).expect("Cannot convert to DeviceId")
+                        == my_device_id
+                }) {
+                    self.cluster.folders.push(other_folder.clone());
+
+                    self.indices
+                        .entry(other_folder.id.clone())
+                        .or_insert(HashMap::new());
+
+                    self.indices
+                        .get_mut(&other_folder.id)
+                        .expect(&format!(
+                            "Entry for folder {} must be there",
+                            &other_folder.id
+                        ))
+                        .entry(my_device_id)
+                        .or_insert(syncthing::Index::default());
+                }
+            }
+        }
+    }
 }
 
 type FutureEncodedMessage<'a> = Pin<Box<dyn Future<Output = EncodedMessage> + Send + 'a>>;
@@ -59,16 +96,10 @@ pub struct BepProcessor {
 
 impl BepProcessor {
     pub fn new(config: BepConfig) -> Self {
-        let index = index_from_path(
-            "test_a",
-            Path::new("/home/marco/workspace/hic-sunt-leones/syncthing-test"),
-            &config.id,
-        )
-        .unwrap();
-
         let bep_state = BepState {
-            indexes: Default::default(),
+            indices: Default::default(),
             cluster: syncthing::ClusterConfig { folders: vec![] },
+            sequence: 0,
         };
 
         BepProcessor {
@@ -105,7 +136,22 @@ impl BepProcessor {
         cluster_config: syncthing::ClusterConfig,
     ) -> Vec<FutureEncodedMessage> {
         debug!("Handling Cluster Config");
-        vec![]
+        trace!("Received Cluster Config: {:#?}", &cluster_config);
+
+        let res = async move {
+            self.state
+                .lock()
+                .await
+                .update_cluster_config(self.config.id, &cluster_config);
+            // {
+            //     let cc = &self.state.lock().await.cluster;
+            //     trace!("Self cluster config: {:#?}", cc);
+            // }
+
+            EncodedMessage::empty()
+        };
+
+        vec![Box::pin(res)]
     }
 
     fn handle_index_update(
@@ -237,18 +283,21 @@ impl BepProcessor {
         EncodedMessage::new(message)
     }
 
+    // TODO: read this from the last state and add additional information from the config.
     async fn cluster_config(&self) -> EncodedMessage {
         let header = syncthing::Header {
             compression: 0,
             r#type: syncthing::MessageType::ClusterConfig.into(),
         };
 
+        let max_sequence: i64 = self.state.lock().await.sequence.try_into().unwrap();
+
         let this_device = syncthing::Device {
             id: self.config.id.into(),
-            name: format!("damorire"),
-            addresses: vec![format!("127.0.0.1:23456")],
+            name: self.config.name.clone(),
+            addresses: vec![self.config.net_address.clone()],
             compression: syncthing::Compression::Never.into(),
-            max_sequence: 100,
+            max_sequence,
             // Delta Index Exchange is not supported yet hence index_id is zero.
             index_id: 0,
             cert_name: String::new(),
@@ -296,16 +345,6 @@ impl BepProcessor {
         debug!("Sending Cluster Config");
         self.encode_message(header, cluster_config).unwrap()
     }
-
-    // fn index(&mut self) -> Result<EncodedMessage, String> {
-    //     let header = syncthing::Header {
-    //         compression: 0,
-    //         r#type: syncthing::MessageType::Index.into(),
-    //     };
-
-    //     debug!("Sending Index");
-    //     self.encode_message(header, self.index.clone())
-    // }
 
     fn update_index(&mut self, index: syncthing::Index) -> Result<Vec<syncthing::Request>, String> {
         todo!();

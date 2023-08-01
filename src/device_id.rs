@@ -51,6 +51,23 @@ impl From<&rustls::Certificate> for DeviceId {
     }
 }
 
+impl TryFrom<&[u8]> for DeviceId {
+    type Error = String;
+
+    fn try_from(input: &[u8]) -> Result<Self, Self::Error> {
+        if input.len() != 32 {
+            return Err(format!(
+                "Expected a Vec<u8> of len 32, and got instead: {}",
+                input.len()
+            ));
+        }
+
+        let id: [u8; 32] = input[..32].try_into().map_err(|e| format!("{:?}", e))?;
+
+        Ok(DeviceId { id })
+    }
+}
+
 impl ToString for DeviceId {
     fn to_string(&self) -> String {
         let res = BASE32.encode(&self.id);

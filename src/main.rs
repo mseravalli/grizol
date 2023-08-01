@@ -28,8 +28,6 @@ use std::io::{self, BufReader, Read, Write};
 use std::net;
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::channel;
-use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
@@ -37,6 +35,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use tokio::io::{copy, sink, split, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_rustls::rustls::{self, Certificate, PrivateKey};
 use tokio_rustls::TlsAcceptor;
@@ -151,11 +150,13 @@ async fn main() -> io::Result<()> {
 
     let listener = TcpListener::bind(&addr).await?;
 
-    // TODO: get the name from the app config.
+    // TODO: get all this data from the config I guess
     let bep_config = BepConfig {
         id: device_id,
         name: format!("Grizol Server"),
         trusted_peers: trusted_peers(),
+        base_dir: format!("/home/marco/workspace/hic-sunt-leones/syncthing-test"),
+        net_address: addr.to_string(),
     };
 
     let bep_processor = Arc::new(BepProcessor::new(bep_config));
@@ -188,6 +189,10 @@ async fn handle_incoming_data(
     let (mut reader, mut writer) = split(tls_stream);
 
     let mut data_parser = BepDataParser::new();
+    // TODO: check if 2<<8 makes sense
+    let (tx, mut rx) = mpsc::channel::<EncodedMessage>(2 << 8);
+
+    // TODO: check if 2<<16 makes sense
     let mut buf = [0u8; 2 << 16];
     loop {
         let n = reader.read(&mut buf[..]).await?;
