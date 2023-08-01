@@ -1,5 +1,6 @@
 use crate::syncthing;
 use crate::DeviceId;
+use prost::Message;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::fs::File;
@@ -13,6 +14,34 @@ use std::time::SystemTime;
 
 // TODO: verify this is a reasonable size
 const BUF_SIZE: usize = 1 << 14; // 16 KiB
+
+// TODO: this is just a temporary hack, remove this
+pub async fn save_cluster_config(cluster_config: &syncthing::ClusterConfig) -> io::Result<()> {
+    use tokio::fs::File;
+    use tokio::io::AsyncWriteExt;
+
+    let bytes = cluster_config.encode_to_vec();
+
+    let mut file = File::create("/tmp/grizol_cluster_config").await?;
+    file.write_all(&bytes).await?;
+    file.flush().await?;
+
+    Ok(())
+}
+
+// TODO: this is just a temporary hack, remove this
+pub async fn restore_cluster_config() -> io::Result<syncthing::ClusterConfig> {
+    use tokio::fs::File;
+    use tokio::io::AsyncReadExt;
+
+    let mut file = File::open("/tmp/grizol_cluster_config").await?;
+    let mut buf: [u8; 2 << 16] = [0; 2 << 16];
+    let read_bytes = file.read(&mut buf[..]).await?;
+
+    let cluster_config = syncthing::ClusterConfig::decode(&buf[..read_bytes])?;
+
+    Ok(cluster_config)
+}
 
 pub fn data_from_file_block(
     dir_path: &str,

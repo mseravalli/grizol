@@ -3,12 +3,28 @@ use sha2::{Digest, Sha256};
 use std::convert::From;
 use std::convert::Into;
 use std::convert::TryFrom;
+use std::fmt;
 
 const DEVICE_ID_LEN: usize = 32;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DeviceId {
     pub id: [u8; DEVICE_ID_LEN],
+}
+
+impl ToString for DeviceId {
+    fn to_string(&self) -> String {
+        let res = BASE32.encode(&self.id);
+        let res = res.trim_end_matches("=");
+        let res = luhnify(res).expect("It must always be possible to lunhify");
+        chunkify(&res)
+    }
+}
+
+impl fmt::Debug for DeviceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DeviceId \"{}\"", self.to_string())
+    }
 }
 
 impl TryFrom<&str> for DeviceId {
@@ -38,15 +54,6 @@ impl TryFrom<&str> for DeviceId {
         let mut id: [u8; DEVICE_ID_LEN] = Default::default();
         id[..].copy_from_slice(&dec[..]);
         Ok(DeviceId { id })
-    }
-}
-
-impl ToString for DeviceId {
-    fn to_string(&self) -> String {
-        let res = BASE32.encode(&self.id);
-        let res = res.trim_end_matches("=");
-        let res = luhnify(res).expect("It must always be possible to lunhify");
-        chunkify(&res)
     }
 }
 

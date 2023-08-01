@@ -130,8 +130,11 @@ impl BepProcessor {
 
     fn handle_hello(&self, hello: syncthing::Hello) -> Vec<FutureEncodedMessage> {
         debug!("Handling Hello");
-        vec![Box::pin(self.hello()), Box::pin(self.cluster_config())]
-        // let messages = vec![self.hello()?, self.cluster_config()?, self.index()?];
+        vec![
+            Box::pin(self.hello()),
+            Box::pin(self.cluster_config()),
+            Box::pin(self.index()),
+        ]
     }
 
     fn handle_cluster_config(
@@ -146,10 +149,11 @@ impl BepProcessor {
                 .lock()
                 .await
                 .update_cluster_config(self.config.id, &cluster_config);
-            // {
-            //     let cc = &self.state.lock().await.cluster;
-            //     trace!("Self cluster config: {:#?}", cc);
-            // }
+            {
+                let cc = &self.state.lock().await.cluster;
+                // debug!("Self cluster config: {:#?}", cc);
+                storage::save_cluster_config(cc).await;
+            }
 
             EncodedMessage::empty()
         };
@@ -170,7 +174,34 @@ impl BepProcessor {
 
     fn handle_index(&self, index: syncthing::Index) -> Vec<FutureEncodedMessage> {
         debug!("Handling Index");
-        vec![]
+        // debug!("Received Index: {:#?}", &index);
+        let header = syncthing::Header {
+            compression: 0,
+            r#type: syncthing::MessageType::Request.into(),
+        };
+
+        let mut res: Vec<FutureEncodedMessage> = vec![];
+
+        for file in index.files.iter() {
+            for block in file.blocks.iter() {
+                let id = rand::random::<i32>().abs();
+                let request = syncthing::Request {
+                    id,
+                    folder: index.folder.clone(),
+                    name: file.name.clone(),
+                    offset: block.offset,
+                    size: block.size,
+                    hash: block.hash.clone(),
+                    from_temporary: false,
+                };
+                debug!("Sending Request");
+                debug!("Sending Request {:?}", request);
+                let header_clone = header.clone();
+                let em = async move { self.encode_message(header_clone, request).unwrap() };
+                res.push(Box::pin(em));
+            }
+        }
+        res
 
         // trace!("{:?}", index);
         // let requests = self.update_index(index)?;
@@ -248,7 +279,11 @@ impl BepProcessor {
 
     fn handle_response(&self, response: syncthing::Response) -> Vec<FutureEncodedMessage> {
         debug!("Handling Response");
-        trace!("{:?}", response);
+        debug!(
+            "Received Response: {:?}, {}",
+            response.id,
+            response.data.len()
+        );
         vec![]
     }
 
@@ -293,60 +328,76 @@ impl BepProcessor {
             r#type: syncthing::MessageType::ClusterConfig.into(),
         };
 
-        let max_sequence: i64 = self.state.lock().await.sequence.try_into().unwrap();
+        // let max_sequence: i64 = self.state.lock().await.sequence.try_into().unwrap();
 
-        let this_device = syncthing::Device {
-            id: self.config.id.into(),
-            name: self.config.name.clone(),
-            addresses: vec![self.config.net_address.clone()],
-            compression: syncthing::Compression::Never.into(),
-            max_sequence,
-            // Delta Index Exchange is not supported yet hence index_id is zero.
-            index_id: 0,
-            cert_name: String::new(),
-            encryption_password_token: vec![],
-            introducer: false,
-            skip_introduction_removals: true,
-            // ..Default::default()
-        };
+        // let this_device = syncthing::Device {
+        //     id: self.config.id.into(),
+        //     name: self.config.name.clone(),
+        //     addresses: vec![self.config.net_address.clone()],
+        //     compression: syncthing::Compression::Never.into(),
+        //     max_sequence,
+        //     // Delta Index Exchange is not supported yet hence index_id is zero.
+        //     index_id: 0,
+        //     cert_name: String::new(),
+        //     encryption_password_token: vec![],
+        //     introducer: false,
+        //     skip_introduction_removals: true,
+        //     // ..Default::default()
+        // };
 
-        // FIXME: This is an ugly hack to get the client id fix the workflow.
-        let client_id = self.config.trusted_peers.iter().next().unwrap();
-        let client_device = syncthing::Device {
-            id: client_id.into(),
-            name: format!("syncthing"),
-            addresses: vec![format!("127.0.0.1:220000")],
-            compression: syncthing::Compression::Never.into(),
-            max_sequence: 100,
-            // Delta Index Exchange is not supported yet hence index_id is zero.
-            index_id: 0,
-            cert_name: String::new(),
-            encryption_password_token: vec![],
-            introducer: false,
-            skip_introduction_removals: true,
-            // ..Default::default()
-        };
+        // // FIXME: This is an ugly hack to get the client id fix the workflow.
+        // let client_id = self.config.trusted_peers.iter().next().unwrap();
+        // let client_device = syncthing::Device {
+        //     id: client_id.into(),
+        //     name: format!("syncthing"),
+        //     addresses: vec![format!("127.0.0.1:220000")],
+        //     compression: syncthing::Compression::Never.into(),
+        //     max_sequence: 100,
+        //     // Delta Index Exchange is not supported yet hence index_id is zero.
+        //     index_id: 0,
+        //     cert_name: String::new(),
+        //     encryption_password_token: vec![],
+        //     introducer: false,
+        //     skip_introduction_removals: true,
+        //     // ..Default::default()
+        // };
 
-        let folder_name = "test_a";
+        // let folder_name = "test_a";
 
-        let folder = syncthing::Folder {
-            id: folder_name.to_string(),
-            label: folder_name.to_string(),
-            read_only: false,
-            ignore_permissions: false,
-            ignore_delete: true,
-            disable_temp_indexes: false,
-            paused: false,
-            devices: vec![this_device, client_device],
-            // ..Default::default()
-        };
+        // let folder = syncthing::Folder {
+        //     id: folder_name.to_string(),
+        //     label: folder_name.to_string(),
+        //     read_only: false,
+        //     ignore_permissions: false,
+        //     ignore_delete: true,
+        //     disable_temp_indexes: false,
+        //     paused: false,
+        //     devices: vec![this_device, client_device],
+        //     // ..Default::default()
+        // };
 
-        let cluster_config = syncthing::ClusterConfig {
-            folders: vec![folder],
-        };
+        // let cluster_config = syncthing::ClusterConfig { folders: vec![] };
+        let cluster_config = storage::restore_cluster_config()
+            .await
+            .expect("something went wrong when restoring");
 
-        debug!("Sending Cluster Config");
+        trace!("Sending Cluster Config: {:?}", &cluster_config);
         self.encode_message(header, cluster_config).unwrap()
+    }
+
+    pub async fn index(&self) -> EncodedMessage {
+        let header = syncthing::Header {
+            compression: 0,
+            r#type: syncthing::MessageType::Index.into(),
+        };
+
+        let index = syncthing::Index {
+            folder: format!("vqick-icdkt"),
+            files: vec![],
+        };
+
+        debug!("Sending Index");
+        self.encode_message(header, index).unwrap()
     }
 
     pub async fn ping(&self) -> EncodedMessage {
@@ -357,9 +408,6 @@ impl BepProcessor {
 
         let ping = syncthing::Ping {};
 
-        let message_bytes = ping.encode_to_vec();
-        let message_len: u16 = message_bytes.len().try_into().unwrap();
-
         debug!("Sending Ping");
         self.encode_message(header, ping).unwrap()
     }
@@ -367,41 +415,6 @@ impl BepProcessor {
     fn update_index(&mut self, index: syncthing::Index) -> Result<Vec<syncthing::Request>, String> {
         todo!();
     }
-
-    // FIXME: don't use index this way, read it from self or something
-    // TODO: fix returns
-    // fn request_files(&mut self, index: &syncthing::Index) -> Result<(), String> {
-    //     let header = syncthing::Header {
-    //         compression: 0,
-    //         r#type: syncthing::MessageType::Request.into(),
-    //     };
-
-    //     if index.folder.starts_with("test_") {
-    //         return Ok(());
-    //     }
-
-    //     for file in index.files.iter() {
-    //         if file.name != "EBPLEATKTYXKCPEASMCJ" {
-    //             continue;
-    //         }
-    //         for block in file.blocks.iter() {
-    //             let id = rand::random::<i32>().abs();
-    //             let request = syncthing::Request {
-    //                 id,
-    //                 folder: index.folder.clone(),
-    //                 name: file.name.clone(),
-    //                 offset: block.offset,
-    //                 size: block.size,
-    //                 hash: block.hash.clone(),
-    //                 from_temporary: false,
-    //             };
-    //             debug!("Sending Request");
-    //             trace!("Sending Request {:?}", request);
-    //             self.send_message(header.clone(), request);
-    //         }
-    //     }
-    //     Ok(())
-    // }
 
     fn encode_message<T: prost::Message>(
         &self,

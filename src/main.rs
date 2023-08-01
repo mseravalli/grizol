@@ -108,7 +108,7 @@ fn setup_logging() {
 
 fn trusted_peers() -> HashSet<DeviceId> {
     vec![
-        DeviceId::try_from("P27XKDE-ZZTZXNS-BDZDV4X-SYIRALM-FDKK5FQ-4IVTONY-URENMYK-EXIFSQ3")
+        DeviceId::try_from("VHLZSPS-XMVASHL-NRDGZAY-VUS576S-H56LQRK-GGNWYIS-NR4OKBG-VHGD2AQ")
             .unwrap(),
     ]
     .into_iter()
@@ -232,7 +232,7 @@ async fn handle_incoming_data(
     // FIXME: add a handle here and in case it is reached, return the error
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(Duration::from_secs(45));
+            tokio::time::sleep(Duration::from_secs(45)).await;
 
             let ping = bep_processor.ping().await;
             if let Err(e) = em_sender.send(ping).await {
