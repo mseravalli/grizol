@@ -7,7 +7,7 @@ use crate::connectivity::OpenConnection;
 use crate::core::bep_data_parser::{BepDataParser, CompleteMessage, MAGIC_NUMBER};
 use crate::device_id::DeviceId;
 use crate::storage;
-use crate::storage::index_from_path;
+use crate::storage::StorageManager;
 use crate::syncthing;
 use core::future::IntoFuture;
 use prost::Message;
@@ -95,6 +95,7 @@ type FutureEncodedMessage<'a> = Pin<Box<dyn Future<Output = EncodedMessage> + Se
 pub struct BepProcessor {
     config: BepConfig,
     state: Mutex<BepState>,
+    storage_manager: StorageManager,
 }
 
 impl BepProcessor {
@@ -108,6 +109,7 @@ impl BepProcessor {
         BepProcessor {
             config,
             state: Mutex::new(bep_state),
+            storage_manager: StorageManager::new(format!("/tmp/grizol_cluster_config")),
         }
     }
 
@@ -152,7 +154,7 @@ impl BepProcessor {
             {
                 let cc = &self.state.lock().await.cluster;
                 // debug!("Self cluster config: {:#?}", cc);
-                storage::save_cluster_config(cc).await;
+                self.storage_manager.save_cluster_config(cc).await;
             }
 
             EncodedMessage::empty()
@@ -377,7 +379,9 @@ impl BepProcessor {
         // };
 
         // let cluster_config = syncthing::ClusterConfig { folders: vec![] };
-        let cluster_config = storage::restore_cluster_config()
+        let cluster_config = self
+            .storage_manager
+            .restore_cluster_config()
             .await
             .expect("something went wrong when restoring");
 

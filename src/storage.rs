@@ -15,32 +15,46 @@ use std::time::SystemTime;
 // TODO: verify this is a reasonable size
 const BUF_SIZE: usize = 1 << 14; // 16 KiB
 
-// TODO: this is just a temporary hack, remove this
-pub async fn save_cluster_config(cluster_config: &syncthing::ClusterConfig) -> io::Result<()> {
-    use tokio::fs::File;
-    use tokio::io::AsyncWriteExt;
-
-    let bytes = cluster_config.encode_to_vec();
-
-    let mut file = File::create("/tmp/grizol_cluster_config").await?;
-    file.write_all(&bytes).await?;
-    file.flush().await?;
-
-    Ok(())
+pub struct StorageManager {
+    cluster_config_path: String,
 }
 
-// TODO: this is just a temporary hack, remove this
-pub async fn restore_cluster_config() -> io::Result<syncthing::ClusterConfig> {
-    use tokio::fs::File;
-    use tokio::io::AsyncReadExt;
+impl StorageManager {
+    pub fn new(cluster_config_path: String) -> Self {
+        StorageManager {
+            cluster_config_path,
+        }
+    }
+    // TODO: this is just a temporary hack, remove this
+    pub async fn save_cluster_config(
+        &self,
+        cluster_config: &syncthing::ClusterConfig,
+    ) -> io::Result<()> {
+        use tokio::fs::File;
+        use tokio::io::AsyncWriteExt;
 
-    let mut file = File::open("/tmp/grizol_cluster_config").await?;
-    let mut buf: [u8; 2 << 16] = [0; 2 << 16];
-    let read_bytes = file.read(&mut buf[..]).await?;
+        let bytes = cluster_config.encode_to_vec();
 
-    let cluster_config = syncthing::ClusterConfig::decode(&buf[..read_bytes])?;
+        let mut file = File::create(&self.cluster_config_path).await?;
+        file.write_all(&bytes).await?;
+        file.flush().await?;
 
-    Ok(cluster_config)
+        Ok(())
+    }
+
+    // TODO: this is just a temporary hack, remove this
+    pub async fn restore_cluster_config(&self) -> io::Result<syncthing::ClusterConfig> {
+        use tokio::fs::File;
+        use tokio::io::AsyncReadExt;
+
+        let mut file = File::open(&self.cluster_config_path).await?;
+        let mut buf: [u8; 2 << 16] = [0; 2 << 16];
+        let read_bytes = file.read(&mut buf[..]).await?;
+
+        let cluster_config = syncthing::ClusterConfig::decode(&buf[..read_bytes])?;
+
+        Ok(cluster_config)
+    }
 }
 
 pub fn data_from_file_block(
