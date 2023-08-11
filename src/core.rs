@@ -20,22 +20,32 @@ use std::io::Write;
 use std::path::Path;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
+use syncthing::{
+    BlockInfo, Close, ClusterConfig, FileInfo, Header, Hello, Index, IndexUpdate, MessageType,
+    Ping, Request, Response,
+};
 use tokio::sync::Mutex;
 
 const PING_INTERVAL: Duration = Duration::from_secs(45);
 
+// TODO: rethink this structure, e.g. if we should store CompleteMessages and encode them at the
+// time of reading.
 #[derive(Debug, Clone)]
-pub struct EncodedMessage {
+pub struct EncodedMessages {
     data: Vec<u8>,
 }
 
-impl EncodedMessage {
+impl EncodedMessages {
     fn new(data: Vec<u8>) -> Self {
-        EncodedMessage { data }
+        EncodedMessages { data }
     }
 
     fn empty() -> Self {
-        EncodedMessage { data: vec![] }
+        EncodedMessages { data: vec![] }
+    }
+
+    fn append(&mut self, em: Self) {
+        self.data.extend_from_slice(em.data())
     }
 
     pub fn data(&self) -> &[u8] {
@@ -44,6 +54,7 @@ impl EncodedMessage {
 }
 
 // TODO: initialize through a from config or something, it's probably easier
+/// Data that will not change troughout the life ot the program.
 pub struct BepConfig {
     pub id: DeviceId,
     pub name: String,
@@ -54,12 +65,12 @@ pub struct BepConfig {
 
 struct BepState {
     indices: HashMap<String, HashMap<DeviceId, syncthing::Index>>,
-    cluster: syncthing::ClusterConfig,
+    cluster: ClusterConfig,
     sequence: u64,
 }
 
 impl BepState {
-    fn update_cluster_config(&mut self, my_device_id: DeviceId, other: &syncthing::ClusterConfig) {
+    fn update_cluster_config(&mut self, my_device_id: DeviceId, other: &ClusterConfig) {
         for other_folder in other.folders.iter() {
             if !self.cluster.folders.iter().any(|f| f.id == other_folder.id) {
                 if other_folder.devices.iter().any(|d| {
@@ -79,9 +90,7 @@ impl BepState {
                         let device_id =
                             DeviceId::try_from(&device.id).expect("Wrong device id format");
 
-                        folder_devices
-                            .entry(device_id)
-                            .or_insert(syncthing::Index::default());
+                        folder_devices.entry(device_id).or_insert(Index::default());
                     }
                 }
             }
@@ -89,7 +98,7 @@ impl BepState {
     }
 }
 
-type FutureEncodedMessage<'a> = Pin<Box<dyn Future<Output = EncodedMessage> + Send + 'a>>;
+type BepReply<'a> = Pin<Box<dyn Future<Output = EncodedMessages> + Send + 'a>>;
 
 // TODO: maybe change name to something like BepConnectionHandler
 pub struct BepProcessor {
@@ -102,21 +111,21 @@ impl BepProcessor {
     pub fn new(config: BepConfig) -> Self {
         let bep_state = BepState {
             indices: Default::default(),
-            cluster: syncthing::ClusterConfig { folders: vec![] },
+            cluster: ClusterConfig { folders: vec![] },
             sequence: 0,
         };
 
         BepProcessor {
             config,
             state: Mutex::new(bep_state),
-            storage_manager: StorageManager::new(format!("/tmp/grizol_cluster_config")),
+            storage_manager: StorageManager::new(
+                format!("/tmp/grizol_cluster_config"),
+                format!("/tmp/grizol_staging"),
+            ),
         }
     }
 
-    pub fn handle_complete_message(
-        &self,
-        complete_message: CompleteMessage,
-    ) -> Vec<FutureEncodedMessage> {
+    pub fn handle_complete_message(&self, complete_message: CompleteMessage) -> Vec<BepReply> {
         match complete_message {
             CompleteMessage::Hello(x) => self.handle_hello(x),
             CompleteMessage::ClusterConfig(x) => self.handle_cluster_config(x),
@@ -130,7 +139,7 @@ impl BepProcessor {
         }
     }
 
-    fn handle_hello(&self, hello: syncthing::Hello) -> Vec<FutureEncodedMessage> {
+    fn handle_hello(&self, hello: Hello) -> Vec<BepReply> {
         debug!("Handling Hello");
         vec![
             Box::pin(self.hello()),
@@ -139,10 +148,7 @@ impl BepProcessor {
         ]
     }
 
-    fn handle_cluster_config(
-        &self,
-        cluster_config: syncthing::ClusterConfig,
-    ) -> Vec<FutureEncodedMessage> {
+    fn handle_cluster_config(&self, cluster_config: ClusterConfig) -> Vec<BepReply> {
         debug!("Handling Cluster Config");
         trace!("Received Cluster Config: {:#?}", &cluster_config);
 
@@ -157,67 +163,87 @@ impl BepProcessor {
                 self.storage_manager.save_cluster_config(cc).await;
             }
 
-            EncodedMessage::empty()
+            EncodedMessages::empty()
         };
 
         vec![Box::pin(res)]
     }
 
-    fn handle_index_update(
-        &self,
-        index_update: syncthing::IndexUpdate,
-    ) -> Vec<FutureEncodedMessage> {
-        let index = syncthing::Index {
+    fn handle_index_update(&self, index_update: IndexUpdate) -> Vec<BepReply> {
+        debug!("Handling Index Update");
+        let index = Index {
             folder: index_update.folder,
             files: index_update.files,
         };
         self.handle_index(index)
     }
 
-    fn handle_index(&self, index: syncthing::Index) -> Vec<FutureEncodedMessage> {
+    fn handle_index(&self, index: Index) -> Vec<BepReply> {
         debug!("Handling Index");
         // debug!("Received Index: {:#?}", &index);
-        let header = syncthing::Header {
-            compression: 0,
-            r#type: syncthing::MessageType::Request.into(),
+
+        let ems = async move {
+            let missing_files = {
+                let indices = &self.state.lock().await.indices;
+                let local_index = indices
+                    .get(&index.folder)
+                    .map(|x| x.get(&self.config.id))
+                    .flatten()
+                    .expect(&format!(
+                        "The index for device {} should be present",
+                        &self.config.id
+                    ));
+
+                diff_indices(&local_index, &index)
+            };
+
+            let requests = create_requests(&index.folder, missing_files);
+            let mut ems = EncodedMessages::empty();
+
+            let header = Header {
+                compression: 0,
+                r#type: MessageType::Request.into(),
+            };
+            for request in requests.into_iter() {
+                ems.append(encode_message(header.clone(), request).unwrap());
+            }
+            ems
         };
 
-        let mut res: Vec<FutureEncodedMessage> = vec![];
+        vec![Box::pin(ems)]
 
-        for file in index.files.iter() {
-            for block in file.blocks.iter() {
-                let id = rand::random::<i32>().abs();
-                let request = syncthing::Request {
-                    id,
-                    folder: index.folder.clone(),
-                    name: file.name.clone(),
-                    offset: block.offset,
-                    size: block.size,
-                    hash: block.hash.clone(),
-                    from_temporary: false,
-                };
-                debug!("Sending Request");
-                debug!("Sending Request {:?}", request);
-                let header_clone = header.clone();
-                let em = async move { self.encode_message(header_clone, request).unwrap() };
-                res.push(Box::pin(em));
-            }
-        }
-        res
-
-        // trace!("{:?}", index);
-        // let requests = self.update_index(index)?;
-        // let header = syncthing::Header {
+        // let header = Header {
         //     compression: 0,
-        //     r#type: syncthing::MessageType::Response.into(),
+        //     r#type: MessageType::Request.into(),
         // };
-        // requests
-        //     .into_iter()
-        //     .map(|request| self.encode_message(header.clone(), request))
-        //     .collect()
+
+        // self.storage_manager.save_client_index(&index);
+
+        // let mut res: Vec<BepReply> = vec![];
+
+        // for file in index.files.iter() {
+        //     for block in file.blocks.iter() {
+        //         let id = rand::random::<i32>().abs();
+        //         let request = Request {
+        //             id,
+        //             folder: index.folder.clone(),
+        //             name: file.name.clone(),
+        //             offset: block.offset,
+        //             size: block.size,
+        //             hash: block.hash.clone(),
+        //             from_temporary: false,
+        //         };
+        //         debug!("Sending Request");
+        //         debug!("Sending Request {:?}", request);
+        //         let header_clone = header.clone();
+        //         let em = async move { self.encode_message(header_clone, request).unwrap() };
+        //         res.push(Box::pin(em));
+        //     }
+        // }
+        // res
     }
 
-    fn handle_request(&self, request: syncthing::Request) -> Vec<FutureEncodedMessage> {
+    fn handle_request(&self, request: Request) -> Vec<BepReply> {
         debug!("Handling Request");
         debug!("{:?}", request);
 
@@ -226,7 +252,7 @@ impl BepProcessor {
         // let request_folder = if request.folder == self.index.folder {
         //     Ok(&request.folder)
         // } else {
-        //     Err(syncthing::ErrorCode::Generic)
+        //     Err(ErrorCode::Generic)
         // };
 
         // let file = request_folder.and_then(|x| {
@@ -234,7 +260,7 @@ impl BepProcessor {
         //         .files
         //         .iter()
         //         .find(|&x| x.name == request.name)
-        //         .ok_or(syncthing::ErrorCode::NoSuchFile)
+        //         .ok_or(ErrorCode::NoSuchFile)
         // });
 
         // let data = file.and_then(|f| {
@@ -244,7 +270,7 @@ impl BepProcessor {
         //         .find(|&b| {
         //             b.offset == request.offset && b.size == request.size && b.hash == request.hash
         //         })
-        //         .ok_or(syncthing::ErrorCode::NoSuchFile);
+        //         .ok_or(ErrorCode::NoSuchFile);
 
         //     block.and_then(|b| {
         //         storage::data_from_file_block(
@@ -253,18 +279,18 @@ impl BepProcessor {
         //             &f,
         //             &b,
         //         )
-        //         .map_err(|e| syncthing::ErrorCode::InvalidFile)
+        //         .map_err(|e| ErrorCode::InvalidFile)
         //     })
         // });
 
         // let code: i32 = data
         //     .as_ref()
         //     .err()
-        //     .unwrap_or(&syncthing::ErrorCode::NoError)
+        //     .unwrap_or(&ErrorCode::NoError)
         //     .to_owned()
         //     .into();
 
-        // let response = syncthing::Response {
+        // let response = Response {
         //     id: request.id,
         //     data: data.unwrap_or(Vec::new()),
         //     code,
@@ -272,37 +298,39 @@ impl BepProcessor {
         // debug!("Sending Response");
         // // debug!("Sending Response {:?}", response);
 
-        // let header = syncthing::Header {
+        // let header = Header {
         //     compression: 0,
-        //     r#type: syncthing::MessageType::Response.into(),
+        //     r#type: MessageType::Response.into(),
         // };
         // vec![Box::pin(self.encode_message(header, response).unwrap())]
     }
 
-    fn handle_response(&self, response: syncthing::Response) -> Vec<FutureEncodedMessage> {
+    fn handle_response(&self, response: Response) -> Vec<BepReply> {
         debug!("Handling Response");
         debug!(
             "Received Response: {:?}, {}",
             response.id,
             response.data.len()
         );
+        // TODO: store the outgoing requests and remove them once they are done, check if the
+        // checksum corresponds.
         vec![]
     }
 
-    fn handle_ping(&self, ping: syncthing::Ping) -> Vec<FutureEncodedMessage> {
+    fn handle_ping(&self, ping: Ping) -> Vec<BepReply> {
         debug!("Handling Ping");
         trace!("{:?}", ping);
         vec![]
     }
 
-    fn handle_close(&self, close: syncthing::Close) -> Vec<FutureEncodedMessage> {
+    fn handle_close(&self, close: Close) -> Vec<BepReply> {
         debug!("Handling Close");
         trace!("{:?}", close);
         vec![]
     }
 
-    async fn hello(&self) -> EncodedMessage {
-        let hello = syncthing::Hello {
+    async fn hello(&self) -> EncodedMessages {
+        let hello = Hello {
             device_name: self.config.name.clone(),
             client_name: env!("CARGO_PKG_NAME").to_string(),
             client_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -320,23 +348,23 @@ impl BepProcessor {
             .chain(message_bytes.into_iter())
             .collect();
 
-        EncodedMessage::new(message)
+        EncodedMessages::new(message)
     }
 
     // TODO: read this from the last state and add additional information from the config.
-    async fn cluster_config(&self) -> EncodedMessage {
-        let header = syncthing::Header {
+    async fn cluster_config(&self) -> EncodedMessages {
+        let header = Header {
             compression: 0,
-            r#type: syncthing::MessageType::ClusterConfig.into(),
+            r#type: MessageType::ClusterConfig.into(),
         };
 
         // let max_sequence: i64 = self.state.lock().await.sequence.try_into().unwrap();
 
-        // let this_device = syncthing::Device {
+        // let this_device = Device {
         //     id: self.config.id.into(),
         //     name: self.config.name.clone(),
         //     addresses: vec![self.config.net_address.clone()],
-        //     compression: syncthing::Compression::Never.into(),
+        //     compression: Compression::Never.into(),
         //     max_sequence,
         //     // Delta Index Exchange is not supported yet hence index_id is zero.
         //     index_id: 0,
@@ -349,11 +377,11 @@ impl BepProcessor {
 
         // // FIXME: This is an ugly hack to get the client id fix the workflow.
         // let client_id = self.config.trusted_peers.iter().next().unwrap();
-        // let client_device = syncthing::Device {
+        // let client_device = Device {
         //     id: client_id.into(),
         //     name: format!("syncthing"),
         //     addresses: vec![format!("127.0.0.1:220000")],
-        //     compression: syncthing::Compression::Never.into(),
+        //     compression: Compression::Never.into(),
         //     max_sequence: 100,
         //     // Delta Index Exchange is not supported yet hence index_id is zero.
         //     index_id: 0,
@@ -366,7 +394,7 @@ impl BepProcessor {
 
         // let folder_name = "test_a";
 
-        // let folder = syncthing::Folder {
+        // let folder = Folder {
         //     id: folder_name.to_string(),
         //     label: folder_name.to_string(),
         //     read_only: false,
@@ -378,7 +406,7 @@ impl BepProcessor {
         //     // ..Default::default()
         // };
 
-        // let cluster_config = syncthing::ClusterConfig { folders: vec![] };
+        // let cluster_config = ClusterConfig { folders: vec![] };
         let cluster_config = self
             .storage_manager
             .restore_cluster_config()
@@ -386,77 +414,174 @@ impl BepProcessor {
             .expect("something went wrong when restoring");
 
         trace!("Sending Cluster Config: {:?}", &cluster_config);
-        self.encode_message(header, cluster_config).unwrap()
+        encode_message(header, cluster_config).unwrap()
     }
 
-    pub async fn index(&self) -> EncodedMessage {
-        let header = syncthing::Header {
+    pub async fn index(&self) -> EncodedMessages {
+        let header = Header {
             compression: 0,
-            r#type: syncthing::MessageType::Index.into(),
+            r#type: MessageType::Index.into(),
         };
 
-        let index = syncthing::Index {
+        let index = Index {
             folder: format!("vqick-icdkt"),
             files: vec![],
         };
 
         debug!("Sending Index");
-        self.encode_message(header, index).unwrap()
+        encode_message(header, index).unwrap()
     }
 
-    pub async fn ping(&self) -> EncodedMessage {
-        let header = syncthing::Header {
+    pub async fn ping(&self) -> EncodedMessages {
+        let header = Header {
             compression: 0,
-            r#type: syncthing::MessageType::Ping.into(),
+            r#type: MessageType::Ping.into(),
         };
 
-        let ping = syncthing::Ping {};
+        let ping = Ping {};
 
         debug!("Sending Ping");
-        self.encode_message(header, ping).unwrap()
+        encode_message(header, ping).unwrap()
     }
 
-    fn update_index(&mut self, index: syncthing::Index) -> Result<Vec<syncthing::Request>, String> {
+    fn update_index(&mut self, index: Index) -> Result<Vec<Request>, String> {
         todo!();
     }
+}
 
-    fn encode_message<T: prost::Message>(
-        &self,
-        header: syncthing::Header,
-        message: T,
-    ) -> Result<EncodedMessage, String> {
-        let header_bytes: Vec<u8> = header.encode_to_vec();
-        let header_len: u16 = header_bytes.len().try_into().unwrap();
+fn encode_message<T: prost::Message>(
+    header: Header,
+    message: T,
+) -> Result<EncodedMessages, String> {
+    let header_bytes: Vec<u8> = header.encode_to_vec();
+    let header_len: u16 = header_bytes.len().try_into().unwrap();
 
-        let message_bytes = message.encode_to_vec();
-        let message_len: u32 = message_bytes.len().try_into().unwrap();
+    let message_bytes = message.encode_to_vec();
+    let message_len: u32 = message_bytes.len().try_into().unwrap();
 
-        trace!(
-            "Sending message with header len: {:?}, {:02x?}",
-            header_len,
-            header_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
-        );
+    trace!(
+        "Sending message with header len: {:?}, {:02x?}",
+        header_len,
+        header_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
+    );
 
-        let message: Vec<u8> = vec![]
-            .into_iter()
-            .chain(header_len.to_be_bytes().into_iter())
-            .chain(header_bytes.into_iter())
-            .chain(message_len.to_be_bytes().into_iter())
-            .chain(message_bytes.into_iter())
-            .collect();
+    let message: Vec<u8> = vec![]
+        .into_iter()
+        .chain(header_len.to_be_bytes().into_iter())
+        .chain(header_bytes.into_iter())
+        .chain(message_len.to_be_bytes().into_iter())
+        .chain(message_bytes.into_iter())
+        .collect();
 
-        trace!(
-            "Sending message with len: {:?}, {:02x?}",
-            message_len,
-            message_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
-        );
-        trace!(
-            // "Outgoing message: {:#04x?}",
-            // "Outgoing message: {:02x?}",
-            "Outgoing message: {:?}",
-            &message.clone().into_iter().collect::<Vec<u8>>()
-        );
+    trace!(
+        "Sending message with len: {:?}, {:02x?}",
+        message_len,
+        message_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
+    );
+    trace!(
+        // "Outgoing message: {:#04x?}",
+        // "Outgoing message: {:02x?}",
+        "Outgoing message: {:?}",
+        &message.clone().into_iter().collect::<Vec<u8>>()
+    );
 
-        Ok(EncodedMessage { data: message })
+    Ok(EncodedMessages { data: message })
+}
+
+/// Returns a set of files present in [patch] that are not present in [base]. The returned files
+/// cointain only the blocks not present in [base].
+fn diff_indices(base: &Index, patch: &Index) -> Vec<FileInfo> {
+    // TODO: store the conflicting files in the state
+    let mut conflicting_files: Vec<FileInfo> = vec![];
+    let mut missing_files: Vec<FileInfo> = vec![];
+    let base_file_map: HashMap<&String, &FileInfo> =
+        base.files.iter().map(|x| (&x.name, x)).collect();
+
+    // TODO: remove this, we can just use the iterator in the for loop
+    let patch_file_map: HashMap<&String, &FileInfo> =
+        patch.files.iter().map(|x| (&x.name, x)).collect();
+
+    for (name, patch_file_info) in patch_file_map.into_iter() {
+        if let Some(base_file_info) = base_file_map.get(name) {
+            let max_patch_version = patch_file_info
+                .version
+                .as_ref()
+                .expect("The file must be versioned")
+                .counters
+                .iter()
+                .max_by_key(|c| c.value)
+                .expect("The file must be versioned");
+            let max_base_version = base_file_info
+                .version
+                .as_ref()
+                .expect("The file must be versioned")
+                .counters
+                .iter()
+                .max_by_key(|c| c.value)
+                .expect("The file must be versioned");
+            if max_patch_version.value == max_base_version.value
+                && max_patch_version.id != max_base_version.id
+            {
+                conflicting_files.push(patch_file_info.clone());
+            } else if max_patch_version.value == max_base_version.value
+                && max_patch_version.id == max_base_version.id
+            {
+                // Not all blocks have been copied yet
+                if base_file_info.blocks.len()
+                    < ((patch_file_info.size + patch_file_info.block_size as i64 - 1)
+                        / (patch_file_info.block_size as i64)) as usize
+                {
+                    let base_file_blocks: HashMap<&Vec<u8>, &BlockInfo> =
+                        base_file_info.blocks.iter().map(|b| (&b.hash, b)).collect();
+
+                    let mut missing_blocks: Vec<BlockInfo> = vec![];
+
+                    for patch_block in patch_file_info.blocks.iter() {
+                        if base_file_blocks.get(&patch_block.hash).is_none() {
+                            missing_blocks.push(patch_block.clone());
+                        }
+                    }
+
+                    // We must have found some differences
+                    assert!(missing_blocks.len() > 0);
+
+                    let mut missing_file = patch_file_info.clone();
+                    missing_file.blocks = missing_blocks;
+
+                    missing_files.push(missing_file);
+                }
+            } else if max_patch_version.value > max_base_version.value {
+                missing_files.push(patch_file_info.clone());
+            }
+        } else {
+            missing_files.push(patch_file_info.clone());
+        }
     }
+
+    debug!("Missing Files: {:?}", &missing_files);
+
+    missing_files
+}
+
+fn create_requests(folder: &String, missing_files: Vec<FileInfo>) -> Vec<Request> {
+    missing_files
+        .iter()
+        .map(|file| {
+            file.blocks.iter().map(|block| {
+                // TODO: check if the request should be sequential number
+                let id = rand::random::<i32>().abs();
+                let request = Request {
+                    id,
+                    folder: folder.clone(),
+                    name: file.name.clone(),
+                    offset: block.offset,
+                    size: block.size,
+                    hash: block.hash.clone(),
+                    from_temporary: false,
+                };
+                request
+            })
+        })
+        .flatten()
+        .collect()
 }

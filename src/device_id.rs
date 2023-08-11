@@ -12,12 +12,12 @@ pub struct DeviceId {
     pub id: [u8; DEVICE_ID_LEN],
 }
 
-impl ToString for DeviceId {
-    fn to_string(&self) -> String {
+impl fmt::Display for DeviceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let res = BASE32.encode(&self.id);
         let res = res.trim_end_matches("=");
         let res = luhnify(res).expect("It must always be possible to lunhify");
-        chunkify(&res)
+        write!(f, "{}", chunkify(&res))
     }
 }
 

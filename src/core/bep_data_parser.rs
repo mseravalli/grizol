@@ -2,8 +2,6 @@
 // It is important to maintain the same structure as in the proto.
 use crate::connectivity::OpenConnection;
 use crate::device_id::DeviceId;
-use crate::storage;
-use crate::storage::index_from_path;
 use crate::syncthing;
 use prost::Message;
 use rand::prelude::*;

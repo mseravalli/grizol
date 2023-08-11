@@ -13,7 +13,7 @@ mod syncthing {
 use crate::connectivity::ServerConfigArgs;
 use crate::connectivity::{OpenConnection, TlsServer};
 use crate::core::bep_data_parser::{BepDataParser, CompleteMessage};
-use crate::core::{BepConfig, BepProcessor, EncodedMessage};
+use crate::core::{BepConfig, BepProcessor, EncodedMessages};
 use crate::device_id::DeviceId;
 use clap::Parser;
 use data_encoding::BASE32;
@@ -188,8 +188,8 @@ async fn handle_incoming_data(
     let (mut reader, mut writer) = split(tls_stream);
 
     let mut data_parser = BepDataParser::new();
-    // TODO: check if 2<<8 makes sense
-    let (em_sender, mut em_receiver) = mpsc::channel::<EncodedMessage>(2 << 8);
+    // TODO: check if 1<<8 makes sense
+    let (em_sender, mut em_receiver) = mpsc::channel::<EncodedMessages>(1 << 8);
 
     let bep_processor_clone = bep_processor.clone();
     let em_sender_clone = em_sender.clone();
@@ -197,8 +197,8 @@ async fn handle_incoming_data(
     tokio::spawn(async move {
         let bep_processor = bep_processor_clone;
         let em_sender = em_sender_clone;
-        // TODO: check if 2<<16 makes sense
-        let mut buf = [0u8; 2 << 16];
+        // TODO: check if 1<<16 makes sense
+        let mut buf = [0u8; 1 << 16];
         loop {
             let n = reader.read(&mut buf[..]).await?;
 
@@ -211,14 +211,15 @@ async fn handle_incoming_data(
             // TODO: remove unwrap
             let complete_messages = data_parser.parse_incoming_data(&buf[..n]).unwrap();
 
-            let encoded_messages: Vec<_> = complete_messages
+            let bep_replies: Vec<_> = complete_messages
                 .into_iter()
                 .map(|cm| bep_processor.handle_complete_message(cm))
                 .flatten()
                 .collect();
 
-            for em in encoded_messages.into_iter() {
-                if let Err(e) = em_sender.send(em.await).await {
+            for bep_reply in bep_replies.into_iter() {
+                if let Err(e) = em_sender.send(bep_reply.await).await {
+                    error!("Failed to send message due to {:?}", e);
                     return Err(io::Error::new(
                         io::ErrorKind::BrokenPipe,
                         format!("Failed to send message due to {:?}", e),
@@ -235,7 +236,9 @@ async fn handle_incoming_data(
             tokio::time::sleep(Duration::from_secs(45)).await;
 
             let ping = bep_processor.ping().await;
+
             if let Err(e) = em_sender.send(ping).await {
+                error!("Failed to send message due to {:?}", e);
                 return Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     format!("Failed to send message due to {:?}", e),
