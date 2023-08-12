@@ -109,10 +109,14 @@ impl BepState {
         }
     }
 
+    fn load_request_id(&self) -> i32 {
+        self.request_id
+    }
+
     /// Increments the current value by 1, returning the previous value of [request_id].
-    fn fetch_inc_request_id(&mut self) -> i32 {
+    fn fetch_add_request_id(&mut self, val: i32) -> i32 {
         let old_value = self.request_id;
-        self.request_id += 1;
+        self.request_id += val;
         old_value
     }
 
@@ -121,6 +125,10 @@ impl BepState {
     }
 
     fn insert_conflicting_files(&mut self, conflicting_files: Vec<FileInfo>) {
+        // TODO
+    }
+
+    fn insert_requests(&mut self, requests: &Vec<Request>) {
         // TODO
     }
 }
@@ -206,21 +214,28 @@ impl BepProcessor {
         // debug!("Received Index: {:#?}", &index);
 
         let ems = async move {
-            let index_diff = {
-                let state = &self.state.lock().await;
+            let missing_files = {
+                let state = &mut self.state.lock().await;
 
                 let base: &Index = state.index(&index.folder, &self.config.id).expect(&format!(
                     "The index for device {} should be present",
                     &self.config.id
                 ));
-                diff_indices(base, &index)
+
+                let index_diff = diff_indices(base, &index);
+                state.insert_conflicting_files(index_diff.conflicting_files);
+
+                index_diff.missing_files
             };
 
             let requests = {
                 let state = &mut self.state.lock().await;
-                // TODO: should insert_conflicting_files go in a different block?
-                state.insert_conflicting_files(index_diff.conflicting_files);
-                create_requests(state, &index.folder, index_diff.missing_files)
+                let base_req_id = state.load_request_id();
+                let requests = create_requests(base_req_id, &index.folder, missing_files);
+                let max_req_id = requests.iter().map(|x| x.id).max().unwrap_or(base_req_id);
+                state.fetch_add_request_id(max_req_id - base_req_id);
+                state.insert_requests(&requests);
+                requests
             };
 
             let mut ems = EncodedMessages::empty();
@@ -595,18 +610,20 @@ fn diff_indices(base: &Index, patch: &Index) -> IndexDiff {
     }
 }
 
+// TODO: think if we can have a better way to update the request id instead of passing the state
 fn create_requests(
-    state: &mut BepState,
+    base_request_id: i32,
     folder: &String,
     missing_files: Vec<FileInfo>,
 ) -> Vec<Request> {
+    let mut request_id = base_request_id;
     let mut res: Vec<Request> = vec![];
     for file in missing_files.iter() {
         for block in file.blocks.iter() {
             // TODO: check if the request should be sequential number
-            let id = state.fetch_inc_request_id();
+            request_id += 1;
             let request = Request {
-                id,
+                id: request_id,
                 folder: folder.clone(),
                 name: file.name.clone(),
                 offset: block.offset,
