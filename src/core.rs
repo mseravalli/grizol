@@ -67,9 +67,21 @@ struct BepState {
     indices: HashMap<String, HashMap<DeviceId, syncthing::Index>>,
     cluster: ClusterConfig,
     sequence: u64,
+    request_id: i32,
+    conflicting_files: Vec<FileInfo>,
 }
 
 impl BepState {
+    pub fn new() -> Self {
+        BepState {
+            indices: Default::default(),
+            cluster: ClusterConfig { folders: vec![] },
+            sequence: 0,
+            request_id: 0,
+            conflicting_files: vec![],
+        }
+    }
+
     fn update_cluster_config(&mut self, my_device_id: DeviceId, other: &ClusterConfig) {
         for other_folder in other.folders.iter() {
             if !self.cluster.folders.iter().any(|f| f.id == other_folder.id) {
@@ -96,6 +108,21 @@ impl BepState {
             }
         }
     }
+
+    /// Increments the current value by 1, returning the previous value of [request_id].
+    fn fetch_inc_request_id(&mut self) -> i32 {
+        let old_value = self.request_id;
+        self.request_id += 1;
+        old_value
+    }
+
+    fn index<'a>(&'a self, folder: &str, device_id: &DeviceId) -> Option<&'a Index> {
+        self.indices.get(folder).map(|x| x.get(device_id)).flatten()
+    }
+
+    fn insert_conflicting_files(&mut self, conflicting_files: Vec<FileInfo>) {
+        // TODO
+    }
 }
 
 type BepReply<'a> = Pin<Box<dyn Future<Output = EncodedMessages> + Send + 'a>>;
@@ -109,11 +136,7 @@ pub struct BepProcessor {
 
 impl BepProcessor {
     pub fn new(config: BepConfig) -> Self {
-        let bep_state = BepState {
-            indices: Default::default(),
-            cluster: ClusterConfig { folders: vec![] },
-            sequence: 0,
-        };
+        let bep_state = BepState::new();
 
         BepProcessor {
             config,
@@ -183,21 +206,23 @@ impl BepProcessor {
         // debug!("Received Index: {:#?}", &index);
 
         let ems = async move {
-            let missing_files = {
-                let indices = &self.state.lock().await.indices;
-                let local_index = indices
-                    .get(&index.folder)
-                    .map(|x| x.get(&self.config.id))
-                    .flatten()
-                    .expect(&format!(
-                        "The index for device {} should be present",
-                        &self.config.id
-                    ));
+            let index_diff = {
+                let state = &self.state.lock().await;
 
-                diff_indices(&local_index, &index)
+                let base: &Index = state.index(&index.folder, &self.config.id).expect(&format!(
+                    "The index for device {} should be present",
+                    &self.config.id
+                ));
+                diff_indices(base, &index)
             };
 
-            let requests = create_requests(&index.folder, missing_files);
+            let requests = {
+                let state = &mut self.state.lock().await;
+                // TODO: should insert_conflicting_files go in a different block?
+                state.insert_conflicting_files(index_diff.conflicting_files);
+                create_requests(state, &index.folder, index_diff.missing_files)
+            };
+
             let mut ems = EncodedMessages::empty();
 
             let header = Header {
@@ -488,10 +513,14 @@ fn encode_message<T: prost::Message>(
     Ok(EncodedMessages { data: message })
 }
 
+struct IndexDiff {
+    missing_files: Vec<FileInfo>,
+    conflicting_files: Vec<FileInfo>,
+}
+
 /// Returns a set of files present in [patch] that are not present in [base]. The returned files
 /// cointain only the blocks not present in [base].
-fn diff_indices(base: &Index, patch: &Index) -> Vec<FileInfo> {
-    // TODO: store the conflicting files in the state
+fn diff_indices(base: &Index, patch: &Index) -> IndexDiff {
     let mut conflicting_files: Vec<FileInfo> = vec![];
     let mut missing_files: Vec<FileInfo> = vec![];
     let base_file_map: HashMap<&String, &FileInfo> =
@@ -560,28 +589,33 @@ fn diff_indices(base: &Index, patch: &Index) -> Vec<FileInfo> {
 
     debug!("Missing Files: {:?}", &missing_files);
 
-    missing_files
+    IndexDiff {
+        missing_files,
+        conflicting_files,
+    }
 }
 
-fn create_requests(folder: &String, missing_files: Vec<FileInfo>) -> Vec<Request> {
-    missing_files
-        .iter()
-        .map(|file| {
-            file.blocks.iter().map(|block| {
-                // TODO: check if the request should be sequential number
-                let id = rand::random::<i32>().abs();
-                let request = Request {
-                    id,
-                    folder: folder.clone(),
-                    name: file.name.clone(),
-                    offset: block.offset,
-                    size: block.size,
-                    hash: block.hash.clone(),
-                    from_temporary: false,
-                };
-                request
-            })
-        })
-        .flatten()
-        .collect()
+fn create_requests(
+    state: &mut BepState,
+    folder: &String,
+    missing_files: Vec<FileInfo>,
+) -> Vec<Request> {
+    let mut res: Vec<Request> = vec![];
+    for file in missing_files.iter() {
+        for block in file.blocks.iter() {
+            // TODO: check if the request should be sequential number
+            let id = state.fetch_inc_request_id();
+            let request = Request {
+                id,
+                folder: folder.clone(),
+                name: file.name.clone(),
+                offset: block.offset,
+                size: block.size,
+                hash: block.hash.clone(),
+                from_temporary: false,
+            };
+            res.push(request)
+        }
+    }
+    res
 }
