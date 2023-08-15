@@ -50,6 +50,10 @@ impl StorageManager {
         todo!();
     }
 
+    pub async fn store_block(&self, data: Vec<u8>, request: &syncthing::Request) -> io::Result<()> {
+        todo!();
+    }
+
     // Always creates a new file
     async fn create_empty_file(&self, rel_path: &str, file_size: usize) -> io::Result<()> {
         let mut file = OpenOptions::new()

@@ -16,13 +16,14 @@ use std::array::TryFromSliceError;
 use std::collections::{BTreeMap, HashMap, HashSet};
 // use std::future::Future;
 use futures::future::{Future, FutureExt};
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::Path;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 use syncthing::{
-    BlockInfo, Close, ClusterConfig, FileInfo, Header, Hello, Index, IndexUpdate, MessageType,
-    Ping, Request, Response,
+    BlockInfo, Close, ClusterConfig, Counter, ErrorCode, FileInfo, Header, Hello, Index,
+    IndexUpdate, MessageType, Ping, Request, Response,
 };
 use tokio::sync::Mutex;
 
@@ -55,6 +56,7 @@ impl EncodedMessages {
 
 // TODO: initialize through a from config or something, it's probably easier
 /// Data that will not change troughout the life ot the program.
+#[derive(Debug, Clone)]
 pub struct BepConfig {
     pub id: DeviceId,
     pub name: String,
@@ -64,30 +66,37 @@ pub struct BepConfig {
 }
 
 struct BepState {
+    config: BepConfig,
     indices: HashMap<String, HashMap<DeviceId, syncthing::Index>>,
     cluster: ClusterConfig,
     sequence: u64,
     request_id: i32,
-    conflicting_files: Vec<FileInfo>,
+    conflicting_files: HashMap<(String, String), FileInfo>,
+    outgoing_requests: HashMap<i32, Request>,
 }
 
 impl BepState {
-    pub fn new() -> Self {
+    pub fn new(config: BepConfig) -> Self {
         BepState {
+            config,
             indices: Default::default(),
-            cluster: ClusterConfig { folders: vec![] },
+            cluster: ClusterConfig {
+                folders: Default::default(),
+            },
             sequence: 0,
             request_id: 0,
-            conflicting_files: vec![],
+            conflicting_files: Default::default(),
+            outgoing_requests: Default::default(),
         }
     }
 
-    fn update_cluster_config(&mut self, my_device_id: DeviceId, other: &ClusterConfig) {
+    fn update_cluster_config(&mut self, other: &ClusterConfig) {
         for other_folder in other.folders.iter() {
+            //  TODO: update info about other devices as well
             if !self.cluster.folders.iter().any(|f| f.id == other_folder.id) {
                 if other_folder.devices.iter().any(|d| {
                     DeviceId::try_from(&d.id[..]).expect("Cannot convert to DeviceId")
-                        == my_device_id
+                        == self.config.id
                 }) {
                     self.cluster.folders.push(other_folder.clone());
 
@@ -124,12 +133,41 @@ impl BepState {
         self.indices.get(folder).map(|x| x.get(device_id)).flatten()
     }
 
-    fn insert_conflicting_files(&mut self, conflicting_files: Vec<FileInfo>) {
-        // TODO
+    fn update_index_block(&mut self, request_id: &i32) -> Result<(), String> {
+        let request = &self.outgoing_requests[request_id];
+
+        let local_index = self
+            .indices
+            .get_mut(&request.folder)
+            .map(|x| x.get_mut(&self.config.id))
+            .flatten()
+            .expect("The local index must be there");
+
+        // FIXME: update the block information in the local index, we might need to refer to the
+        // other indices as well to verify the hash? otherwise update this info at the beginning at
+        // the time the index is received
+    }
+
+    // TOOO: better handle conflicting files, also when updating the index
+    fn insert_conflicting_files(&mut self, folder: String, conflicting_files: Vec<FileInfo>) {
+        for file in conflicting_files.into_iter() {
+            self.conflicting_files
+                .insert((folder.clone(), file.name.clone()), file);
+        }
     }
 
     fn insert_requests(&mut self, requests: &Vec<Request>) {
-        // TODO
+        for request in requests.iter() {
+            self.outgoing_requests.insert(request.id, request.clone());
+        }
+    }
+
+    fn get_request<'a>(&'a self, request_id: &i32) -> Option<&'a Request> {
+        self.outgoing_requests.get(request_id)
+    }
+
+    fn remove_request(&mut self, request_id: &i32) -> Option<Request> {
+        self.outgoing_requests.remove(request_id)
     }
 }
 
@@ -144,7 +182,7 @@ pub struct BepProcessor {
 
 impl BepProcessor {
     pub fn new(config: BepConfig) -> Self {
-        let bep_state = BepState::new();
+        let bep_state = BepState::new(config.clone());
 
         BepProcessor {
             config,
@@ -187,7 +225,7 @@ impl BepProcessor {
             self.state
                 .lock()
                 .await
-                .update_cluster_config(self.config.id, &cluster_config);
+                .update_cluster_config(&cluster_config);
             {
                 let cc = &self.state.lock().await.cluster;
                 // debug!("Self cluster config: {:#?}", cc);
@@ -223,7 +261,10 @@ impl BepProcessor {
                 ));
 
                 let index_diff = diff_indices(base, &index);
-                state.insert_conflicting_files(index_diff.conflicting_files);
+                state.insert_conflicting_files(
+                    index.folder.to_string(),
+                    index_diff.conflicting_files,
+                );
 
                 index_diff.missing_files
             };
@@ -352,8 +393,38 @@ impl BepProcessor {
             response.id,
             response.data.len()
         );
-        // TODO: store the outgoing requests and remove them once they are done, check if the
-        // checksum corresponds.
+
+        if ErrorCode::NoError
+            != ErrorCode::from_i32(response.code).expect("Enum value must be valid")
+        {
+            warn!(
+                "Request with id {} genereated an error: {:?} ",
+                response.id, response.code
+            );
+        }
+
+        // TODO: put this in an external method and use ? with the results.
+        let res = async move {
+            let state = &mut self.state.lock().await;
+            if let Some(request) = state.get_request(&response.id) {
+                check_data(&response.data, &request.hash)
+                    .expect("The hash does not match the data");
+                self.storage_manager
+                    .store_block(response.data, request)
+                    .await
+                    .expect("Error while storing the data");
+                state
+                    .update_index_block(&response.id)
+                    .expect("It was not possible to update the index");
+                state.remove_request(&response.id);
+            } else {
+                error!(
+                    "Response with id {} does not have a corresponding request",
+                    response.id
+                );
+            }
+        };
+
         vec![]
     }
 
@@ -483,10 +554,6 @@ impl BepProcessor {
         debug!("Sending Ping");
         encode_message(header, ping).unwrap()
     }
-
-    fn update_index(&mut self, index: Index) -> Result<Vec<Request>, String> {
-        todo!();
-    }
 }
 
 fn encode_message<T: prost::Message>(
@@ -533,6 +600,16 @@ struct IndexDiff {
     conflicting_files: Vec<FileInfo>,
 }
 
+fn get_file_max_version(file: &FileInfo) -> &Counter {
+    file.version
+        .as_ref()
+        .expect("The file must be versioned")
+        .counters
+        .iter()
+        .max_by_key(|c| c.value)
+        .expect("The file must be versioned")
+}
+
 /// Returns a set of files present in [patch] that are not present in [base]. The returned files
 /// cointain only the blocks not present in [base].
 fn diff_indices(base: &Index, patch: &Index) -> IndexDiff {
@@ -547,22 +624,8 @@ fn diff_indices(base: &Index, patch: &Index) -> IndexDiff {
 
     for (name, patch_file_info) in patch_file_map.into_iter() {
         if let Some(base_file_info) = base_file_map.get(name) {
-            let max_patch_version = patch_file_info
-                .version
-                .as_ref()
-                .expect("The file must be versioned")
-                .counters
-                .iter()
-                .max_by_key(|c| c.value)
-                .expect("The file must be versioned");
-            let max_base_version = base_file_info
-                .version
-                .as_ref()
-                .expect("The file must be versioned")
-                .counters
-                .iter()
-                .max_by_key(|c| c.value)
-                .expect("The file must be versioned");
+            let max_patch_version = get_file_max_version(patch_file_info);
+            let max_base_version = get_file_max_version(base_file_info);
             if max_patch_version.value == max_base_version.value
                 && max_patch_version.id != max_base_version.id
             {
@@ -610,7 +673,8 @@ fn diff_indices(base: &Index, patch: &Index) -> IndexDiff {
     }
 }
 
-// TODO: think if we can have a better way to update the request id instead of passing the state
+// TODO: maybe it might make sense to pass an iterator to the function to generate the ids so that
+// we can be more flexible? Check if that's an overkill.
 fn create_requests(
     base_request_id: i32,
     folder: &String,
@@ -620,7 +684,6 @@ fn create_requests(
     let mut res: Vec<Request> = vec![];
     for file in missing_files.iter() {
         for block in file.blocks.iter() {
-            // TODO: check if the request should be sequential number
             request_id += 1;
             let request = Request {
                 id: request_id,
@@ -635,4 +698,16 @@ fn create_requests(
         }
     }
     res
+}
+
+fn check_data(data: &[u8], hash: &[u8]) -> Result<(), String> {
+    let mut hasher_sha256 = Sha256::new();
+    hasher_sha256.update(data);
+
+    let data_hash = hasher_sha256.finalize().to_vec();
+    if data_hash == hash {
+        Ok(())
+    } else {
+        Err(format!("Hash of incoming data does not match request data"))
+    }
 }
