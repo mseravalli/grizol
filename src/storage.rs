@@ -1,10 +1,10 @@
-use crate::syncthing;
+use crate::syncthing::{ClusterConfig, Index, Request};
 use crate::DeviceId;
 use prost::Message;
 use sha2::{Digest, Sha256};
 use std::io;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 
 // TODO: verify this is a reasonable size
 const BUF_SIZE: usize = 1 << 14; // 16 KiB
@@ -22,10 +22,7 @@ impl StorageManager {
         }
     }
     // TODO: this is just a temporary hack, remove this
-    pub async fn save_cluster_config(
-        &self,
-        cluster_config: &syncthing::ClusterConfig,
-    ) -> io::Result<()> {
+    pub async fn save_cluster_config(&self, cluster_config: &ClusterConfig) -> io::Result<()> {
         let bytes = cluster_config.encode_to_vec();
 
         let mut file = File::create(&self.cluster_config_path).await?;
@@ -36,43 +33,64 @@ impl StorageManager {
     }
 
     // TODO: this is just a temporary hack, remove this
-    pub async fn restore_cluster_config(&self) -> io::Result<syncthing::ClusterConfig> {
+    pub async fn restore_cluster_config(&self) -> io::Result<ClusterConfig> {
         let mut file = File::open(&self.cluster_config_path).await?;
         let mut buf: [u8; 1 << 16] = [0; 1 << 16];
         let read_bytes = file.read(&mut buf[..]).await?;
 
-        let cluster_config = syncthing::ClusterConfig::decode(&buf[..read_bytes])?;
+        let cluster_config = ClusterConfig::decode(&buf[..read_bytes])?;
 
         Ok(cluster_config)
     }
 
-    pub async fn save_client_index(&self, index: &syncthing::Index) -> io::Result<()> {
+    pub async fn save_client_index(&self, index: &Index) -> io::Result<()> {
         todo!();
     }
 
-    pub async fn store_block(&self, data: Vec<u8>, request: &syncthing::Request) -> io::Result<()> {
-        todo!();
+    pub async fn store_block(
+        &self,
+        data: Vec<u8>,
+        request: &Request,
+        file_size: u64,
+    ) -> io::Result<()> {
+        debug!("Start storing block");
+        // TODO: the file should already be there
+        let mut file = self.create_empty_file(&request.name, file_size).await?;
+
+        let offset = request.offset.try_into().unwrap();
+
+        // if offset != 0 {
+        //     // FIXME: this is for testing only
+        //     return Ok(());
+        // }
+        trace!("offset: {}", &offset);
+        trace!("block {:?}", &data);
+
+        file.seek(SeekFrom::Start(offset)).await?;
+
+        file.write_all(&data).await?;
+        let res = file.flush().await;
+        debug!("Finished storing block");
+        res
     }
 
-    // Always creates a new file
-    async fn create_empty_file(&self, rel_path: &str, file_size: usize) -> io::Result<()> {
+    // Always creates a new file if it does not exist
+    async fn create_empty_file(&self, rel_path: &str, file_size: u64) -> io::Result<(File)> {
+        debug!(
+            "Creating new file of size {} under {}",
+            &file_size, rel_path
+        );
+        // TODO: create the folder first if that does not exist
         let mut file = OpenOptions::new()
             .write(true)
-            .create_new(true)
-            // .create(true)
-            // .truncate(true)
+            .create(true)
+            .truncate(false)
             .open(format!("{}/{}", self.stage_dir, rel_path))
             .await?;
 
-        let zero_buf = [0u8; BUF_SIZE];
+        file.set_len(file_size).await?;
 
-        for i in 0..(file_size / BUF_SIZE) + 1 {
-            let bytes_to_write = std::cmp::min(BUF_SIZE, file_size - i * BUF_SIZE);
-
-            file.write(&zero_buf[..bytes_to_write]).await?;
-        }
-
-        file.flush().await
+        Ok(file)
     }
 }
 
@@ -314,22 +332,33 @@ impl StorageManager {
 #[cfg(test)]
 mod tests {
     use crate::storage::StorageManager;
-    use crate::syncthing;
+    use crate::syncthing::{ClusterConfig, Index, Request};
     use std::path::Path;
 
-    // // TODO: use a better file path
-    // fn file_path() -> String {
-    //     "/home/marco/test_000/test_1".to_string()
-    // }
+    // TODO: use a better file path
+    fn file_path() -> String {
+        "/home/marco/test_000/test_1".to_string()
+    }
 
     #[tokio::test]
-    async fn create_emtpy_file__new_location__succeeds() {
+    async fn store_block__new_file__succeeds() {
         let storage_manager = StorageManager::new(
             format!("/tmp/grizol_cluster_config"),
             format!("/tmp/grizol_staging"),
         );
 
-        let result = storage_manager.create_empty_file("bubu", 123456).await;
+        let data = vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+        let request = Request {
+            id: 0,
+            folder: format!("test_dir"),
+            name: format!("a_file"),
+            offset: 0,
+            size: data.len() as i32,
+            hash: vec![],
+            from_temporary: false,
+        };
+
+        let result = storage_manager.store_block(data, &request).await;
 
         match result {
             Ok(x) => assert_eq!(0, 0),
@@ -338,6 +367,23 @@ mod tests {
             }
         }
     }
+
+    // #[tokio::test]
+    // async fn create_emtpy_file__new_location__succeeds() {
+    //     let storage_manager = StorageManager::new(
+    //         format!("/tmp/grizol_cluster_config"),
+    //         format!("/tmp/grizol_staging"),
+    //     );
+
+    //     let result = storage_manager.create_empty_file("bubu", 123456).await;
+
+    //     match result {
+    //         Ok(x) => assert_eq!(0, 0),
+    //         Err(e) => {
+    //             assert_eq!("No error expected", format!("{}", e))
+    //         }
+    //     }
+    // }
 
     // #[test]
     // fn hash_file_blocks_buf_size_lt_block_size() {

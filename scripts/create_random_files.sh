@@ -9,7 +9,7 @@ fi
 
 pushd ${dest_dir}
 
-for i in $(seq 1 3); do
+for i in $(seq 1 1); do
   file=$(cat /dev/urandom | head -c 2000000 | base32)
   echo ${file} > $(echo ${file}| head -c 20)
 done

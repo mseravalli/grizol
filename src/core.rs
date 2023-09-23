@@ -65,6 +65,7 @@ pub struct BepConfig {
     pub net_address: String,
 }
 
+#[derive(Debug)]
 struct BepState {
     config: BepConfig,
     indices: HashMap<String, HashMap<DeviceId, syncthing::Index>>,
@@ -133,8 +134,16 @@ impl BepState {
         self.indices.get(folder).map(|x| x.get(device_id)).flatten()
     }
 
-    fn update_index_block(&mut self, request_id: &i32) -> Result<(), String> {
+    fn update_index_block(&mut self, request_id: &i32, weak_hash: u32) -> Result<(), String> {
         let request = &self.outgoing_requests[request_id];
+        debug!("Outgoing request: {:?}", &request);
+
+        let new_block = BlockInfo {
+            offset: request.offset,
+            size: request.size,
+            hash: request.hash.clone(),
+            weak_hash,
+        };
 
         let local_index = self
             .indices
@@ -143,9 +152,54 @@ impl BepState {
             .flatten()
             .expect("The local index must be there");
 
-        // FIXME: update the block information in the local index, we might need to refer to the
-        // other indices as well to verify the hash? otherwise update this info at the beginning at
-        // the time the index is received
+        trace!("Local Index: {:?}", &local_index);
+
+        // TODO: use a smarter way to search the file
+        // TODO: verify if the assumption that we must have a single result is valid
+        let file_info: &mut FileInfo = local_index
+            .files
+            .iter_mut()
+            .filter(|x| x.name == request.name)
+            .next()
+            .expect("There should be a matching file for the request");
+
+        // If block is already present, panic.
+        let existing_block = file_info
+            .blocks
+            .iter()
+            .filter(|x| x.hash == new_block.hash)
+            .next();
+        assert!(
+            existing_block.is_none(),
+            "The block is already present in the index"
+        );
+
+        file_info.blocks.push(new_block);
+
+        Ok(())
+    }
+
+    fn insert_missing_files_local_index(
+        &mut self,
+        folder_name: &str,
+        missing_files: &Vec<FileInfo>,
+    ) -> Result<(), String> {
+        let local_index: &mut Index = self
+            .indices
+            .get_mut(folder_name)
+            .map(|x| x.get_mut(&self.config.id))
+            .flatten()
+            .expect("Local index must be present");
+
+        for missing_file in missing_files.into_iter() {
+            let file = FileInfo {
+                blocks: vec![],
+                ..missing_file.clone()
+            };
+
+            local_index.files.push(file);
+        }
+        Ok(())
     }
 
     // TOOO: better handle conflicting files, also when updating the index
@@ -154,6 +208,19 @@ impl BepState {
             self.conflicting_files
                 .insert((folder.clone(), file.name.clone()), file);
         }
+    }
+
+    fn file_local_index(&self, folder_name: &str, file_name: &str) -> Option<&FileInfo> {
+        let local_index: &Index = self
+            .indices
+            .get(folder_name)
+            .map(|x| x.get(&self.config.id))
+            .flatten()
+            .expect("Local index must be present");
+
+        // TODO: use a better mechanism to search
+
+        local_index.files.iter().find(|f| f.name == file_name)
     }
 
     fn insert_requests(&mut self, requests: &Vec<Request>) {
@@ -222,10 +289,12 @@ impl BepProcessor {
         trace!("Received Cluster Config: {:#?}", &cluster_config);
 
         let res = async move {
-            self.state
-                .lock()
-                .await
-                .update_cluster_config(&cluster_config);
+            {
+                self.state
+                    .lock()
+                    .await
+                    .update_cluster_config(&cluster_config);
+            }
             {
                 let cc = &self.state.lock().await.cluster;
                 // debug!("Self cluster config: {:#?}", cc);
@@ -247,7 +316,7 @@ impl BepProcessor {
         self.handle_index(index)
     }
 
-    fn handle_index(&self, index: Index) -> Vec<BepReply> {
+    fn handle_index(&self, received_index: Index) -> Vec<BepReply> {
         debug!("Handling Index");
         // debug!("Received Index: {:#?}", &index);
 
@@ -255,14 +324,22 @@ impl BepProcessor {
             let missing_files = {
                 let state = &mut self.state.lock().await;
 
-                let base: &Index = state.index(&index.folder, &self.config.id).expect(&format!(
-                    "The index for device {} should be present",
-                    &self.config.id
-                ));
+                let local_index: &Index = state
+                    .index(&received_index.folder, &self.config.id)
+                    .expect(&format!(
+                        "The index for local device {} must be present",
+                        &self.config.id
+                    ));
 
-                let index_diff = diff_indices(base, &index);
+                let index_diff = diff_indices(local_index, &received_index);
+
+                state.insert_missing_files_local_index(
+                    &received_index.folder,
+                    &index_diff.missing_files,
+                );
+
                 state.insert_conflicting_files(
-                    index.folder.to_string(),
+                    received_index.folder.to_string(),
                     index_diff.conflicting_files,
                 );
 
@@ -272,7 +349,7 @@ impl BepProcessor {
             let requests = {
                 let state = &mut self.state.lock().await;
                 let base_req_id = state.load_request_id();
-                let requests = create_requests(base_req_id, &index.folder, missing_files);
+                let requests = create_requests(base_req_id, &received_index.folder, missing_files);
                 let max_req_id = requests.iter().map(|x| x.id).max().unwrap_or(base_req_id);
                 state.fetch_add_request_id(max_req_id - base_req_id);
                 state.insert_requests(&requests);
@@ -406,15 +483,24 @@ impl BepProcessor {
         // TODO: put this in an external method and use ? with the results.
         let res = async move {
             let state = &mut self.state.lock().await;
+            debug!("Got the lock");
             if let Some(request) = state.get_request(&response.id) {
                 check_data(&response.data, &request.hash)
                     .expect("The hash does not match the data");
+                let weak_hash = compute_weak_hash(&response.data);
+                // TODO: check the weak hash against the hashes in other devices.
+                let file_size: u64 = state
+                    .file_local_index(&request.folder, &request.name)
+                    .expect("Requesting a file not in the index")
+                    .size
+                    .try_into()
+                    .unwrap();
                 self.storage_manager
-                    .store_block(response.data, request)
+                    .store_block(response.data, request, file_size)
                     .await
                     .expect("Error while storing the data");
                 state
-                    .update_index_block(&response.id)
+                    .update_index_block(&response.id, weak_hash)
                     .expect("It was not possible to update the index");
                 state.remove_request(&response.id);
             } else {
@@ -423,9 +509,11 @@ impl BepProcessor {
                     response.id
                 );
             }
+
+            EncodedMessages::empty()
         };
 
-        vec![]
+        vec![Box::pin(res)]
     }
 
     fn handle_ping(&self, ping: Ping) -> Vec<BepReply> {
@@ -701,6 +789,7 @@ fn create_requests(
 }
 
 fn check_data(data: &[u8], hash: &[u8]) -> Result<(), String> {
+    debug!("Start checking the hashes");
     let mut hasher_sha256 = Sha256::new();
     hasher_sha256.update(data);
 
@@ -710,4 +799,8 @@ fn check_data(data: &[u8], hash: &[u8]) -> Result<(), String> {
     } else {
         Err(format!("Hash of incoming data does not match request data"))
     }
+}
+
+fn compute_weak_hash(data: &[u8]) -> u32 {
+    0
 }
