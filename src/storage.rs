@@ -59,10 +59,6 @@ impl StorageManager {
 
         let offset = request.offset.try_into().unwrap();
 
-        // if offset != 0 {
-        //     // FIXME: this is for testing only
-        //     return Ok(());
-        // }
         trace!("offset: {}", &offset);
         trace!("block {:?}", &data);
 
