@@ -54,6 +54,11 @@ impl EncodedMessages {
     }
 }
 
+enum UploadStatus {
+    BlocksMissing,
+    AllBlocks,
+}
+
 // TODO: initialize through a from config or something, it's probably easier
 /// Data that will not change troughout the life ot the program.
 #[derive(Debug, Clone)]
@@ -134,7 +139,11 @@ impl BepState {
         self.indices.get(folder).map(|x| x.get(device_id)).flatten()
     }
 
-    fn update_index_block(&mut self, request_id: &i32, weak_hash: u32) -> Result<(), String> {
+    fn update_index_block(
+        &mut self,
+        request_id: &i32,
+        weak_hash: u32,
+    ) -> Result<UploadStatus, String> {
         let request = &self.outgoing_requests[request_id];
         debug!("Outgoing request: {:?}", &request);
 
@@ -176,7 +185,13 @@ impl BepState {
 
         file_info.blocks.push(new_block);
 
-        Ok(())
+        let block_amount = ((file_info.size + (file_info.block_size as i64) - 1)
+            / (file_info.block_size as i64)) as usize;
+        if file_info.blocks.len() == block_amount {
+            Ok(UploadStatus::AllBlocks)
+        } else {
+            Ok(UploadStatus::BlocksMissing)
+        }
     }
 
     fn insert_missing_files_local_index(
@@ -499,9 +514,14 @@ impl BepProcessor {
                     .store_block(response.data, request, file_size)
                     .await
                     .expect("Error while storing the data");
-                state
+                let upload_status = state
                     .update_index_block(&response.id, weak_hash)
                     .expect("It was not possible to update the index");
+
+                if upload_status == UploadStatus::AllBlocks {
+                    // TODO: move the file to a remote backend
+                }
+
                 state.remove_request(&response.id);
             } else {
                 error!(

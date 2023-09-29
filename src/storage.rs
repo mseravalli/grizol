@@ -66,6 +66,25 @@ impl StorageManager {
 
         file.write_all(&data).await?;
         let res = file.flush().await;
+
+        // Compute hash of the written block to double check correctness.
+        file.seek(SeekFrom::Start(offset)).await?;
+        let mut buf: Vec<u8> = Vec::with_capacity(data.len());
+        buf.resize(data.len(), 0);
+        file.read_exact(&mut buf).await?;
+        let hasher_sha256 = Sha256::new_with_prefix(&buf);
+        let hash = hasher_sha256.finalize().to_vec();
+        if hash != request.hash {
+            error!(
+                "Hash of written data is different from the one requested in request '{}'.",
+                request.id
+            );
+            debug!("Data received: {:?}", &data);
+            debug!("Data written:  {:?}", &buf);
+            debug!("Request hash: {:?}", &request.hash);
+            debug!("Data hash:    {:?}", &hash);
+        }
+
         debug!("Finished storing block");
         res
     }
@@ -78,6 +97,7 @@ impl StorageManager {
         );
         // TODO: create the folder first if that does not exist
         let mut file = OpenOptions::new()
+            .read(true)
             .write(true)
             .create(true)
             .truncate(false)
