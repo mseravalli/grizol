@@ -54,6 +54,7 @@ impl EncodedMessages {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 enum UploadStatus {
     BlocksMissing,
     AllBlocks,
