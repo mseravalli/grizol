@@ -105,6 +105,7 @@ INSERT INTO bep_compression VALUES( 'NEVER'    );
 INSERT INTO bep_compression VALUES( 'ALWAYS'   );
 
 INSERT INTO bep_file_info_type VALUES( 'FILE'              );
-INSERT INTO bep_file_info_type VALUES( 'DIRECTORY'         ); INSERT INTO bep_file_info_type VALUES( 'SYMLINK_FILE'      );
+INSERT INTO bep_file_info_type VALUES( 'DIRECTORY'         );
+INSERT INTO bep_file_info_type VALUES( 'SYMLINK_FILE'      );
 INSERT INTO bep_file_info_type VALUES( 'SYMLINK_DIRECTORY' );
 INSERT INTO bep_file_info_type VALUES( 'SYMLINK'           );
