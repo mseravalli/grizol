@@ -21,6 +21,7 @@ rustls-pemfile = "1.0.0"
 rustls = { version = "0.21", features = [ "logging", "dangerous_configuration" ]}
 sct = "0.7"
 sha2 = "0"
+sqlx = { version = "0", features = [ "runtime-tokio", "sqlite" ] }
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0"
 tokio-util = { version = "0", features = ["io"] }
