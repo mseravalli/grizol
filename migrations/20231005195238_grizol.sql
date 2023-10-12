@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS bep_folder
+CREATE TABLE IF NOT EXISTS bep_folders
 (
     id                   TEXT    NOT NULL ,
     label                TEXT    NOT NULL ,
@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS bep_compression
     primary key (type)
 );
 
-CREATE TABLE IF NOT EXISTS bep_device
+CREATE TABLE IF NOT EXISTS bep_devices
 (
     folder                     TEXT    NOT NULL,
 
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS bep_device
     encryption_password_token  BLOB    NOT NULL,
 
     PRIMARY KEY(id),
-    FOREIGN KEY(folder)      REFERENCES bep_folder(id),
+    FOREIGN KEY(folder)      REFERENCES bep_folders(id),
     FOREIGN KEY(compression) REFERENCES bep_compression(type)
 );
 
@@ -45,8 +45,8 @@ CREATE TABLE IF NOT EXISTS bep_index
     folder TEXT NOT NULL ,
 
     PRIMARY KEY (folder, device),
-    FOREIGN KEY(device) REFERENCES bep_device(id),
-    FOREIGN KEY(folder) REFERENCES bep_folder(id)
+    FOREIGN KEY(device) REFERENCES bep_devices(id),
+    FOREIGN KEY(folder) REFERENCES bep_folders(id)
 );
 
 

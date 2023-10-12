@@ -20,6 +20,7 @@ use data_encoding::BASE32;
 use futures::future::FutureExt;
 use rustls_pemfile::{certs, rsa_private_keys};
 use sha2::{Digest, Sha256};
+use sqlx::sqlite::SqlitePoolOptions;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
@@ -158,7 +159,13 @@ async fn main() -> io::Result<()> {
         net_address: addr.to_string(),
     };
 
-    let bep_processor = Arc::new(BepProcessor::new(bep_config));
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(512)
+        .connect("sqlite:target/grizol.db")
+        .await
+        .expect("Not possible to connect to the sqlite database.");
+
+    let bep_processor = Arc::new(BepProcessor::new(bep_config, db_pool));
 
     loop {
         debug!("wating for a new connection");
