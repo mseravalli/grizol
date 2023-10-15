@@ -10,13 +10,13 @@ use crate::storage;
 use crate::storage::StorageManager;
 use crate::syncthing;
 use core::future::IntoFuture;
+use futures::future::{Future, FutureExt};
 use prost::Message;
 use rand::prelude::*;
+use sha2::{Digest, Sha256};
+use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
 use std::array::TryFromSliceError;
 use std::collections::{BTreeMap, HashMap, HashSet};
-// use std::future::Future;
-use futures::future::{Future, FutureExt};
-use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::Path;
 use std::pin::Pin;
@@ -74,6 +74,7 @@ pub struct BepConfig {
 #[derive(Debug)]
 struct BepState {
     config: BepConfig,
+    db_pool: SqlitePool,
     indices: HashMap<String, HashMap<DeviceId, syncthing::Index>>,
     cluster: ClusterConfig,
     sequence: u64,
@@ -83,9 +84,10 @@ struct BepState {
 }
 
 impl BepState {
-    pub fn new(config: BepConfig) -> Self {
+    pub fn new(config: BepConfig, db_pool: SqlitePool) -> Self {
         BepState {
             config,
+            db_pool,
             indices: Default::default(),
             cluster: ClusterConfig {
                 folders: Default::default(),
@@ -97,9 +99,11 @@ impl BepState {
         }
     }
 
-    fn update_cluster_config(&mut self, other: &ClusterConfig) {
+    async fn update_cluster_config(&mut self, other: &ClusterConfig) -> Vec<SqliteQueryResult> {
+        let mut insert_results: Vec<SqliteQueryResult> = vec![];
         for other_folder in other.folders.iter() {
             //  TODO: update info about other devices as well
+
             if !self.cluster.folders.iter().any(|f| f.id == other_folder.id) {
                 if other_folder.devices.iter().any(|d| {
                     DeviceId::try_from(&d.id[..]).expect("Cannot convert to DeviceId")
@@ -112,7 +116,7 @@ impl BepState {
                         .or_insert(HashMap::new());
 
                     let mut folder_devices = self.indices.get_mut(&other_folder.id).expect(
-                        &format!("Entry for folder {} must be there", &other_folder.id),
+                        &format!("Entry for folder {} must be present", &other_folder.id),
                     );
                     for device in other_folder.devices.iter() {
                         let device_id =
@@ -122,7 +126,47 @@ impl BepState {
                     }
                 }
             }
+
+            let insert_res = sqlx::query!(
+                "
+                INSERT INTO bep_folders (
+                    id,
+                    label,
+                    read_only,
+                    ignore_permissions,
+                    ignore_delete,
+                    disable_temp_indexes,
+                    paused
+                )
+                VALUES (
+                    ?,
+                    ?,
+                    0,
+                    1,
+                    1,
+                    0,
+                    0
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    id                   = excluded.id,
+                    label                = excluded.label,
+                    read_only            = excluded.read_only,
+                    ignore_permissions   = excluded.ignore_permissions,
+                    ignore_delete        = excluded.ignore_delete,
+                    disable_temp_indexes = excluded.disable_temp_indexes,
+                    paused               = excluded.paused
+                ",
+                other_folder.id,
+                other_folder.label,
+            )
+            .execute(&self.db_pool)
+            .await
+            .expect("Failed to execute query");
+
+            insert_results.push(insert_res);
         }
+
+        return insert_results;
     }
 
     fn load_request_id(&self) -> i32 {
@@ -264,8 +308,8 @@ pub struct BepProcessor {
 }
 
 impl BepProcessor {
-    pub fn new(config: BepConfig) -> Self {
-        let bep_state = BepState::new(config.clone());
+    pub fn new(config: BepConfig, db_pool: SqlitePool) -> Self {
+        let bep_state = BepState::new(config.clone(), db_pool);
 
         BepProcessor {
             config,
@@ -309,7 +353,8 @@ impl BepProcessor {
                 self.state
                     .lock()
                     .await
-                    .update_cluster_config(&cluster_config);
+                    .update_cluster_config(&cluster_config)
+                    .await;
             }
             {
                 let cc = &self.state.lock().await.cluster;
