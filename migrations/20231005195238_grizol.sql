@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS bep_folders
 
 CREATE TABLE IF NOT EXISTS bep_compression
 (
-    type TEXT NOT NULL ,
+    type INTEGER NOT NULL ,
     primary key (type)
 );
 
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS bep_devices
     id                         TEXT    NOT NULL,
     name                       TEXT    NOT NULL,
     addresses                  TEXT    NOT NULL,
-    compression                TEXT    NOT NULL,
+    compression                INTEGER NOT NULL,
     cert_name                  TEXT    NOT NULL,
     max_sequence               INTEGER NOT NULL,
     introducer                 INTEGER NOT NULL,
@@ -100,9 +100,9 @@ CREATE TABLE IF NOT EXISTS bep_file_version (
     FOREIGN KEY(file_name) REFERENCES bep_file_info(name)
 );
 
-INSERT INTO bep_compression VALUES( 'METADATA' );
-INSERT INTO bep_compression VALUES( 'NEVER'    );
-INSERT INTO bep_compression VALUES( 'ALWAYS'   );
+INSERT INTO bep_compression VALUES( 0 );
+INSERT INTO bep_compression VALUES( 1 );
+INSERT INTO bep_compression VALUES( 2 );
 
 INSERT INTO bep_file_info_type VALUES( 'FILE'              );
 INSERT INTO bep_file_info_type VALUES( 'DIRECTORY'         );

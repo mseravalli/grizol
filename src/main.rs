@@ -159,8 +159,11 @@ async fn main() -> io::Result<()> {
         net_address: addr.to_string(),
     };
 
+    // Using max_connections 1 in order not to have locking issues when running transactions.
+    // From https://github.com/launchbadge/sqlx/issues/451#issuecomment-649866619 it might make
+    // sense to have 1 pool for reading and 1 pool for writing.
     let db_pool = SqlitePoolOptions::new()
-        .max_connections(512)
+        .max_connections(1)
         .connect("sqlite:target/grizol.db")
         .await
         .expect("Not possible to connect to the sqlite database.");

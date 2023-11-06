@@ -83,6 +83,15 @@ struct BepState {
     outgoing_requests: HashMap<i32, Request>,
 }
 
+// async fn run_transaction(db_pool: &SqlitePool, queries: Vec<String>) -> Result<(), sqlx::Error> {
+//     sqlx::query!("BEGIN TRANSACTION;").execute(db_pool).await?;
+//     for q in queries.into_iter() {
+//         q.execute(db_pool).await?;
+//     }
+//     sqlx::query!("END TRANSACTION;").execute(db_pool).await?;
+//     Ok(())
+// }
+
 impl BepState {
     pub fn new(config: BepConfig, db_pool: SqlitePool) -> Self {
         BepState {
@@ -101,32 +110,39 @@ impl BepState {
 
     async fn update_cluster_config(&mut self, other: &ClusterConfig) -> Vec<SqliteQueryResult> {
         let mut insert_results: Vec<SqliteQueryResult> = vec![];
+
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
         for other_folder in other.folders.iter() {
             //  TODO: update info about other devices as well
 
-            if !self.cluster.folders.iter().any(|f| f.id == other_folder.id) {
-                if other_folder.devices.iter().any(|d| {
-                    DeviceId::try_from(&d.id[..]).expect("Cannot convert to DeviceId")
-                        == self.config.id
-                }) {
-                    self.cluster.folders.push(other_folder.clone());
+            // if !self.cluster.folders.iter().any(|f| f.id == other_folder.id) {
+            //     if other_folder.devices.iter().any(|d| {
+            //         DeviceId::try_from(&d.id[..]).expect("Cannot convert to DeviceId")
+            //             == self.config.id
+            //     }) {
+            //         self.cluster.folders.push(other_folder.clone());
 
-                    self.indices
-                        .entry(other_folder.id.clone())
-                        .or_insert(HashMap::new());
+            //         self.indices
+            //             .entry(other_folder.id.clone())
+            //             .or_insert(HashMap::new());
 
-                    let mut folder_devices = self.indices.get_mut(&other_folder.id).expect(
-                        &format!("Entry for folder {} must be present", &other_folder.id),
-                    );
-                    for device in other_folder.devices.iter() {
-                        let device_id =
-                            DeviceId::try_from(&device.id).expect("Wrong device id format");
+            //         let mut folder_devices = self.indices.get_mut(&other_folder.id).expect(
+            //             &format!("Entry for folder {} must be present", &other_folder.id),
+            //         );
+            //         for device in other_folder.devices.iter() {
+            //             let device_id =
+            //                 DeviceId::try_from(&device.id).expect("Wrong device id format");
 
-                        folder_devices.entry(device_id).or_insert(Index::default());
-                    }
-                }
-            }
+            //             folder_devices.entry(device_id).or_insert(Index::default());
+            //         }
+            //     }
+            // }
 
+            // FIXME: recover from error and rollback transaction
             let insert_res = sqlx::query!(
                 "
                 INSERT INTO bep_folders (
@@ -138,15 +154,7 @@ impl BepState {
                     disable_temp_indexes,
                     paused
                 )
-                VALUES (
-                    ?,
-                    ?,
-                    0,
-                    1,
-                    1,
-                    0,
-                    0
-                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     id                   = excluded.id,
                     label                = excluded.label,
@@ -158,13 +166,76 @@ impl BepState {
                 ",
                 other_folder.id,
                 other_folder.label,
+                other_folder.read_only,
+                other_folder.ignore_permissions,
+                other_folder.ignore_delete,
+                other_folder.disable_temp_indexes,
+                other_folder.paused,
             )
             .execute(&self.db_pool)
             .await
             .expect("Failed to execute query");
 
+            for device in other_folder.devices.iter() {
+                // let device_id = DeviceId::try_from(&device.id).expect("Wrong device id format");
+
+                let index_id = device.index_id as i64;
+                let device_addresses = device.addresses.join(",");
+
+                // folder_devices.entry(device_id).or_insert(Index::default());
+                let insert_res = sqlx::query!(
+                    "
+                    INSERT INTO bep_devices (
+                        folder                     ,
+                        id                         ,
+                        name                       ,
+                        addresses                  ,
+                        compression                ,
+                        cert_name                  ,
+                        max_sequence               ,
+                        introducer                 ,
+                        index_id                   ,
+                        skip_introduction_removals ,
+                        encryption_password_token  
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        folder                     = excluded.folder                     ,
+                        id                         = excluded.id                         ,
+                        name                       = excluded.name                       ,
+                        addresses                  = excluded.addresses                  ,
+                        compression                = excluded.compression                ,
+                        cert_name                  = excluded.cert_name                  ,
+                        max_sequence               = excluded.max_sequence               ,
+                        introducer                 = excluded.introducer                 ,
+                        index_id                   = excluded.index_id                   ,
+                        skip_introduction_removals = excluded.skip_introduction_removals ,
+                        encryption_password_token  = excluded.encryption_password_token  
+                    ",
+                    other_folder.id,
+                    device.id,
+                    device.name,
+                    device_addresses,
+                    device.compression,
+                    device.cert_name,
+                    device.max_sequence,
+                    device.introducer,
+                    index_id,
+                    device.skip_introduction_removals,
+                    device.encryption_password_token,
+                )
+                .execute(&self.db_pool)
+                .await
+                .expect("Failed to execute query");
+            }
+
             insert_results.push(insert_res);
         }
+
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
 
         return insert_results;
     }
@@ -355,11 +426,6 @@ impl BepProcessor {
                     .await
                     .update_cluster_config(&cluster_config)
                     .await;
-            }
-            {
-                let cc = &self.state.lock().await.cluster;
-                // debug!("Self cluster config: {:#?}", cc);
-                self.storage_manager.save_cluster_config(cc).await;
             }
 
             EncodedMessages::empty()
