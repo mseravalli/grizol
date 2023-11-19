@@ -51,16 +51,17 @@ CREATE TABLE IF NOT EXISTS bep_index
 
 
 CREATE TABLE IF NOT EXISTS bep_file_info_type (
-    type TEXT NOT NULL ,
+    type INTEGER NOT NULL ,
     PRIMARY KEY (type)
 );
 
 CREATE TABLE IF NOT EXISTS bep_file_info
 (
     folder         TEXT    NOT NULL ,
+    device         TEXT    NOT NULL ,
 
     name           TEXT    NOT NULL ,
-    type           TEXT    NOT NULL ,
+    type           INTEGER NOT NULL ,
     size           INTEGER NOT NULL ,
     permissions    INTEGER NOT NULL ,
     modified_s     INTEGER NOT NULL ,
@@ -74,7 +75,7 @@ CREATE TABLE IF NOT EXISTS bep_file_info
     symlink_target TEXT    NOT NULL ,
 
     PRIMARY KEY(folder, name) ,
-    FOREIGN KEY(folder) REFERENCES bep_index(folder) ,
+    FOREIGN KEY(folder, device) REFERENCES bep_index(folder, device),
     FOREIGN KEY(type)   REFERENCES bep_file_info_type(type)
 );
 
@@ -82,11 +83,11 @@ CREATE TABLE IF NOT EXISTS bep_block_info (
     file_name TEXT    NOT NULL ,  
 
     offset    INTEGER NOT NULL ,
-    size      INTEGER NOT NULL ,
+    bi_size   INTEGER NOT NULL ,
     hash      BLOB    NOT NULL ,
     weak_hash INTEGER ,
 
-    PRIMARY KEY (file_name, offset, size, hash) ,
+    PRIMARY KEY (file_name, offset, bi_size, hash) ,
     FOREIGN KEY(file_name) REFERENCES bep_file_info(name)
 );
 
@@ -104,8 +105,8 @@ INSERT INTO bep_compression VALUES( 0 );
 INSERT INTO bep_compression VALUES( 1 );
 INSERT INTO bep_compression VALUES( 2 );
 
-INSERT INTO bep_file_info_type VALUES( 'FILE'              );
-INSERT INTO bep_file_info_type VALUES( 'DIRECTORY'         );
-INSERT INTO bep_file_info_type VALUES( 'SYMLINK_FILE'      );
-INSERT INTO bep_file_info_type VALUES( 'SYMLINK_DIRECTORY' );
-INSERT INTO bep_file_info_type VALUES( 'SYMLINK'           );
+INSERT INTO bep_file_info_type VALUES( 0 ); -- 'FILE'             
+INSERT INTO bep_file_info_type VALUES( 1 ); -- 'DIRECTORY'        
+INSERT INTO bep_file_info_type VALUES( 2 ); -- 'SYMLINK_FILE'     
+INSERT INTO bep_file_info_type VALUES( 3 ); -- 'SYMLINK_DIRECTORY'
+INSERT INTO bep_file_info_type VALUES( 4 ); -- 'SYMLINK'          

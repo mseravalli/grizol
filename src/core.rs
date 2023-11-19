@@ -108,6 +108,27 @@ impl BepState {
         }
     }
 
+    async fn init_index(&self, folder: &str) {
+        let device_id = self.config.id.to_string();
+        let insert_res = sqlx::query!(
+            "
+        INSERT INTO bep_index (
+            device,
+            folder
+        )
+        VALUES (?, ?)
+        ON CONFLICT(folder, device) DO UPDATE SET
+            device = excluded.device,
+            folder = excluded.folder
+        ",
+            device_id,
+            folder,
+        )
+        .execute(&self.db_pool)
+        .await
+        .expect("Failed to execute query");
+    }
+
     async fn update_cluster_config(&mut self, other: &ClusterConfig) -> Vec<SqliteQueryResult> {
         let mut insert_results: Vec<SqliteQueryResult> = vec![];
 
@@ -177,10 +198,11 @@ impl BepState {
             .expect("Failed to execute query");
 
             for device in other_folder.devices.iter() {
-                // let device_id = DeviceId::try_from(&device.id).expect("Wrong device id format");
-
                 let index_id = device.index_id as i64;
                 let device_addresses = device.addresses.join(",");
+                let device_id = DeviceId::try_from(&device.id)
+                    .expect("Wrong device id format")
+                    .to_string();
 
                 // folder_devices.entry(device_id).or_insert(Index::default());
                 let insert_res = sqlx::query!(
@@ -213,7 +235,7 @@ impl BepState {
                         encryption_password_token  = excluded.encryption_password_token  
                     ",
                     other_folder.id,
-                    device.id,
+                    device_id,
                     device.name,
                     device_addresses,
                     device.compression,
@@ -251,8 +273,109 @@ impl BepState {
         old_value
     }
 
-    fn index<'a>(&'a self, folder: &str, device_id: &DeviceId) -> Option<&'a Index> {
-        self.indices.get(folder).map(|x| x.get(device_id)).flatten()
+    async fn index(&self, folder: &str, device_id: &DeviceId) -> Option<Index> {
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        let device_id = device_id.to_string();
+        let indices = sqlx::query!(
+            "SELECT device, folder FROM bep_index WHERE device = ? and folder = ?;",
+            folder,
+            device_id,
+        )
+        .fetch_all(&self.db_pool)
+        .await
+        .unwrap();
+
+        let file_blocks = sqlx::query!(
+            r#"
+            SELECT f.*, bi.*
+            FROM bep_file_info f
+                JOIN bep_block_info bi ON f.name = bi.file_name
+            WHERE f.folder = ?
+            ;"#,
+            folder,
+        )
+        .fetch_all(&self.db_pool);
+
+        let file_versions = sqlx::query!(
+            r#"
+            SELECT f.name,v.id, v.value
+            FROM bep_file_info f
+                JOIN bep_file_version v ON f.name = v.file_name
+            WHERE f.folder = ?
+            ;"#,
+            folder,
+        )
+        .fetch_all(&self.db_pool);
+
+        let mut existing_files = HashMap::<String, FileInfo>::new();
+
+        for file in file_blocks.await.unwrap() {
+            if existing_files.contains_key(&file.name) {
+                let bi = BlockInfo {
+                    offset: file.offset,
+                    size: file.bi_size.try_into().unwrap(),
+                    hash: file.hash,
+                    weak_hash: file.weak_hash.unwrap_or(0).try_into().unwrap(),
+                };
+
+                existing_files
+                    .get_mut(&file.name)
+                    .map(|f| f.blocks.push(bi));
+            } else {
+                let mut fi = FileInfo {
+                    name: file.name,
+                    r#type: file.r#type.try_into().unwrap(),
+                    size: file.size,
+                    permissions: file.permissions.try_into().unwrap(),
+                    modified_s: file.modified_s.try_into().unwrap(),
+                    modified_ns: file.modified_ns.try_into().unwrap(),
+                    modified_by: file.modified_by.try_into().unwrap(),
+                    deleted: file.deleted == 1,
+                    invalid: file.invalid == 1,
+                    no_permissions: file.no_permissions == 1,
+                    version: Some(syncthing::Vector { counters: vec![] }),
+                    sequence: file.sequence.try_into().unwrap(),
+                    block_size: file.block_size.try_into().unwrap(),
+                    blocks: vec![],
+                    symlink_target: file.symlink_target,
+                };
+                let bi = BlockInfo {
+                    offset: file.offset,
+                    size: file.bi_size.try_into().unwrap(),
+                    hash: file.hash,
+                    weak_hash: file.weak_hash.unwrap_or(0).try_into().unwrap(),
+                };
+
+                fi.blocks.push(bi);
+                existing_files.insert(fi.name.clone(), fi);
+            }
+        }
+
+        for version in file_versions.await.unwrap() {
+            existing_files.get_mut(&version.name).map(|f| {
+                f.version.as_mut().unwrap().counters.push(Counter {
+                    id: version.id.try_into().unwrap(),
+                    value: version.value.try_into().unwrap(),
+                })
+            });
+        }
+
+        let index = Index {
+            folder: folder.to_string(),
+            files: existing_files.into_values().collect(),
+        };
+
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        debug!("The stored index is: {:?}", &index);
+        Some(index)
     }
 
     fn update_index_block(
@@ -445,20 +568,22 @@ impl BepProcessor {
 
     fn handle_index(&self, received_index: Index) -> Vec<BepReply> {
         debug!("Handling Index");
-        // debug!("Received Index: {:#?}", &index);
+        trace!("Received Index: {:#?}", &received_index);
 
         let ems = async move {
             let missing_files = {
                 let state = &mut self.state.lock().await;
+                state.init_index(&received_index.folder).await;
 
-                let local_index: &Index = state
+                let local_index: Index = state
                     .index(&received_index.folder, &self.config.id)
+                    .await
                     .expect(&format!(
                         "The index for local device {} must be present",
                         &self.config.id
                     ));
 
-                let index_diff = diff_indices(local_index, &received_index);
+                let index_diff = diff_indices(&local_index, &received_index);
 
                 state.insert_missing_files_local_index(
                     &received_index.folder,
