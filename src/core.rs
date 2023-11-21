@@ -280,23 +280,16 @@ impl BepState {
             .unwrap();
 
         let device_id = device_id.to_string();
-        let indices = sqlx::query!(
-            "SELECT device, folder FROM bep_index WHERE device = ? and folder = ?;",
-            folder,
-            device_id,
-        )
-        .fetch_all(&self.db_pool)
-        .await
-        .unwrap();
 
         let file_blocks = sqlx::query!(
             r#"
             SELECT f.*, bi.*
             FROM bep_file_info f
                 JOIN bep_block_info bi ON f.name = bi.file_name
-            WHERE f.folder = ?
+            WHERE f.folder = ? AND f.device = ?
             ;"#,
             folder,
+            device_id,
         )
         .fetch_all(&self.db_pool);
 
@@ -305,9 +298,10 @@ impl BepState {
             SELECT f.name,v.id, v.value
             FROM bep_file_info f
                 JOIN bep_file_version v ON f.name = v.file_name
-            WHERE f.folder = ?
+            WHERE f.folder = ? and f.device = ?
             ;"#,
             folder,
+            device_id,
         )
         .fetch_all(&self.db_pool);
 
@@ -378,7 +372,7 @@ impl BepState {
         Some(index)
     }
 
-    fn update_index_block(
+    async fn update_index_block(
         &mut self,
         request_id: &i32,
         weak_hash: u32,
@@ -393,66 +387,140 @@ impl BepState {
             weak_hash,
         };
 
-        let local_index = self
-            .indices
-            .get_mut(&request.folder)
-            .map(|x| x.get_mut(&self.config.id))
-            .flatten()
-            .expect("The local index must be there");
+        todo!()
 
-        trace!("Local Index: {:?}", &local_index);
+        // let local_index = self
+        //     .indices
+        //     .get_mut(&request.folder)
+        //     .map(|x| x.get_mut(&self.config.id))
+        //     .flatten()
+        //     .expect("The local index must be there");
 
-        // TODO: use a smarter way to search the file
-        // TODO: verify if the assumption that we must have a single result is valid
-        let file_info: &mut FileInfo = local_index
-            .files
-            .iter_mut()
-            .filter(|x| x.name == request.name)
-            .next()
-            .expect("There should be a matching file for the request");
+        // trace!("Local Index: {:?}", &local_index);
 
-        // If block is already present, panic.
-        let existing_block = file_info
-            .blocks
-            .iter()
-            .filter(|x| x.hash == new_block.hash)
-            .next();
-        assert!(
-            existing_block.is_none(),
-            "The block is already present in the index"
-        );
+        // // TODO: use a smarter way to search the file
+        // // TODO: verify if the assumption that we must have a single result is valid
+        // let file_info: &mut FileInfo = local_index
+        //     .files
+        //     .iter_mut()
+        //     .filter(|x| x.name == request.name)
+        //     .next()
+        //     .expect("There should be a matching file for the request");
 
-        file_info.blocks.push(new_block);
+        // // If block is already present, panic.
+        // let existing_block = file_info
+        //     .blocks
+        //     .iter()
+        //     .filter(|x| x.hash == new_block.hash)
+        //     .next();
+        // assert!(
+        //     existing_block.is_none(),
+        //     "The block is already present in the index"
+        // );
 
-        let block_amount = ((file_info.size + (file_info.block_size as i64) - 1)
-            / (file_info.block_size as i64)) as usize;
-        if file_info.blocks.len() == block_amount {
-            Ok(UploadStatus::AllBlocks)
-        } else {
-            Ok(UploadStatus::BlocksMissing)
-        }
+        // file_info.blocks.push(new_block);
+
+        // let block_amount = ((file_info.size + (file_info.block_size as i64) - 1)
+        //     / (file_info.block_size as i64)) as usize;
+        // if file_info.blocks.len() == block_amount {
+        //     Ok(UploadStatus::AllBlocks)
+        // } else {
+        //     Ok(UploadStatus::BlocksMissing)
+        // }
     }
 
-    fn insert_missing_files_local_index(
+    async fn add_missing_files_to_local_index(
         &mut self,
         folder_name: &str,
         missing_files: &Vec<FileInfo>,
     ) -> Result<(), String> {
-        let local_index: &mut Index = self
-            .indices
-            .get_mut(folder_name)
-            .map(|x| x.get_mut(&self.config.id))
-            .flatten()
-            .expect("Local index must be present");
+        // let local_index: &mut Index = self
+        //     .indices
+        //     .get_mut(folder_name)
+        //     .map(|x| x.get_mut(&self.config.id))
+        //     .flatten()
+        //     .expect("Local index must be present");
+
+        // for missing_file in missing_files.into_iter() {
+        //     let file = FileInfo {
+        //         blocks: vec![],
+        //         ..missing_file.clone()
+        //     };
+
+        //     local_index.files.push(file);
+        // }
+        let device_id = self.config.id.to_string();
+
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
 
         for missing_file in missing_files.into_iter() {
-            let file = FileInfo {
-                blocks: vec![],
-                ..missing_file.clone()
-            };
-
-            local_index.files.push(file);
+            let modified_by = missing_file.modified_by as i64;
+            let insert_res = sqlx::query!(
+                r#"
+            INSERT INTO bep_file_info (
+                folder        ,
+                device        ,
+                name          ,
+                type          ,
+                size          ,
+                permissions   ,
+                modified_s    ,
+                modified_ns   ,
+                modified_by   ,
+                deleted       ,
+                invalid       ,
+                no_permissions,
+                sequence      ,
+                block_size    ,
+                symlink_target
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(folder, device, name) DO UPDATE SET
+                folder         = excluded.folder          ,
+                device         = excluded.device          ,
+                name           = excluded.name            ,
+                type           = excluded.type            ,
+                size           = excluded.size            ,
+                permissions    = excluded.permissions     ,
+                modified_s     = excluded.modified_s      ,
+                modified_ns    = excluded.modified_ns     ,
+                modified_by    = excluded.modified_by     ,
+                deleted        = excluded.deleted         ,
+                invalid        = excluded.invalid         ,
+                no_permissions = excluded.no_permissions  ,
+                sequence       = excluded.sequence        ,
+                block_size     = excluded.block_size      ,
+                symlink_target = excluded.symlink_target  
+            "#,
+                folder_name,
+                device_id,
+                missing_file.name,
+                missing_file.r#type,
+                missing_file.size,
+                missing_file.permissions,
+                missing_file.modified_s,
+                missing_file.modified_ns,
+                modified_by,
+                missing_file.deleted,
+                missing_file.invalid,
+                missing_file.no_permissions,
+                missing_file.sequence,
+                missing_file.block_size,
+                missing_file.symlink_target,
+            )
+            .execute(&self.db_pool)
+            .await
+            .expect("Failed to execute query");
         }
+
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
         Ok(())
     }
 
@@ -464,17 +532,112 @@ impl BepState {
         }
     }
 
-    fn file_local_index(&self, folder_name: &str, file_name: &str) -> Option<&FileInfo> {
-        let local_index: &Index = self
-            .indices
-            .get(folder_name)
-            .map(|x| x.get(&self.config.id))
-            .flatten()
-            .expect("Local index must be present");
+    async fn file_from_local_index(&self, folder_name: &str, file_name: &str) -> Option<FileInfo> {
+        // let local_index: &Index = self
+        //     .indices
+        //     .get(folder_name)
+        //     .map(|x| x.get(&self.config.id))
+        //     .flatten()
+        //     .expect("Local index must be present");
 
-        // TODO: use a better mechanism to search
+        // // TODO: use a better mechanism to search
 
-        local_index.files.iter().find(|f| f.name == file_name)
+        // local_index.files.iter().find(|f| f.name == file_name)
+
+        // TODO: test if it is faster to run 3 queries 1 for the file, 1 for the blocks 1 for the
+        // versions
+
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        let device_id = self.config.id.to_string();
+
+        let file = sqlx::query!(
+            r#"
+            SELECT f.*
+            FROM bep_file_info f
+            WHERE f.name = ? AND f.folder = ? AND f.device = ?
+            ;"#,
+            file_name,
+            folder_name,
+            device_id,
+        )
+        .fetch_optional(&self.db_pool);
+
+        let file_blocks = sqlx::query!(
+            r#"
+            SELECT *
+            FROM  bep_block_info
+            WHERE file_name = ? AND file_folder = ? AND file_device = ?
+            ;"#,
+            file_name,
+            folder_name,
+            device_id,
+        )
+        .fetch_all(&self.db_pool);
+
+        let file_versions = sqlx::query!(
+            r#"
+            SELECT *
+            FROM  bep_file_version
+            WHERE file_name = ? AND file_folder = ? AND file_device = ?
+            ;"#,
+            file_name,
+            folder_name,
+            device_id,
+        )
+        .fetch_all(&self.db_pool);
+
+        let blocks: Vec<BlockInfo> = file_blocks
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|bi| BlockInfo {
+                offset: bi.offset,
+                size: bi.bi_size.try_into().unwrap(),
+                hash: bi.hash,
+                weak_hash: bi.weak_hash.unwrap_or(0).try_into().unwrap(),
+            })
+            .collect();
+
+        let versions: Vec<Counter> = file_versions
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|v| Counter {
+                id: v.id.try_into().unwrap(),
+                value: v.value.try_into().unwrap(),
+            })
+            .collect();
+
+        let file = file.await.unwrap()?;
+        debug!("file {:?}", &file);
+        let fi = FileInfo {
+            name: file.name,
+            r#type: file.r#type.try_into().unwrap(),
+            size: file.size,
+            permissions: file.permissions.try_into().unwrap(),
+            modified_s: file.modified_s.try_into().unwrap(),
+            modified_ns: file.modified_ns.try_into().unwrap(),
+            modified_by: file.modified_by.try_into().unwrap() // TODO: this overflows, use a TEXT field instead
+            deleted: file.deleted == 1,
+            invalid: file.invalid == 1,
+            no_permissions: file.no_permissions == 1,
+            version: Some(syncthing::Vector { counters: versions }),
+            sequence: file.sequence.try_into().unwrap(),
+            block_size: file.block_size.try_into().unwrap(),
+            blocks: blocks,
+            symlink_target: file.symlink_target,
+        };
+
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        Some(fi)
     }
 
     fn insert_requests(&mut self, requests: &Vec<Request>) {
@@ -585,10 +748,12 @@ impl BepProcessor {
 
                 let index_diff = diff_indices(&local_index, &received_index);
 
-                state.insert_missing_files_local_index(
-                    &received_index.folder,
-                    &index_diff.missing_files,
-                );
+                state
+                    .add_missing_files_to_local_index(
+                        &received_index.folder,
+                        &index_diff.missing_files,
+                    )
+                    .await;
 
                 state.insert_conflicting_files(
                     received_index.folder.to_string(),
@@ -742,8 +907,12 @@ impl BepProcessor {
                 let weak_hash = compute_weak_hash(&response.data);
                 // TODO: check the weak hash against the hashes in other devices.
                 let file_size: u64 = state
-                    .file_local_index(&request.folder, &request.name)
-                    .expect("Requesting a file not in the index")
+                    .file_from_local_index(&request.folder, &request.name)
+                    .await
+                    .expect(&format!(
+                        "Requesting a file not in the index: {}",
+                        &request.name
+                    ))
                     .size
                     .try_into()
                     .unwrap();
@@ -753,6 +922,7 @@ impl BepProcessor {
                     .expect("Error while storing the data");
                 let upload_status = state
                     .update_index_block(&response.id, weak_hash)
+                    .await
                     .expect("It was not possible to update the index");
 
                 if upload_status == UploadStatus::AllBlocks {

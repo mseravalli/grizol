@@ -74,31 +74,35 @@ CREATE TABLE IF NOT EXISTS bep_file_info
     block_size     INTEGER NOT NULL ,
     symlink_target TEXT    NOT NULL ,
 
-    PRIMARY KEY(folder, name) ,
+    PRIMARY KEY(folder, device, name) ,
     FOREIGN KEY(folder, device) REFERENCES bep_index(folder, device),
     FOREIGN KEY(type)   REFERENCES bep_file_info_type(type)
 );
 
 CREATE TABLE IF NOT EXISTS bep_block_info (
     file_name TEXT    NOT NULL ,  
+    file_folder TEXT    NOT NULL ,  
+    file_device TEXT    NOT NULL ,  
 
     offset    INTEGER NOT NULL ,
     bi_size   INTEGER NOT NULL ,
     hash      BLOB    NOT NULL ,
     weak_hash INTEGER ,
 
-    PRIMARY KEY (file_name, offset, bi_size, hash) ,
-    FOREIGN KEY(file_name) REFERENCES bep_file_info(name)
+    PRIMARY KEY (file_name, file_folder, file_device, offset, bi_size, hash) ,
+    FOREIGN KEY(file_name, file_folder, file_device) REFERENCES bep_file_info(name, folder, device)
 );
 
 CREATE TABLE IF NOT EXISTS bep_file_version (
-    file_name TEXT    NOT NULL ,  
+    file_name   TEXT    NOT NULL ,  
+    file_folder TEXT    NOT NULL ,  
+    file_device TEXT    NOT NULL ,  
 
     id        INTEGER NOT NULL ,
     value     INTEGER NOT NULL ,
 
-    PRIMARY KEY (file_name, id, value) ,
-    FOREIGN KEY(file_name) REFERENCES bep_file_info(name)
+    PRIMARY KEY (file_name, file_folder, file_device, id, value) ,
+    FOREIGN KEY(file_name, file_folder, file_device) REFERENCES bep_file_info(name, folder, device)
 );
 
 INSERT INTO bep_compression VALUES( 0 );
