@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS bep_file_info
     permissions    INTEGER NOT NULL ,
     modified_s     INTEGER NOT NULL ,
     modified_ns    INTEGER NOT NULL ,
-    modified_by    INTEGER NOT NULL ,
+    modified_by    BLOB    NOT NULL ,
     deleted        INTEGER NOT NULL ,
     invalid        INTEGER NOT NULL ,
     no_permissions INTEGER NOT NULL ,

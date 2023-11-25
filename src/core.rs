@@ -320,6 +320,10 @@ impl BepState {
                     .get_mut(&file.name)
                     .map(|f| f.blocks.push(bi));
             } else {
+                let mut short_id: [u8; 8] = [0; 8];
+                for (i, x) in file.modified_by[0..8].iter().enumerate() {
+                    short_id[i] = *x;
+                }
                 let mut fi = FileInfo {
                     name: file.name,
                     r#type: file.r#type.try_into().unwrap(),
@@ -327,7 +331,7 @@ impl BepState {
                     permissions: file.permissions.try_into().unwrap(),
                     modified_s: file.modified_s.try_into().unwrap(),
                     modified_ns: file.modified_ns.try_into().unwrap(),
-                    modified_by: file.modified_by.try_into().unwrap(),
+                    modified_by: u64::from_be_bytes(short_id),
                     deleted: file.deleted == 1,
                     invalid: file.invalid == 1,
                     no_permissions: file.no_permissions == 1,
@@ -378,7 +382,7 @@ impl BepState {
         weak_hash: u32,
     ) -> Result<UploadStatus, String> {
         let request = &self.outgoing_requests[request_id];
-        debug!("Outgoing request: {:?}", &request);
+        debug!("Previously sent request: {:?}", &request);
 
         let new_block = BlockInfo {
             offset: request.offset,
@@ -457,7 +461,7 @@ impl BepState {
             .unwrap();
 
         for missing_file in missing_files.into_iter() {
-            let modified_by = missing_file.modified_by as i64;
+            let modified_by: Vec<u8> = missing_file.modified_by.to_be_bytes().into();
             let insert_res = sqlx::query!(
                 r#"
             INSERT INTO bep_file_info (
@@ -614,6 +618,10 @@ impl BepState {
 
         let file = file.await.unwrap()?;
         debug!("file {:?}", &file);
+        let mut short_id: [u8; 8] = [0; 8];
+        for (i, x) in file.modified_by[0..8].iter().enumerate() {
+            short_id[i] = *x;
+        }
         let fi = FileInfo {
             name: file.name,
             r#type: file.r#type.try_into().unwrap(),
@@ -621,7 +629,7 @@ impl BepState {
             permissions: file.permissions.try_into().unwrap(),
             modified_s: file.modified_s.try_into().unwrap(),
             modified_ns: file.modified_ns.try_into().unwrap(),
-            modified_by: file.modified_by.try_into().unwrap() // TODO: this overflows, use a TEXT field instead
+            modified_by: u64::from_be_bytes(short_id),
             deleted: file.deleted == 1,
             invalid: file.invalid == 1,
             no_permissions: file.no_permissions == 1,
