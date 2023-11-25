@@ -80,9 +80,9 @@ CREATE TABLE IF NOT EXISTS bep_file_info
 );
 
 CREATE TABLE IF NOT EXISTS bep_block_info (
-    file_name TEXT    NOT NULL ,  
-    file_folder TEXT    NOT NULL ,  
-    file_device TEXT    NOT NULL ,  
+    file_name   TEXT    NOT NULL ,
+    file_folder TEXT    NOT NULL ,
+    file_device TEXT    NOT NULL ,
 
     offset    INTEGER NOT NULL ,
     bi_size   INTEGER NOT NULL ,

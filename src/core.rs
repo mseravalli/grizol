@@ -377,21 +377,95 @@ impl BepState {
     }
 
     async fn update_index_block(
-        &mut self,
+        &self,
         request_id: &i32,
         weak_hash: u32,
     ) -> Result<UploadStatus, String> {
         let request = &self.outgoing_requests[request_id];
         debug!("Previously sent request: {:?}", &request);
 
-        let new_block = BlockInfo {
-            offset: request.offset,
-            size: request.size,
-            hash: request.hash.clone(),
-            weak_hash,
-        };
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
 
-        todo!()
+        let device_id = self.config.id.to_string();
+        let block_hash = request.hash.clone();
+        let insert_res = sqlx::query!(
+            r#"
+            INSERT INTO bep_block_info (
+                file_name,  
+                file_folder,  
+                file_device,  
+                offset,
+                bi_size,
+                hash,
+                weak_hash
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(file_name, file_folder, file_device, offset, bi_size, hash) DO NOTHING
+            "#,
+            request.name,
+            request.folder,
+            device_id,
+            request.offset,
+            request.size,
+            block_hash,
+            weak_hash
+        )
+        .execute(&self.db_pool)
+        .await
+        .expect("Failed to execute query");
+
+        let block_count = sqlx::query!(
+            r#"
+            SELECT fi.block_size AS block_size, fi.size AS byte_size, COUNT(*) as stored_blocks
+            FROM bep_file_info AS fi JOIN bep_block_info AS bi ON
+                fi.name = bi.file_name
+                AND fi.folder = bi.file_folder
+                AND fi.device = bi.file_device
+            WHERE bi.file_name = ? AND bi.file_folder = ? AND bi.file_device = ?
+            GROUP BY 1, 2
+            "#,
+            request.name,
+            request.folder,
+            device_id,
+        )
+        .fetch_one(&self.db_pool)
+        .await
+        .expect("Failed to execute query");
+
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        if insert_res.rows_affected() == 0 {
+            return Err(format!(
+                "The block with hash '{:?}' was already present",
+                &request.hash
+            ));
+        }
+
+        let expected_blocks =
+            (block_count.byte_size + block_count.block_size - 1) / block_count.block_size;
+        if block_count.stored_blocks == expected_blocks {
+            Ok(UploadStatus::AllBlocks)
+        } else if block_count.stored_blocks < expected_blocks {
+            Ok(UploadStatus::BlocksMissing)
+        } else {
+            return Err(format!(
+                "We ended up storing too many blocks for file: {}",
+                &request.name
+            ));
+        }
+
+        // let new_block = BlockInfo {
+        //     offset: request.offset,
+        //     size: request.size,
+        //     hash: request.hash.clone(),
+        //     weak_hash,
+        // };
 
         // let local_index = self
         //     .indices
@@ -935,6 +1009,7 @@ impl BepProcessor {
 
                 if upload_status == UploadStatus::AllBlocks {
                     // TODO: move the file to a remote backend
+                    debug!("Stored whole file: {}", &request.name);
                 }
 
                 state.remove_request(&response.id);
