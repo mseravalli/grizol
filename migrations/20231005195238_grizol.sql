@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS bep_devices
     cert_name                  TEXT    NOT NULL,
     max_sequence               INTEGER NOT NULL,
     introducer                 INTEGER NOT NULL,
-    index_id                   INTEGER NOT NULL,
+    index_id                   BLOB    NOT NULL,
     skip_introduction_removals INTEGER NOT NULL,
     encryption_password_token  BLOB    NOT NULL,
 

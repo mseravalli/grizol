@@ -198,7 +198,7 @@ impl BepState {
             .expect("Failed to execute query");
 
             for device in other_folder.devices.iter() {
-                let index_id = device.index_id as i64;
+                let index_id: Vec<u8> = device.index_id.to_be_bytes().into();
                 let device_addresses = device.addresses.join(",");
                 let device_id = DeviceId::try_from(&device.id)
                     .expect("Wrong device id format")
@@ -1163,6 +1163,7 @@ impl BepProcessor {
             .restore_cluster_config()
             .await
             .expect("something went wrong when restoring");
+        // TODO: read this from the DB
 
         trace!("Sending Cluster Config: {:?}", &cluster_config);
         encode_message(header, cluster_config).unwrap()

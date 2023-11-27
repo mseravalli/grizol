@@ -109,6 +109,8 @@ fn setup_logging() {
 
 fn trusted_peers() -> HashSet<DeviceId> {
     vec![
+        DeviceId::try_from("BTTVHUR-CKWU5YX-JMAULFO-5CMEQ36-FZWEWAE-QFXROCM-WKMOJPZ-KEUOWAS")
+            .unwrap(),
         DeviceId::try_from("VHLZSPS-XMVASHL-NRDGZAY-VUS576S-H56LQRK-GGNWYIS-NR4OKBG-VHGD2AQ")
             .unwrap(),
     ]
