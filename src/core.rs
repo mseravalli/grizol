@@ -355,8 +355,12 @@ impl BepState {
 
         for version in file_versions.await.unwrap() {
             existing_files.get_mut(&version.name).map(|f| {
+                let mut short_id: [u8; 8] = [0; 8];
+                for (i, x) in version.id[0..8].iter().enumerate() {
+                    short_id[i] = *x;
+                }
                 f.version.as_mut().unwrap().counters.push(Counter {
-                    id: version.id.try_into().unwrap(),
+                    id: u64::from_be_bytes(short_id),
                     value: version.value.try_into().unwrap(),
                 })
             });
@@ -592,6 +596,38 @@ impl BepState {
             .execute(&self.db_pool)
             .await
             .expect("Failed to execute query");
+
+            for counter in missing_file
+                .version
+                .as_ref()
+                .expect("There must be a version")
+                .counters
+                .iter()
+            {
+                let short_id: Vec<u8> = counter.id.to_be_bytes().into();
+                let version_value: i64 = counter.value.try_into().unwrap();
+                let insert_res = sqlx::query!(
+                    r#"
+                    INSERT INTO bep_file_version (
+                        file_folder ,
+                        file_device ,
+                        file_name   ,
+                        id          ,
+                        value
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(file_folder, file_device, file_name, id, value) DO NOTHING
+                    "#,
+                    folder_name,
+                    device_id,
+                    missing_file.name,
+                    short_id,
+                    version_value,
+                )
+                .execute(&self.db_pool)
+                .await
+                .expect("Failed to execute query");
+            }
         }
 
         sqlx::query!("END TRANSACTION;")
@@ -684,9 +720,15 @@ impl BepState {
             .await
             .unwrap()
             .into_iter()
-            .map(|v| Counter {
-                id: v.id.try_into().unwrap(),
-                value: v.value.try_into().unwrap(),
+            .map(|v| {
+                let mut short_id: [u8; 8] = [0; 8];
+                for (i, x) in v.id[0..8].iter().enumerate() {
+                    short_id[i] = *x;
+                }
+                Counter {
+                    id: u64::from_be_bytes(short_id),
+                    value: v.value.try_into().unwrap(),
+                }
             })
             .collect();
 
