@@ -256,6 +256,33 @@ impl BepState {
         old_value
     }
 
+    async fn indices(&self, device_id: &DeviceId) -> Vec<Index> {
+        // TODO: this is very inefficient: improve
+
+        let id = device_id.to_string();
+        let folders = sqlx::query!(
+            r#"
+            SELECT folder
+            FROM bep_index
+            WHERE device = ?
+            ;"#,
+            id,
+        )
+        .fetch_all(&self.db_pool)
+        .await
+        .expect("Error occurred");
+
+        let mut res = vec![];
+        for record in folders.iter() {
+            let index = self.index(&record.folder, device_id).await;
+            if let Some(i) = index {
+                res.push(i)
+            }
+        }
+
+        res
+    }
+
     async fn index(&self, folder: &str, device_id: &DeviceId) -> Option<Index> {
         sqlx::query!("BEGIN TRANSACTION;")
             .execute(&self.db_pool)
@@ -359,7 +386,7 @@ impl BepState {
             .await
             .unwrap();
 
-        debug!("The stored index is: {:?}", &index);
+        trace!("The stored index is: {:?}", &index);
         Some(index)
     }
 
@@ -1034,17 +1061,15 @@ impl BepProcessor {
             r#type: MessageType::Index.into(),
         };
 
-        // TODO: it should be possible to send more indidces
-        let index = self
-            .state
-            .lock()
-            .await
-            .index("syncthing-original", &self.config.id)
-            .await
-            .expect("Index must be present");
+        let indices: Vec<Index> = self.state.lock().await.indices(&self.config.id).await;
+
+        let mut res = EncodedMessages::empty();
+        for index in indices.into_iter() {
+            res.append(encode_message(header.clone(), index).unwrap());
+        }
 
         debug!("Sending Index");
-        encode_message(header, index).unwrap()
+        res
     }
 
     pub async fn ping(&self) -> EncodedMessages {
