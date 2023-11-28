@@ -107,6 +107,9 @@ impl BepState {
             outgoing_requests: Default::default(),
         }
     }
+    async fn init_device(&self, folder: &str) {
+        todo!()
+    }
 
     async fn init_index(&self, folder: &str) {
         let device_id = self.config.id.to_string();
@@ -138,31 +141,6 @@ impl BepState {
             .unwrap();
 
         for other_folder in other.folders.iter() {
-            //  TODO: update info about other devices as well
-
-            // if !self.cluster.folders.iter().any(|f| f.id == other_folder.id) {
-            //     if other_folder.devices.iter().any(|d| {
-            //         DeviceId::try_from(&d.id[..]).expect("Cannot convert to DeviceId")
-            //             == self.config.id
-            //     }) {
-            //         self.cluster.folders.push(other_folder.clone());
-
-            //         self.indices
-            //             .entry(other_folder.id.clone())
-            //             .or_insert(HashMap::new());
-
-            //         let mut folder_devices = self.indices.get_mut(&other_folder.id).expect(
-            //             &format!("Entry for folder {} must be present", &other_folder.id),
-            //         );
-            //         for device in other_folder.devices.iter() {
-            //             let device_id =
-            //                 DeviceId::try_from(&device.id).expect("Wrong device id format");
-
-            //             folder_devices.entry(device_id).or_insert(Index::default());
-            //         }
-            //     }
-            // }
-
             // FIXME: recover from error and rollback transaction
             let insert_res = sqlx::query!(
                 "
@@ -198,13 +176,18 @@ impl BepState {
             .expect("Failed to execute query");
 
             for device in other_folder.devices.iter() {
+                // TODO: handle the case about the current device.
                 let index_id: Vec<u8> = device.index_id.to_be_bytes().into();
+                trace!(
+                    "Inserting index id {:?} as {:?}",
+                    &device.index_id,
+                    &index_id
+                );
                 let device_addresses = device.addresses.join(",");
                 let device_id = DeviceId::try_from(&device.id)
                     .expect("Wrong device id format")
                     .to_string();
 
-                // folder_devices.entry(device_id).or_insert(Index::default());
                 let insert_res = sqlx::query!(
                     "
                     INSERT INTO bep_devices (
@@ -321,7 +304,7 @@ impl BepState {
                     .map(|f| f.blocks.push(bi));
             } else {
                 let mut short_id: [u8; 8] = [0; 8];
-                for (i, x) in file.modified_by[0..8].iter().enumerate() {
+                for (i, x) in file.modified_by.iter().enumerate() {
                     short_id[i] = *x;
                 }
                 let mut fi = FileInfo {
@@ -356,7 +339,7 @@ impl BepState {
         for version in file_versions.await.unwrap() {
             existing_files.get_mut(&version.name).map(|f| {
                 let mut short_id: [u8; 8] = [0; 8];
-                for (i, x) in version.id[0..8].iter().enumerate() {
+                for (i, x) in version.id.iter().enumerate() {
                     short_id[i] = *x;
                 }
                 f.version.as_mut().unwrap().counters.push(Counter {
@@ -463,52 +446,6 @@ impl BepState {
                 &request.name
             ));
         }
-
-        // let new_block = BlockInfo {
-        //     offset: request.offset,
-        //     size: request.size,
-        //     hash: request.hash.clone(),
-        //     weak_hash,
-        // };
-
-        // let local_index = self
-        //     .indices
-        //     .get_mut(&request.folder)
-        //     .map(|x| x.get_mut(&self.config.id))
-        //     .flatten()
-        //     .expect("The local index must be there");
-
-        // trace!("Local Index: {:?}", &local_index);
-
-        // // TODO: use a smarter way to search the file
-        // // TODO: verify if the assumption that we must have a single result is valid
-        // let file_info: &mut FileInfo = local_index
-        //     .files
-        //     .iter_mut()
-        //     .filter(|x| x.name == request.name)
-        //     .next()
-        //     .expect("There should be a matching file for the request");
-
-        // // If block is already present, panic.
-        // let existing_block = file_info
-        //     .blocks
-        //     .iter()
-        //     .filter(|x| x.hash == new_block.hash)
-        //     .next();
-        // assert!(
-        //     existing_block.is_none(),
-        //     "The block is already present in the index"
-        // );
-
-        // file_info.blocks.push(new_block);
-
-        // let block_amount = ((file_info.size + (file_info.block_size as i64) - 1)
-        //     / (file_info.block_size as i64)) as usize;
-        // if file_info.blocks.len() == block_amount {
-        //     Ok(UploadStatus::AllBlocks)
-        // } else {
-        //     Ok(UploadStatus::BlocksMissing)
-        // }
     }
 
     async fn add_missing_files_to_local_index(
@@ -516,21 +453,6 @@ impl BepState {
         folder_name: &str,
         missing_files: &Vec<FileInfo>,
     ) -> Result<(), String> {
-        // let local_index: &mut Index = self
-        //     .indices
-        //     .get_mut(folder_name)
-        //     .map(|x| x.get_mut(&self.config.id))
-        //     .flatten()
-        //     .expect("Local index must be present");
-
-        // for missing_file in missing_files.into_iter() {
-        //     let file = FileInfo {
-        //         blocks: vec![],
-        //         ..missing_file.clone()
-        //     };
-
-        //     local_index.files.push(file);
-        // }
         let device_id = self.config.id.to_string();
 
         sqlx::query!("BEGIN TRANSACTION;")
@@ -647,17 +569,6 @@ impl BepState {
     }
 
     async fn file_from_local_index(&self, folder_name: &str, file_name: &str) -> Option<FileInfo> {
-        // let local_index: &Index = self
-        //     .indices
-        //     .get(folder_name)
-        //     .map(|x| x.get(&self.config.id))
-        //     .flatten()
-        //     .expect("Local index must be present");
-
-        // // TODO: use a better mechanism to search
-
-        // local_index.files.iter().find(|f| f.name == file_name)
-
         // TODO: test if it is faster to run 3 queries 1 for the file, 1 for the blocks 1 for the
         // versions
 
@@ -722,7 +633,7 @@ impl BepState {
             .into_iter()
             .map(|v| {
                 let mut short_id: [u8; 8] = [0; 8];
-                for (i, x) in v.id[0..8].iter().enumerate() {
+                for (i, x) in v.id.iter().enumerate() {
                     short_id[i] = *x;
                 }
                 Counter {
@@ -735,7 +646,7 @@ impl BepState {
         let file = file.await.unwrap()?;
         debug!("file {:?}", &file);
         let mut short_id: [u8; 8] = [0; 8];
-        for (i, x) in file.modified_by[0..8].iter().enumerate() {
+        for (i, x) in file.modified_by.iter().enumerate() {
             short_id[i] = *x;
         }
         let fi = FileInfo {
@@ -762,6 +673,87 @@ impl BepState {
             .unwrap();
 
         Some(fi)
+    }
+
+    async fn cluster_config(&self) -> Result<ClusterConfig, String> {
+        // TODO: measure if it's better to join or have separate queries
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        let devices = sqlx::query!(
+            r#"
+            SELECT *
+            FROM bep_devices
+            ;"#,
+        )
+        .fetch_all(&self.db_pool);
+
+        let folders = sqlx::query!(
+            r#"
+            SELECT *
+            FROM bep_folders
+            ;"#,
+        )
+        .fetch_all(&self.db_pool);
+
+        let devices: Vec<(String, syncthing::Device)> = devices
+            .await
+            .expect("Error occured")
+            .into_iter()
+            .map(|x| {
+                let mut index_id: [u8; 8] = [0; 8];
+                trace!("Reading index_id {:?}", &x.index_id);
+                for (i, y) in x.index_id.iter().enumerate() {
+                    index_id[i] = *y;
+                }
+                let device_id = DeviceId::try_from(x.id.as_str()).unwrap();
+                let device = syncthing::Device {
+                    id: device_id.into(),
+                    name: x.name,
+                    addresses: x.addresses.split(",").map(|y| y.to_string()).collect(),
+                    compression: syncthing::Compression::Never.into(), // TODO: update
+                    cert_name: x.cert_name,
+                    max_sequence: x.max_sequence.try_into().unwrap(),
+                    introducer: x.introducer == 1,
+                    index_id: u64::from_be_bytes(index_id),
+                    skip_introduction_removals: x.skip_introduction_removals == 1,
+                    encryption_password_token: x.encryption_password_token,
+                };
+                (x.folder, device)
+            })
+            .collect();
+
+        let folders: Vec<(syncthing::Folder)> = folders
+            .await
+            .expect("Error occured")
+            .into_iter()
+            .map(|x| {
+                let folder = syncthing::Folder {
+                    id: x.id.clone(),
+                    label: x.label,
+                    read_only: x.read_only == 1,
+                    ignore_permissions: x.ignore_permissions == 1,
+                    ignore_delete: x.ignore_delete == 1,
+                    disable_temp_indexes: x.disable_temp_indexes == 1,
+                    paused: x.paused == 1,
+                    devices: devices
+                        .iter()
+                        .filter(|(f, d)| f == &x.id)
+                        .map(|(f, d)| d.clone())
+                        .collect(),
+                };
+                folder
+            })
+            .collect();
+
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        Ok(ClusterConfig { folders })
     }
 
     fn insert_requests(&mut self, requests: &Vec<Request>) {
@@ -910,36 +902,6 @@ impl BepProcessor {
         };
 
         vec![Box::pin(ems)]
-
-        // let header = Header {
-        //     compression: 0,
-        //     r#type: MessageType::Request.into(),
-        // };
-
-        // self.storage_manager.save_client_index(&index);
-
-        // let mut res: Vec<BepReply> = vec![];
-
-        // for file in index.files.iter() {
-        //     for block in file.blocks.iter() {
-        //         let id = rand::random::<i32>().abs();
-        //         let request = Request {
-        //             id,
-        //             folder: index.folder.clone(),
-        //             name: file.name.clone(),
-        //             offset: block.offset,
-        //             size: block.size,
-        //             hash: block.hash.clone(),
-        //             from_temporary: false,
-        //         };
-        //         debug!("Sending Request");
-        //         debug!("Sending Request {:?}", request);
-        //         let header_clone = header.clone();
-        //         let em = async move { self.encode_message(header_clone, request).unwrap() };
-        //         res.push(Box::pin(em));
-        //     }
-        // }
-        // res
     }
 
     fn handle_request(&self, request: Request) -> Vec<BepReply> {
@@ -947,61 +909,6 @@ impl BepProcessor {
         debug!("{:?}", request);
 
         vec![]
-
-        // let request_folder = if request.folder == self.index.folder {
-        //     Ok(&request.folder)
-        // } else {
-        //     Err(ErrorCode::Generic)
-        // };
-
-        // let file = request_folder.and_then(|x| {
-        //     self.index
-        //         .files
-        //         .iter()
-        //         .find(|&x| x.name == request.name)
-        //         .ok_or(ErrorCode::NoSuchFile)
-        // });
-
-        // let data = file.and_then(|f| {
-        //     let block = f
-        //         .blocks
-        //         .iter()
-        //         .find(|&b| {
-        //             b.offset == request.offset && b.size == request.size && b.hash == request.hash
-        //         })
-        //         .ok_or(ErrorCode::NoSuchFile);
-
-        //     block.and_then(|b| {
-        //         storage::data_from_file_block(
-        //             // FIXME: track the dir somewhere else
-        //             "/home/marco/workspace/hic-sunt-leones/syncthing-test",
-        //             &f,
-        //             &b,
-        //         )
-        //         .map_err(|e| ErrorCode::InvalidFile)
-        //     })
-        // });
-
-        // let code: i32 = data
-        //     .as_ref()
-        //     .err()
-        //     .unwrap_or(&ErrorCode::NoError)
-        //     .to_owned()
-        //     .into();
-
-        // let response = Response {
-        //     id: request.id,
-        //     data: data.unwrap_or(Vec::new()),
-        //     code,
-        // };
-        // debug!("Sending Response");
-        // // debug!("Sending Response {:?}", response);
-
-        // let header = Header {
-        //     compression: 0,
-        //     r#type: MessageType::Response.into(),
-        // };
-        // vec![Box::pin(self.encode_message(header, response).unwrap())]
     }
 
     fn handle_response(&self, response: Response) -> Vec<BepReply> {
@@ -1109,61 +1016,13 @@ impl BepProcessor {
             r#type: MessageType::ClusterConfig.into(),
         };
 
-        // let max_sequence: i64 = self.state.lock().await.sequence.try_into().unwrap();
-
-        // let this_device = Device {
-        //     id: self.config.id.into(),
-        //     name: self.config.name.clone(),
-        //     addresses: vec![self.config.net_address.clone()],
-        //     compression: Compression::Never.into(),
-        //     max_sequence,
-        //     // Delta Index Exchange is not supported yet hence index_id is zero.
-        //     index_id: 0,
-        //     cert_name: String::new(),
-        //     encryption_password_token: vec![],
-        //     introducer: false,
-        //     skip_introduction_removals: true,
-        //     // ..Default::default()
-        // };
-
-        // // FIXME: This is an ugly hack to get the client id fix the workflow.
-        // let client_id = self.config.trusted_peers.iter().next().unwrap();
-        // let client_device = Device {
-        //     id: client_id.into(),
-        //     name: format!("syncthing"),
-        //     addresses: vec![format!("127.0.0.1:220000")],
-        //     compression: Compression::Never.into(),
-        //     max_sequence: 100,
-        //     // Delta Index Exchange is not supported yet hence index_id is zero.
-        //     index_id: 0,
-        //     cert_name: String::new(),
-        //     encryption_password_token: vec![],
-        //     introducer: false,
-        //     skip_introduction_removals: true,
-        //     // ..Default::default()
-        // };
-
-        // let folder_name = "test_a";
-
-        // let folder = Folder {
-        //     id: folder_name.to_string(),
-        //     label: folder_name.to_string(),
-        //     read_only: false,
-        //     ignore_permissions: false,
-        //     ignore_delete: true,
-        //     disable_temp_indexes: false,
-        //     paused: false,
-        //     devices: vec![this_device, client_device],
-        //     // ..Default::default()
-        // };
-
-        // let cluster_config = ClusterConfig { folders: vec![] };
         let cluster_config = self
-            .storage_manager
-            .restore_cluster_config()
+            .state
+            .lock()
+            .await
+            .cluster_config()
             .await
             .expect("something went wrong when restoring");
-        // TODO: read this from the DB
 
         trace!("Sending Cluster Config: {:?}", &cluster_config);
         encode_message(header, cluster_config).unwrap()
@@ -1175,10 +1034,14 @@ impl BepProcessor {
             r#type: MessageType::Index.into(),
         };
 
-        let index = Index {
-            folder: format!("vqick-icdkt"),
-            files: vec![],
-        };
+        // TODO: it should be possible to send more indidces
+        let index = self
+            .state
+            .lock()
+            .await
+            .index("syncthing-original", &self.config.id)
+            .await
+            .expect("Index must be present");
 
         debug!("Sending Index");
         encode_message(header, index).unwrap()
