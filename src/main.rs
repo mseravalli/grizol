@@ -13,7 +13,8 @@ mod syncthing {
 use crate::connectivity::ServerConfigArgs;
 use crate::connectivity::{OpenConnection, TlsServer};
 use crate::core::bep_data_parser::{BepDataParser, CompleteMessage};
-use crate::core::{BepConfig, BepProcessor, EncodedMessages};
+use crate::core::bep_processor::BepProcessor;
+use crate::core::{BepConfig, EncodedMessages};
 use crate::device_id::DeviceId;
 use clap::Parser;
 use data_encoding::BASE32;
