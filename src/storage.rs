@@ -369,12 +369,15 @@ mod tests {
             folder: format!("test_dir"),
             name: format!("a_file"),
             offset: 0,
-            size: data.len() as i32,
+            size: data.len().try_into().unwrap(),
             hash: vec![],
             from_temporary: false,
         };
 
-        let result = storage_manager.store_block(data, &request).await;
+        let block_size: u64 = data.len().try_into().unwrap();
+        let result = storage_manager
+            .store_block(data, &request, block_size)
+            .await;
 
         match result {
             Ok(x) => assert_eq!(0, 0),
