@@ -14,8 +14,9 @@ futures = "0"
 log = { version = "0.4.4" }
 lz4_flex = { version = "0.10" }
 mio = { version = "0.8", features = ["net", "os-poll"] }
-prost = "0.11"
-prost-types = "0.11"
+prost = "0"
+prost-types = "0"
+prost-reflect = { version = "0", features = ["text-format", "derive"] }
 rand = "0"
 rustls-pemfile = "1.0.0"
 rustls = { version = "0.21", features = [ "logging", "dangerous_configuration" ]}
@@ -28,4 +29,5 @@ tokio-util = { version = "0", features = ["io"] }
 webpki-roots = "0.23"
 
 [build-dependencies]
-prost-build = { version = "0.11" }
+prost-build = "0"
+prost-reflect-build = "0"

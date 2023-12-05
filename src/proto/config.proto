@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package grizol;
+
+message Config {
+    string cert = 1;
+    string key = 2;
+    int32 port = 3;
+    string protocol = 4;
+// next 
+}

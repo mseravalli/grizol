@@ -1,0 +1,4 @@
+cert: "/home/marco/downloads/cert.pem"
+key: "/home/marco/downloads/key.pem"
+port: 23456
+protocol: "bep/1.0"

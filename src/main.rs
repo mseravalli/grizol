@@ -9,6 +9,9 @@ mod storage;
 mod syncthing {
     include!(concat!(env!("OUT_DIR"), "/syncthing.rs"));
 }
+mod grizol {
+    include!(concat!(env!("OUT_DIR"), "/grizol.rs"));
+}
 
 use crate::connectivity::ServerConfigArgs;
 use crate::connectivity::{OpenConnection, TlsServer};
@@ -19,6 +22,8 @@ use crate::device_id::DeviceId;
 use clap::Parser;
 use data_encoding::BASE32;
 use futures::future::FutureExt;
+use prost_reflect::{DescriptorPool, DynamicMessage, Value};
+use prost_types::FileDescriptorSet;
 use rustls_pemfile::{certs, rsa_private_keys};
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::SqlitePoolOptions;
@@ -47,6 +52,8 @@ const LISTENER: mio::Token = mio::Token(0);
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    #[arg(long)]
+    config: String,
     #[arg(long)]
     key: String,
     #[arg(long)]
@@ -87,6 +94,18 @@ impl Into<ServerConfigArgs> for Args {
             trusted_peers: HashSet::new(),
         }
     }
+}
+
+fn parse_config(config_path: &str) -> grizol::Config {
+    let pool = DescriptorPool::decode(
+        include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin")).as_ref(),
+    )
+    .unwrap();
+    let message_descriptor = pool.get_message_by_name("grizol.Config").unwrap();
+
+    let config_txt = fs::read_to_string(config_path).expect("cannot open config file");
+    let config = DynamicMessage::parse_text_format(message_descriptor, &config_txt).unwrap();
+    config.transcode_to().unwrap()
 }
 
 fn setup_logging() {
@@ -140,6 +159,8 @@ async fn main() -> io::Result<()> {
     setup_logging();
 
     let args: Args = Args::parse();
+
+    let proto_config = parse_config(&args.config);
 
     let mut addr: net::SocketAddr = "0.0.0.0:443".parse().unwrap();
     addr.set_port(args.port.unwrap_or(443));
