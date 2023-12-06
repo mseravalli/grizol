@@ -9,6 +9,7 @@ use crate::connectivity::OpenConnection;
 use crate::core::bep_data_parser::{BepDataParser, CompleteMessage, MAGIC_NUMBER};
 use crate::core::bep_state::BepState;
 use crate::device_id::DeviceId;
+use crate::grizol;
 use crate::storage;
 use crate::storage::StorageManager;
 use crate::syncthing;
@@ -20,7 +21,7 @@ use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
 use std::array::TryFromSliceError;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::Write;
+use std::convert::From;
 use std::path::Path;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
@@ -28,7 +29,6 @@ use syncthing::{
     BlockInfo, Close, ClusterConfig, Counter, ErrorCode, FileInfo, Header, Hello, Index,
     IndexUpdate, MessageType, Ping, Request, Response,
 };
-use tokio::sync::Mutex;
 
 const PING_INTERVAL: Duration = Duration::from_secs(45);
 
@@ -63,7 +63,6 @@ enum UploadStatus {
     AllBlocks,
 }
 
-// TODO: initialize through a from config or something, it's probably easier
 /// Data that will not change troughout the life ot the program.
 #[derive(Debug, Clone)]
 pub struct BepConfig {
@@ -72,6 +71,38 @@ pub struct BepConfig {
     pub trusted_peers: HashSet<DeviceId>,
     pub base_dir: String,
     pub net_address: String,
+}
+
+impl From<grizol::Config> for BepConfig {
+    fn from(grizol_config: grizol::Config) -> Self {
+        let name = if grizol_config.name.is_empty() {
+            String::from("Grizol Server")
+        } else {
+            grizol_config.name
+        };
+
+        let net_address = if grizol_config.address.is_empty() {
+            String::from("0.0.0.0:23456")
+        } else {
+            grizol_config.address
+        };
+        let base_dir = if grizol_config.base_dir.is_empty() {
+            String::from("~/grizol")
+        } else {
+            grizol_config.base_dir
+        };
+        BepConfig {
+            id: DeviceId::from(Path::new(grizol_config.cert.as_str())),
+            name,
+            trusted_peers: grizol_config
+                .trusted_peers
+                .iter()
+                .map(|x| DeviceId::try_from(x.as_str()).unwrap())
+                .collect(),
+            base_dir,
+            net_address,
+        }
+    }
 }
 
 type BepReply<'a> = Pin<Box<dyn Future<Output = EncodedMessages> + Send + 'a>>;

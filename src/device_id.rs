@@ -4,6 +4,9 @@ use std::convert::From;
 use std::convert::Into;
 use std::convert::TryFrom;
 use std::fmt;
+use std::fs::File;
+use std::io::{BufReader, Read, Write};
+use std::path::Path;
 
 const DEVICE_ID_LEN: usize = 32;
 
@@ -66,6 +69,24 @@ impl From<&rustls::Certificate> for DeviceId {
         let id: [u8; DEVICE_ID_LEN] = hasher.finalize().into();
 
         DeviceId { id }
+    }
+}
+
+impl From<&Path> for DeviceId {
+    fn from(path: &Path) -> Self {
+        let certfile = File::open(path).expect("cannot open certificate file");
+        let mut reader = BufReader::new(certfile);
+
+        let certs: Vec<rustls::Certificate> = rustls_pemfile::certs(&mut reader)
+            .unwrap()
+            .iter()
+            .map(|v| rustls::Certificate(v.clone()))
+            .collect();
+
+        let device_id = DeviceId::from(&certs[0]);
+
+        debug!("My id: {}", device_id.to_string());
+        device_id
     }
 }
 

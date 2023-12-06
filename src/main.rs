@@ -33,7 +33,7 @@ use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
 use std::net;
 use std::net::ToSocketAddrs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
@@ -47,6 +47,7 @@ use tokio_rustls::TlsAcceptor;
 
 // Token for our listening socket.
 const LISTENER: mio::Token = mio::Token(0);
+const DEFAULT_PORT: u16 = 23456;
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -86,64 +87,23 @@ fn setup_logging() {
         .init();
 }
 
-fn device_id_from_cert(cert_path: &str) -> DeviceId {
-    let certfile = fs::File::open(cert_path).expect("cannot open certificate file");
-    let mut reader = BufReader::new(certfile);
-
-    let certs: Vec<rustls::Certificate> = rustls_pemfile::certs(&mut reader)
-        .unwrap()
-        .iter()
-        .map(|v| rustls::Certificate(v.clone()))
-        .collect();
-
-    let device_id = DeviceId::from(&certs[0]);
-
-    debug!("My id: {}", device_id.to_string());
-    device_id
-}
-
-const DEFAULT_PORT: u16 = 23456;
-
 #[tokio::main]
 async fn main() -> io::Result<()> {
     setup_logging();
 
     let args: Args = Args::parse();
-
     let proto_config = parse_config(&args.config);
-
-    let mut addr: net::SocketAddr = format!("0.0.0.0:{}", DEFAULT_PORT).parse().unwrap();
-    let port: u16 = match proto_config.port.try_into() {
-        Ok(0) => Ok(DEFAULT_PORT),
-        Ok(x) => Ok(x),
-        Err(e) => Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("The provided port cannot be used due to {}.", e),
-        )),
-    }?;
-    addr.set_port(port);
-    let device_id = device_id_from_cert(&proto_config.cert);
-
     let acceptor = TlsAcceptor::from(Arc::new(proto_config.clone().into()));
+    let bep_config = BepConfig::from(proto_config);
+
+    let mut addr: net::SocketAddr = bep_config.net_address.parse().unwrap();
 
     let listener = TcpListener::bind(&addr).await?;
-
-    // TODO: get all this data from the config I guess
-    let bep_config = BepConfig {
-        id: device_id,
-        name: format!("Grizol Server"),
-        trusted_peers: proto_config
-            .trusted_peers
-            .iter()
-            .map(|x| DeviceId::try_from(x.as_str()).unwrap())
-            .collect(),
-        base_dir: format!("/home/marco/workspace/hic-sunt-leones/syncthing-test"),
-        net_address: addr.to_string(),
-    };
 
     // Using max_connections 1 in order not to have locking issues when running transactions.
     // From https://github.com/launchbadge/sqlx/issues/451#issuecomment-649866619 it might make
     // sense to have 1 pool for reading and 1 pool for writing.
+    // TODO: implement multiple connections
     let db_pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite:target/grizol.db")

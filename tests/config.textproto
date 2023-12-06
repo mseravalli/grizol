@@ -1,3 +1,4 @@
 cert: "/home/marco/downloads/cert.pem"
 key: "/home/marco/downloads/key.pem"
 trusted_peers: ["BTTVHUR-CKWU5YX-JMAULFO-5CMEQ36-FZWEWAE-QFXROCM-WKMOJPZ-KEUOWAS"]
+base_dir: "/home/marco/workspace/hic-sunt-leones/syncthing-test"
