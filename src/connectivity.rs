@@ -64,7 +64,10 @@ impl ClientCertVerifier for PresharedAuth {
         if any_match {
             Ok(ClientCertVerified::assertion())
         } else {
-            error!("Unknown client device id: {}", client_id.to_string());
+            error!(
+                "Unknown client device id '{}' will not be accepted",
+                client_id.to_string()
+            );
             Err(rustls::Error::InvalidCertificate(
                 rustls::CertificateError::InvalidPurpose,
             ))
@@ -183,10 +186,6 @@ impl TlsServer {
                     self.next_id += 1;
 
                     res = Ok((OpenConnection::new(socket, token, tls_conn), token));
-                    // let mut connection = OpenConnection::new(socket, token, tls_conn);
-                    // connection.register(registry);
-                    // self.connections.insert(token, connection);
-                    // debug!("Added a new connection");
                 }
                 // This is triggered when the connection was successfully created.
                 Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
@@ -203,30 +202,6 @@ impl TlsServer {
         }
         res
     }
-
-    // pub fn process_event(
-    //     &mut self,
-    //     registry: &mio::Registry,
-    //     event: &mio::event::Event,
-    // ) -> Result<Vec<u8>, String> {
-    //     let token = event.token();
-
-    //     if self.connections.contains_key(&token) {
-    //         let res = if let Some(connection) = self.connections.get_mut(&token) {
-    //             check_client_certs(&connection.tls_conn);
-    //             connection.read_event(registry, event)
-    //         } else {
-    //             Err(format!("Connection not found"))
-    //         };
-
-    //         if self.connections[&token].is_closed() {
-    //             self.connections.remove(&token);
-    //         }
-    //         res
-    //     } else {
-    //         Err(format!("Token {:?} not found", token))
-    //     }
-    // }
 }
 
 /// This is a connection which has been accepted by the server,
@@ -275,34 +250,6 @@ impl OpenConnection {
 
         res
     }
-
-    // /// We're a connection, and we have something to do.
-    // fn read_event(
-    //     &mut self,
-    //     registry: &mio::Registry,
-    //     ev: &mio::event::Event,
-    // ) -> Result<Vec<u8>, String> {
-    //     let res = if ev.is_readable() {
-    //         self.do_tls_read();
-    //         self.try_plain_read()
-    //     } else {
-    //         Err(format!("Not readable"))
-    //     };
-
-    //     if ev.is_writable() {
-    //         self.do_tls_write_and_handle_error();
-    //     }
-
-    //     if self.closing {
-    //         let _ = self.socket.shutdown(net::Shutdown::Both);
-    //         self.closed = true;
-    //         self.deregister(registry);
-    //     } else {
-    //         self.reregister(registry);
-    //     }
-
-    //     res
-    // }
 
     fn do_tls_read(&mut self) {
         // Read some TLS data.
@@ -357,11 +304,6 @@ impl OpenConnection {
         }
     }
 
-    // /// Process some amount of received plaintext.
-    // fn incoming_plaintext(&mut self, buf: &[u8]) -> Result<&[u8], String> {
-    //     Ok(buf)
-    // }
-
     fn tls_write(&mut self) -> io::Result<usize> {
         self.tls_conn.write_tls(&mut self.socket)
     }
@@ -407,7 +349,7 @@ impl OpenConnection {
     // TODO: https://docs.rs/rustls/latest/rustls/struct.CommonState.html#method.set_buffer_limit
     pub fn write_all(&mut self, message: &[u8]) -> Result<usize, io::Error> {
         // TODO: check if another size makes more sense
-        let block = 2 << 14;
+        let block = 1 << 14;
         let mut written = 0;
 
         for i in 0..(message.len() / block) + 1 {
