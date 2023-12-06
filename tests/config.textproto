@@ -1,4 +1,3 @@
 cert: "/home/marco/downloads/cert.pem"
 key: "/home/marco/downloads/key.pem"
-port: 23456
-protocol: "bep/1.0"
+trusted_peers: ["BTTVHUR-CKWU5YX-JMAULFO-5CMEQ36-FZWEWAE-QFXROCM-WKMOJPZ-KEUOWAS"]

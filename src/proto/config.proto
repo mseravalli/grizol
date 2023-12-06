@@ -6,6 +6,6 @@ message Config {
     string cert = 1;
     string key = 2;
     int32 port = 3;
-    string protocol = 4;
+    repeated string trusted_peers = 4;
 // next 
 }

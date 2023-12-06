@@ -13,7 +13,6 @@ mod grizol {
     include!(concat!(env!("OUT_DIR"), "/grizol.rs"));
 }
 
-use crate::connectivity::ServerConfigArgs;
 use crate::connectivity::{OpenConnection, TlsServer};
 use crate::core::bep_data_parser::{BepDataParser, CompleteMessage};
 use crate::core::bep_processor::BepProcessor;
@@ -52,53 +51,13 @@ const LISTENER: mio::Token = mio::Token(0);
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(long)]
+    #[arg(long, short)]
     config: String,
-    #[arg(long)]
-    key: String,
-    #[arg(long)]
-    certs: String,
-    #[arg(long)]
-    port: Option<u16>,
-    #[arg(long)]
-    protover: Vec<String>,
-    #[arg(long)]
-    suite: Vec<String>,
-    #[arg(long)]
-    proto: Vec<String>,
-    #[arg(long)]
-    ocsp: Option<String>,
-    #[arg(long)]
-    auth: Option<String>,
-    #[arg(long)]
-    require_auth: Option<bool>,
-    #[arg(long)]
-    resumption: Option<bool>,
-    #[arg(long)]
-    tickets: Option<bool>,
-}
-
-impl Into<ServerConfigArgs> for Args {
-    fn into(self) -> ServerConfigArgs {
-        ServerConfigArgs {
-            auth: self.auth,
-            certs: self.certs,
-            key: self.key,
-            ocsp: self.ocsp,
-            proto: self.proto,
-            protover: self.protover,
-            require_auth: self.require_auth,
-            resumption: self.resumption,
-            suite: self.suite,
-            tickets: self.tickets,
-            trusted_peers: HashSet::new(),
-        }
-    }
 }
 
 fn parse_config(config_path: &str) -> grizol::Config {
     let pool = DescriptorPool::decode(
-        include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin")).as_ref(),
+        include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set_config.bin")).as_ref(),
     )
     .unwrap();
     let message_descriptor = pool.get_message_by_name("grizol.Config").unwrap();
@@ -127,17 +86,6 @@ fn setup_logging() {
         .init();
 }
 
-fn trusted_peers() -> HashSet<DeviceId> {
-    vec![
-        DeviceId::try_from("BTTVHUR-CKWU5YX-JMAULFO-5CMEQ36-FZWEWAE-QFXROCM-WKMOJPZ-KEUOWAS")
-            .unwrap(),
-        DeviceId::try_from("VHLZSPS-XMVASHL-NRDGZAY-VUS576S-H56LQRK-GGNWYIS-NR4OKBG-VHGD2AQ")
-            .unwrap(),
-    ]
-    .into_iter()
-    .collect()
-}
-
 fn device_id_from_cert(cert_path: &str) -> DeviceId {
     let certfile = fs::File::open(cert_path).expect("cannot open certificate file");
     let mut reader = BufReader::new(certfile);
@@ -154,6 +102,8 @@ fn device_id_from_cert(cert_path: &str) -> DeviceId {
     device_id
 }
 
+const DEFAULT_PORT: u16 = 23456;
+
 #[tokio::main]
 async fn main() -> io::Result<()> {
     setup_logging();
@@ -162,15 +112,19 @@ async fn main() -> io::Result<()> {
 
     let proto_config = parse_config(&args.config);
 
-    let mut addr: net::SocketAddr = "0.0.0.0:443".parse().unwrap();
-    addr.set_port(args.port.unwrap_or(443));
-    let device_id = device_id_from_cert(&args.certs);
+    let mut addr: net::SocketAddr = format!("0.0.0.0:{}", DEFAULT_PORT).parse().unwrap();
+    let port: u16 = match proto_config.port.try_into() {
+        Ok(0) => Ok(DEFAULT_PORT),
+        Ok(x) => Ok(x),
+        Err(e) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("The provided port cannot be used due to {}.", e),
+        )),
+    }?;
+    addr.set_port(port);
+    let device_id = device_id_from_cert(&proto_config.cert);
 
-    let mut server_config_args: ServerConfigArgs = args.into();
-    server_config_args.trusted_peers = trusted_peers().clone();
-    let config = server_config_args.into();
-
-    let acceptor = TlsAcceptor::from(Arc::new(config));
+    let acceptor = TlsAcceptor::from(Arc::new(proto_config.clone().into()));
 
     let listener = TcpListener::bind(&addr).await?;
 
@@ -178,7 +132,11 @@ async fn main() -> io::Result<()> {
     let bep_config = BepConfig {
         id: device_id,
         name: format!("Grizol Server"),
-        trusted_peers: trusted_peers(),
+        trusted_peers: proto_config
+            .trusted_peers
+            .iter()
+            .map(|x| DeviceId::try_from(x.as_str()).unwrap())
+            .collect(),
         base_dir: format!("/home/marco/workspace/hic-sunt-leones/syncthing-test"),
         net_address: addr.to_string(),
     };
@@ -195,7 +153,7 @@ async fn main() -> io::Result<()> {
     let bep_processor = Arc::new(BepProcessor::new(bep_config, db_pool));
 
     loop {
-        debug!("wating for a new connection");
+        debug!("Wating for a new connection on {}", &addr);
 
         let (tcp_stream, peer_addr) = listener.accept().await?;
         let acceptor = acceptor.clone();

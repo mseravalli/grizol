@@ -2,5 +2,8 @@
 
 export DATABASE_URL="sqlite:target/grizol.db"
 
-sqlx db reset -y
+mkdir -p target
+sqlx db create
+
+# sqlx db reset -y
 sqlx migrate run

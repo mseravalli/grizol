@@ -1,4 +1,5 @@
 use crate::device_id::DeviceId;
+use crate::grizol;
 use clap::Parser;
 use data_encoding::BASE32;
 use mio::net::{TcpListener, TcpStream};
@@ -18,6 +19,8 @@ use std::io::{BufReader, Read, Write};
 use std::net;
 use std::sync::Arc;
 use std::time::SystemTime;
+
+const BEP_PROTOCOL_ID: &str = "bep/1.0";
 
 struct PresharedAuth {
     subjects: Vec<DistinguishedName>,
@@ -69,39 +72,21 @@ impl ClientCertVerifier for PresharedAuth {
     }
 }
 
-pub struct ServerConfigArgs {
-    pub auth: Option<String>,
-    pub certs: String,
-    pub key: String,
-    pub ocsp: Option<String>,
-    pub proto: Vec<String>,
-    pub protover: Vec<String>,
-    pub require_auth: Option<bool>,
-    pub resumption: Option<bool>,
-    pub suite: Vec<String>,
-    pub tickets: Option<bool>,
-    pub trusted_peers: HashSet<DeviceId>,
-}
-
-impl Into<rustls::ServerConfig> for ServerConfigArgs {
+impl Into<rustls::ServerConfig> for grizol::Config {
     fn into(self) -> rustls::ServerConfig {
-        let client_auth = PresharedAuth::boxed(self.trusted_peers);
+        let trusted_peers = self
+            .trusted_peers
+            .iter()
+            .map(|x| DeviceId::try_from(x.as_str()).unwrap())
+            .collect();
+        let client_auth = PresharedAuth::boxed(trusted_peers);
 
-        let suites = if !self.suite.is_empty() {
-            lookup_suites(&self.suite)
-        } else {
-            rustls::ALL_CIPHER_SUITES.to_vec()
-        };
+        let suites = rustls::ALL_CIPHER_SUITES.to_vec();
 
-        let versions = if !self.protover.is_empty() {
-            lookup_versions(&self.protover)
-        } else {
-            rustls::ALL_VERSIONS.to_vec()
-        };
+        let versions = rustls::ALL_VERSIONS.to_vec();
 
-        let certs = load_certs(&self.certs);
+        let certs = load_certs(&self.cert);
         let privkey = load_private_key(&self.key);
-        let ocsp = load_ocsp(&self.ocsp);
 
         let mut config = rustls::ServerConfig::builder()
             .with_cipher_suites(&suites)
@@ -109,79 +94,15 @@ impl Into<rustls::ServerConfig> for ServerConfigArgs {
             .with_protocol_versions(&versions)
             .expect("inconsistent cipher-suites/versions specified")
             .with_client_cert_verifier(client_auth)
-            .with_single_cert_with_ocsp_and_sct(certs, privkey, ocsp, vec![])
+            .with_single_cert_with_ocsp_and_sct(certs, privkey, vec![], vec![])
             .expect("bad certificates/private key");
 
         config.key_log = Arc::new(rustls::KeyLogFile::new());
 
-        if self.resumption.unwrap_or(false) {
-            config.session_storage = rustls::server::ServerSessionMemoryCache::new(256);
-        }
-
-        if self.tickets.unwrap_or(false) {
-            config.ticketer = rustls::Ticketer::new().unwrap();
-        }
-
-        config.alpn_protocols = self
-            .proto
-            .iter()
-            .map(|proto| proto.as_bytes().to_vec())
-            .collect::<Vec<_>>();
+        config.alpn_protocols = vec![BEP_PROTOCOL_ID.as_bytes().to_vec()];
 
         config
     }
-}
-
-impl Into<Arc<rustls::ServerConfig>> for ServerConfigArgs {
-    fn into(self) -> Arc<rustls::ServerConfig> {
-        let config: rustls::ServerConfig = self.into();
-        Arc::new(config)
-    }
-}
-
-fn find_suite(name: &str) -> Option<rustls::SupportedCipherSuite> {
-    for suite in rustls::ALL_CIPHER_SUITES {
-        let sname = format!("{:?}", suite.suite()).to_lowercase();
-
-        if sname == name.to_string().to_lowercase() {
-            return Some(*suite);
-        }
-    }
-
-    None
-}
-
-fn lookup_suites(suites: &[String]) -> Vec<rustls::SupportedCipherSuite> {
-    let mut out = Vec::new();
-
-    for csname in suites {
-        let scs = find_suite(csname);
-        match scs {
-            Some(s) => out.push(s),
-            None => panic!("cannot look up ciphersuite '{}'", csname),
-        }
-    }
-
-    out
-}
-
-/// Make a vector of protocol versions named in `versions`
-fn lookup_versions(versions: &[String]) -> Vec<&'static rustls::SupportedProtocolVersion> {
-    let mut out = Vec::new();
-
-    for vname in versions {
-        let version = match vname.as_ref() {
-            "1.2" => &rustls::version::TLS12,
-            "1.3" => &rustls::version::TLS13,
-            _ => panic!(
-                "cannot look up version '{}', valid are '1.2' and '1.3'",
-                vname
-            ),
-        };
-        out.push(version);
-    }
-
-    out
 }
 
 fn load_certs(filename: &str) -> Vec<rustls::Certificate> {
@@ -212,19 +133,6 @@ fn load_private_key(filename: &str) -> rustls::PrivateKey {
         "no keys found in {:?} (encrypted keys not supported)",
         filename
     );
-}
-
-fn load_ocsp(filename: &Option<String>) -> Vec<u8> {
-    let mut ret = Vec::new();
-
-    if let Some(name) = filename {
-        fs::File::open(name)
-            .expect("cannot open ocsp file")
-            .read_to_end(&mut ret)
-            .unwrap();
-    }
-
-    ret
 }
 
 /// This binds together a TCP listening socket, some outstanding
