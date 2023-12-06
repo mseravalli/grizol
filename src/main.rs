@@ -106,7 +106,7 @@ async fn main() -> io::Result<()> {
     // TODO: implement multiple connections
     let db_pool = SqlitePoolOptions::new()
         .max_connections(1)
-        .connect("sqlite:target/grizol.db")
+        .connect(&bep_config.db_url)
         .await
         .expect("Not possible to connect to the sqlite database.");
 

@@ -9,5 +9,6 @@ message Config {
     string key                    = 4;
     repeated string trusted_peers = 5;
     string base_dir               = 6;
+    string db_url                 = 7;
 // next 
 }

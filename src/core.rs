@@ -71,6 +71,7 @@ pub struct BepConfig {
     pub trusted_peers: HashSet<DeviceId>,
     pub base_dir: String,
     pub net_address: String,
+    pub db_url: String,
 }
 
 impl From<grizol::Config> for BepConfig {
@@ -91,6 +92,11 @@ impl From<grizol::Config> for BepConfig {
         } else {
             grizol_config.base_dir
         };
+        let db_url = if grizol_config.db_url.is_empty() {
+            String::from("sqlite:~/.grizol.db")
+        } else {
+            grizol_config.db_url
+        };
         BepConfig {
             id: DeviceId::from(Path::new(grizol_config.cert.as_str())),
             name,
@@ -101,6 +107,7 @@ impl From<grizol::Config> for BepConfig {
                 .collect(),
             base_dir,
             net_address,
+            db_url,
         }
     }
 }
