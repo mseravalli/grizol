@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-export DATABASE_URL="sqlite:target/grizol.db"
+export DATABASE_URL="sqlite:tests/util/grizol.db"
 
 mkdir -p target
 sqlx db create

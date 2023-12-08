@@ -96,8 +96,7 @@ async fn main() -> io::Result<()> {
     let acceptor = TlsAcceptor::from(Arc::new(proto_config.clone().into()));
     let bep_config = BepConfig::from(proto_config);
 
-    let mut addr: net::SocketAddr = bep_config.net_address.parse().unwrap();
-
+    let addr: net::SocketAddr = bep_config.net_address.parse().unwrap();
     let listener = TcpListener::bind(&addr).await?;
 
     // Using max_connections 1 in order not to have locking issues when running transactions.
