@@ -1,5 +1,5 @@
 cert: "tests/util/cert.pem"
 key: "tests/util/key.pem"
 trusted_peers: ["BTTVHUR-CKWU5YX-JMAULFO-5CMEQ36-FZWEWAE-QFXROCM-WKMOJPZ-KEUOWAS"]
-base_dir: "/home/marco/workspace/hic-sunt-leones/syncthing-test"
+base_dir: "tests/util/dest_dir"
 db_url: "sqlite:tests/util/grizol.db"

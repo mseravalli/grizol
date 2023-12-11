@@ -1,6 +1,7 @@
 #!/usr/bin/bash -e
 
 dest_dir=$1
+file_amount=${2:-1}
 
 if [[ -z ${dest_dir} ]]; then
   echo 'Need to provide a destination dir'
@@ -9,7 +10,7 @@ fi
 
 pushd ${dest_dir}
 
-for i in $(seq 1 1); do
+for i in $(seq 1 ${file_amount}); do
   file=$(cat /dev/urandom | head -c 2000000 | base32)
   echo ${file} > $(echo ${file}| head -c 20)
 done

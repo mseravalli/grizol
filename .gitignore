@@ -1,2 +1,7 @@
 /target
 **/*.db*
+tests/util/grizol
+tests/util/dest_dir
+tests/util/orig_dir
+tests/util/syncthing
+tests/util/syncthing_home
