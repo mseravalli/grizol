@@ -28,8 +28,6 @@ rm -rf tests/util/dest_dir
 mkdir -p tests/util/orig_dir
 mkdir -p tests/util/dest_dir
 
-scripts/create_random_files.sh tests/util/orig_dir/ 3
-
 tests/util/grizol --config tests/util/config.textproto > /tmp/grizol 2>&1 &
 export GRIZOL_PID=$!
 echo "started grizol with pid ${GRIZOL_PID}"
@@ -37,6 +35,10 @@ echo "started grizol with pid ${GRIZOL_PID}"
 tests/util/syncthing --home tests/util/syncthing_home > /tmp/syncthing 2>&1 &
 export SYNCTHING_PID=$!
 echo "started syncthing with pid ${SYNCTHING_PID}"
+
+sleep 4
+
+scripts/create_random_files.sh tests/util/orig_dir/ 3
 
 # Ensure not to be waiting forever
 sleep 10000

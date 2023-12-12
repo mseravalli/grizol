@@ -170,6 +170,8 @@ impl BepState {
             .await
             .unwrap();
 
+        debug!("Updated internal tracked folders");
+
         return insert_results;
     }
 

@@ -49,9 +49,7 @@ impl Default for IncomingMessageStatus {
 struct IncomingMessage {
     auth_status: BepAuthStatus,
     data: Vec<u8>,
-    // header_byte_len: Option<usize>,
     header: Option<syncthing::Header>,
-    // message_byte_len: Option<usize>,
 }
 
 impl IncomingMessage {
@@ -59,9 +57,7 @@ impl IncomingMessage {
         IncomingMessage {
             auth_status,
             data: Default::default(),
-            // header_byte_len: Default::default(),
             header: Default::default(),
-            // message_byte_len: Default::default(),
         }
     }
 
@@ -132,6 +128,7 @@ impl IncomingMessage {
                         )
                         .try_into()
                         .unwrap();
+                        trace!("message byte len: {}", message_byte_len);
                         Some(message_byte_len)
                     } else {
                         None

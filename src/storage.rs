@@ -10,37 +10,12 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 const BUF_SIZE: usize = 1 << 14; // 16 KiB
 
 pub struct StorageManager {
-    cluster_config_path: String,
     stage_dir: String,
 }
 
 impl StorageManager {
-    pub fn new(cluster_config_path: String, stage_dir: String) -> Self {
-        StorageManager {
-            cluster_config_path,
-            stage_dir,
-        }
-    }
-    // TODO: this is just a temporary hack, remove this
-    pub async fn save_cluster_config(&self, cluster_config: &ClusterConfig) -> io::Result<()> {
-        let bytes = cluster_config.encode_to_vec();
-
-        let mut file = File::create(&self.cluster_config_path).await?;
-        file.write_all(&bytes).await?;
-        file.flush().await?;
-
-        Ok(())
-    }
-
-    // TODO: this is just a temporary hack, remove this
-    pub async fn restore_cluster_config(&self) -> io::Result<ClusterConfig> {
-        let mut file = File::open(&self.cluster_config_path).await?;
-        let mut buf: [u8; 1 << 16] = [0; 1 << 16];
-        let read_bytes = file.read(&mut buf[..]).await?;
-
-        let cluster_config = ClusterConfig::decode(&buf[..read_bytes])?;
-
-        Ok(cluster_config)
+    pub fn new(stage_dir: String) -> Self {
+        StorageManager { stage_dir }
     }
 
     pub async fn save_client_index(&self, index: &Index) -> io::Result<()> {

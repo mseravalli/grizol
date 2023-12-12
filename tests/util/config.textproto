@@ -1,5 +1,9 @@
 cert: "tests/util/cert.pem"
 key: "tests/util/key.pem"
-trusted_peers: ["BTTVHUR-CKWU5YX-JMAULFO-5CMEQ36-FZWEWAE-QFXROCM-WKMOJPZ-KEUOWAS"]
+trusted_peers: [
+  "BTTVHUR-CKWU5YX-JMAULFO-5CMEQ36-FZWEWAE-QFXROCM-WKMOJPZ-KEUOWAS",
+  "RFJWU2I-J6ULCCU-36JJOGP-YWEBZAB-T5KHSUO-ROXYHCJ-CUSRTBY-WKZHNQY",
+  "5CLQ5SC-YWEKDFL-5BVSUPT-DGAP4DL-K4DDBSN-PEIIWEW-FJWWGVG-XEBIEQ2"
+]
 base_dir: "tests/util/dest_dir"
 db_url: "sqlite:tests/util/grizol.db"

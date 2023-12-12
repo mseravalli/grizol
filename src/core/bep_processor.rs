@@ -1,6 +1,7 @@
 use crate::core::bep_data_parser::{BepDataParser, CompleteMessage, MAGIC_NUMBER};
 use crate::core::bep_state::BepState;
 use crate::core::{BepConfig, BepReply, EncodedMessages, UploadStatus};
+use crate::device_id::DeviceId;
 use crate::storage::StorageManager;
 use crate::syncthing;
 use prost::Message;
@@ -24,75 +25,79 @@ impl BepProcessor {
     pub fn new(config: BepConfig, db_pool: SqlitePool) -> Self {
         let bep_state = BepState::new(config.clone(), db_pool);
 
+        let base_dir = config.base_dir.clone();
         BepProcessor {
             config,
             state: Mutex::new(bep_state),
-            storage_manager: StorageManager::new(
-                format!("/tmp/grizol_cluster_config"),
-                format!("/tmp/grizol_staging"),
-            ),
+            storage_manager: StorageManager::new(base_dir),
         }
     }
 
-    pub fn handle_complete_message(&self, complete_message: CompleteMessage) -> Vec<BepReply> {
+    pub async fn handle_complete_message(
+        &self,
+        complete_message: CompleteMessage,
+    ) -> Vec<EncodedMessages> {
         match complete_message {
-            CompleteMessage::Hello(x) => self.handle_hello(x),
-            CompleteMessage::ClusterConfig(x) => self.handle_cluster_config(x),
-            CompleteMessage::Index(x) => self.handle_index(x),
-            CompleteMessage::IndexUpdate(x) => self.handle_index_update(x),
-            CompleteMessage::Request(x) => self.handle_request(x),
-            CompleteMessage::Response(x) => self.handle_response(x),
+            CompleteMessage::Hello(x) => self.handle_hello(x).await,
+            CompleteMessage::ClusterConfig(x) => self.handle_cluster_config(x).await,
+            CompleteMessage::Index(x) => self.handle_index(x).await,
+            CompleteMessage::IndexUpdate(x) => self.handle_index_update(x).await,
+            CompleteMessage::Request(x) => self.handle_request(x).await,
+            CompleteMessage::Response(x) => self.handle_response(x).await,
+            CompleteMessage::Ping(x) => self.handle_ping(x).await,
+            CompleteMessage::Close(x) => self.handle_close(x).await,
             CompleteMessage::DownloadProgress(x) => todo!(),
-            CompleteMessage::Ping(x) => self.handle_ping(x),
-            CompleteMessage::Close(x) => self.handle_close(x),
+            _ => todo!(),
         }
     }
 
-    fn handle_hello(&self, hello: Hello) -> Vec<BepReply> {
+    async fn handle_hello(&self, hello: Hello) -> Vec<EncodedMessages> {
         debug!("Handling Hello");
-        vec![
-            Box::pin(self.hello()),
-            Box::pin(self.cluster_config()),
-            Box::pin(self.index()),
-        ]
+        vec![self.hello()]
     }
 
-    fn handle_cluster_config(&self, cluster_config: ClusterConfig) -> Vec<BepReply> {
+    async fn handle_cluster_config(&self, cluster_config: ClusterConfig) -> Vec<EncodedMessages> {
         debug!("Handling Cluster Config");
         trace!("Received Cluster Config: {:#?}", &cluster_config);
+        {
+            let mut state = self.state.lock().await;
+            state.update_cluster_config(&cluster_config).await;
 
-        let res = async move {
-            {
-                self.state
-                    .lock()
-                    .await
-                    .update_cluster_config(&cluster_config)
-                    .await;
+            let folders_shared_with_me: Vec<String> = cluster_config
+                .folders
+                .iter()
+                .map(|f| (f.id.clone(), f.devices.clone()))
+                .filter(|x| {
+                    x.1.iter()
+                        .any(|d| DeviceId::try_from(&d.id).unwrap() == self.config.id)
+                })
+                .map(|x| x.0)
+                .collect();
+            debug!("shared folders {:?}", folders_shared_with_me);
+            for folder in folders_shared_with_me.into_iter() {
+                state.init_index(&folder).await;
             }
+        }
 
-            EncodedMessages::empty()
-        };
-
-        vec![Box::pin(res)]
+        vec![self.cluster_config().await, self.index().await]
     }
 
-    fn handle_index_update(&self, index_update: IndexUpdate) -> Vec<BepReply> {
+    async fn handle_index_update(&self, index_update: IndexUpdate) -> Vec<EncodedMessages> {
         debug!("Handling Index Update");
         let index = Index {
             folder: index_update.folder,
             files: index_update.files,
         };
-        self.handle_index(index)
+        self.handle_index(index).await
     }
 
-    fn handle_index(&self, received_index: Index) -> Vec<BepReply> {
+    async fn handle_index(&self, received_index: Index) -> Vec<EncodedMessages> {
         debug!("Handling Index");
         trace!("Received Index: {:#?}", &received_index);
 
         let ems = async move {
             let missing_files = {
                 let state = &mut self.state.lock().await;
-                state.init_index(&received_index.folder).await;
 
                 let local_index: Index = state
                     .index(&received_index.folder, &self.config.id)
@@ -141,17 +146,17 @@ impl BepProcessor {
             ems
         };
 
-        vec![Box::pin(ems)]
+        vec![ems.await]
     }
 
-    fn handle_request(&self, request: Request) -> Vec<BepReply> {
+    async fn handle_request(&self, request: Request) -> Vec<EncodedMessages> {
         debug!("Handling Request");
         debug!("{:?}", request);
 
         vec![]
     }
 
-    fn handle_response(&self, response: Response) -> Vec<BepReply> {
+    async fn handle_response(&self, response: Response) -> Vec<EncodedMessages> {
         debug!("Handling Response");
         debug!(
             "Received Response: {:?}, {}",
@@ -212,22 +217,22 @@ impl BepProcessor {
             EncodedMessages::empty()
         };
 
-        vec![Box::pin(res)]
+        vec![res.await]
     }
 
-    fn handle_ping(&self, ping: Ping) -> Vec<BepReply> {
+    async fn handle_ping(&self, ping: Ping) -> Vec<EncodedMessages> {
         debug!("Handling Ping");
         trace!("{:?}", ping);
         vec![]
     }
 
-    fn handle_close(&self, close: Close) -> Vec<BepReply> {
+    async fn handle_close(&self, close: Close) -> Vec<EncodedMessages> {
         debug!("Handling Close");
         trace!("{:?}", close);
         vec![]
     }
 
-    async fn hello(&self) -> EncodedMessages {
+    fn hello(&self) -> EncodedMessages {
         let hello = Hello {
             device_name: self.config.name.clone(),
             client_name: env!("CARGO_PKG_NAME").to_string(),
@@ -264,17 +269,18 @@ impl BepProcessor {
             .await
             .expect("something went wrong when restoring");
 
-        trace!("Sending Cluster Config: {:?}", &cluster_config);
+        debug!("Sending Cluster Config: {:?}", &cluster_config);
         encode_message(header, cluster_config).unwrap()
     }
 
-    pub async fn index(&self) -> EncodedMessages {
+    async fn index(&self) -> EncodedMessages {
         let header = Header {
             compression: 0,
             r#type: MessageType::Index.into(),
         };
 
         let indices: Vec<Index> = self.state.lock().await.indices(&self.config.id).await;
+        trace!("Sending Index, {:?}", &indices);
 
         let mut res = EncodedMessages::empty();
         for index in indices.into_iter() {

@@ -162,19 +162,17 @@ async fn handle_incoming_data(
             // TODO: remove unwrap
             let complete_messages = data_parser.parse_incoming_data(&buf[..n]).unwrap();
 
-            let bep_replies: Vec<_> = complete_messages
-                .into_iter()
-                .map(|cm| bep_processor.handle_complete_message(cm))
-                .flatten()
-                .collect();
+            for cm in complete_messages.into_iter() {
+                let ems = bep_processor.handle_complete_message(cm).await;
 
-            for bep_reply in bep_replies.into_iter() {
-                if let Err(e) = em_sender.send(bep_reply.await).await {
-                    error!("Failed to send message due to {:?}", e);
-                    return Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        format!("Failed to send message due to {:?}", e),
-                    )) as io::Result<()>;
+                for em in ems.into_iter() {
+                    if let Err(e) = em_sender.send(em).await {
+                        error!("Failed to send message due to {:?}", e);
+                        return Err(io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            format!("Failed to send message due to {:?}", e),
+                        )) as io::Result<()>;
+                    }
                 }
             }
         }
