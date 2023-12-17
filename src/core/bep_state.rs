@@ -106,10 +106,9 @@ impl BepState {
             for device in other_folder.devices.iter() {
                 // TODO: handle the case about the current device.
                 let index_id: Vec<u8> = device.index_id.to_be_bytes().into();
-                trace!(
+                debug!(
                     "Inserting index id {:?} as {:?}",
-                    &device.index_id,
-                    &index_id
+                    &device.index_id, &index_id
                 );
                 let device_addresses = device.addresses.join(",");
                 let device_id = DeviceId::try_from(&device.id)
@@ -605,7 +604,7 @@ impl BepState {
             .collect();
 
         let file = file.await.unwrap()?;
-        debug!("file {:?}", &file);
+        trace!("file {:?}", &file);
         let mut short_id: [u8; 8] = [0; 8];
         for (i, x) in file.modified_by.iter().enumerate() {
             short_id[i] = *x;

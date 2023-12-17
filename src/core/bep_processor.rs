@@ -95,6 +95,9 @@ impl BepProcessor {
         debug!("Handling Index");
         trace!("Received Index: {:#?}", &received_index);
 
+        // // state.replace_index(received_index);
+        // todo!()
+
         let ems = async move {
             let missing_files = {
                 let state = &mut self.state.lock().await;
@@ -145,7 +148,6 @@ impl BepProcessor {
             }
             ems
         };
-
         vec![ems.await]
     }
 
@@ -344,7 +346,9 @@ fn encode_message<T: prost::Message>(
 }
 
 struct IndexDiff {
+    // Files that are not in the index
     missing_files: Vec<FileInfo>,
+    // Files that have differences
     conflicting_files: Vec<FileInfo>,
 }
 
@@ -361,59 +365,54 @@ fn get_file_max_version(file: &FileInfo) -> &Counter {
 /// Returns a set of files present in [patch] that are not present in [base]. The returned files
 /// cointain only the blocks not present in [base].
 fn diff_indices(base: &Index, patch: &Index) -> IndexDiff {
+    debug!("Base index {:?}", base);
+    debug!("Patch index {:?}", patch);
+
     let mut conflicting_files: Vec<FileInfo> = vec![];
     let mut missing_files: Vec<FileInfo> = vec![];
     let base_file_map: HashMap<&String, &FileInfo> =
         base.files.iter().map(|x| (&x.name, x)).collect();
 
-    // TODO: remove this, we can just use the iterator in the for loop
-    let patch_file_map: HashMap<&String, &FileInfo> =
-        patch.files.iter().map(|x| (&x.name, x)).collect();
-
-    for (name, patch_file_info) in patch_file_map.into_iter() {
+    for (name, patch_file_info) in patch.files.iter().map(|x| (&x.name, x)).into_iter() {
         if let Some(base_file_info) = base_file_map.get(name) {
-            let max_patch_version = get_file_max_version(patch_file_info);
-            let max_base_version = get_file_max_version(base_file_info);
-            if max_patch_version.value == max_base_version.value
-                && max_patch_version.id != max_base_version.id
-            {
-                conflicting_files.push(patch_file_info.clone());
-            } else if max_patch_version.value == max_base_version.value
-                && max_patch_version.id == max_base_version.id
-            {
-                // Not all blocks have been copied yet
-                if base_file_info.blocks.len()
-                    < ((patch_file_info.size + patch_file_info.block_size as i64 - 1)
-                        / (patch_file_info.block_size as i64)) as usize
-                {
-                    let base_file_blocks: HashMap<&Vec<u8>, &BlockInfo> =
-                        base_file_info.blocks.iter().map(|b| (&b.hash, b)).collect();
-
-                    let mut missing_blocks: Vec<BlockInfo> = vec![];
-
-                    for patch_block in patch_file_info.blocks.iter() {
-                        if base_file_blocks.get(&patch_block.hash).is_none() {
-                            missing_blocks.push(patch_block.clone());
-                        }
-                    }
-
-                    // We must have found some differences
-                    assert!(missing_blocks.len() > 0);
-
-                    let mut missing_file = patch_file_info.clone();
-                    missing_file.blocks = missing_blocks;
-
-                    missing_files.push(missing_file);
-                }
-            } else if max_patch_version.value > max_base_version.value {
-                missing_files.push(patch_file_info.clone());
-            }
+            let mut index_diff = diff_conflicting_files(base_file_info, patch_file_info);
+            conflicting_files.append(&mut index_diff.conflicting_files);
+            missing_files.append(&mut index_diff.missing_files);
         } else {
             missing_files.push(patch_file_info.clone());
         }
     }
 
+    debug!("Conflicting Files: {:?}", &conflicting_files);
     debug!("Missing Files: {:?}", &missing_files);
+
+    IndexDiff {
+        missing_files,
+        conflicting_files,
+    }
+}
+
+fn file_modified_in_patch(base_file_info: &FileInfo, patch_file_info: &FileInfo) -> bool {
+    let max_patch_version = get_file_max_version(patch_file_info);
+    let max_base_version = get_file_max_version(base_file_info);
+    max_patch_version.value > max_base_version.value
+        || base_file_info.sequence > base_file_info.sequence
+}
+
+fn diff_conflicting_files(base_file_info: &FileInfo, patch_file_info: &FileInfo) -> IndexDiff {
+    let mut conflicting_files: Vec<FileInfo> = vec![];
+    let mut missing_files: Vec<FileInfo> = vec![];
+
+    // TODO: ensure index_ids are the same
+
+    if file_modified_in_patch(base_file_info, patch_file_info) {
+        conflicting_files.push(patch_file_info.clone());
+    } else {
+        info!(
+            "File from patch will not be used: base {:?} - patch {:?}",
+            base_file_info, patch_file_info
+        );
+    }
 
     IndexDiff {
         missing_files,

@@ -5,7 +5,6 @@ pub mod bep_data_parser;
 pub mod bep_processor;
 pub mod bep_state;
 
-use crate::connectivity::OpenConnection;
 use crate::core::bep_data_parser::{BepDataParser, CompleteMessage, MAGIC_NUMBER};
 use crate::core::bep_state::BepState;
 use crate::device_id::DeviceId;

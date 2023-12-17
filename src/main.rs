@@ -13,7 +13,7 @@ mod grizol {
     include!(concat!(env!("OUT_DIR"), "/grizol.rs"));
 }
 
-use crate::connectivity::{OpenConnection, TlsServer};
+use crate::connectivity::server_config;
 use crate::core::bep_data_parser::{BepDataParser, CompleteMessage};
 use crate::core::bep_processor::BepProcessor;
 use crate::core::{BepConfig, EncodedMessages};
@@ -26,6 +26,7 @@ use prost_types::FileDescriptorSet;
 use rustls_pemfile::{certs, rsa_private_keys};
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::SqlitePoolOptions;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
@@ -34,7 +35,9 @@ use std::io::{self, BufReader, Read, Write};
 use std::net;
 use std::net::ToSocketAddrs;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -44,10 +47,6 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_rustls::rustls::{self, Certificate, PrivateKey};
 use tokio_rustls::TlsAcceptor;
-
-// Token for our listening socket.
-const LISTENER: mio::Token = mio::Token(0);
-const DEFAULT_PORT: u16 = 23456;
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -93,7 +92,10 @@ async fn main() -> io::Result<()> {
 
     let args: Args = Args::parse();
     let proto_config = parse_config(&args.config);
-    let acceptor = TlsAcceptor::from(Arc::new(proto_config.clone().into()));
+
+    let client_device_id: Arc<Mutex<Option<DeviceId>>> = Arc::new(Mutex::new(None));
+    let server_config = server_config(proto_config.clone(), client_device_id.clone());
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
     let bep_config = BepConfig::from(proto_config);
 
     let addr: net::SocketAddr = bep_config.net_address.parse().unwrap();
@@ -111,16 +113,22 @@ async fn main() -> io::Result<()> {
 
     let bep_processor = Arc::new(BepProcessor::new(bep_config, db_pool));
 
+    // We use this to ensure that the device id provided by the connection is assigned only by a
+    // sigle client at a time.
+    let device_id_assigner: Arc<Mutex<bool>> = Arc::new(Mutex::new(true));
+
     loop {
         debug!("Wating for a new connection on {}", &addr);
 
-        let (tcp_stream, peer_addr) = listener.accept().await?;
+        let (tcp_stream, _peer_addr) = listener.accept().await?;
         let acceptor = acceptor.clone();
 
         let bep = bep_processor.clone();
 
+        let cdid = client_device_id.clone();
+        let dida = device_id_assigner.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_incoming_data(bep, tcp_stream, acceptor).await {
+            if let Err(err) = handle_incoming_data(bep, tcp_stream, acceptor, cdid, dida).await {
                 warn!("{:?}", err);
             }
         });
@@ -133,8 +141,16 @@ async fn handle_incoming_data(
     bep_processor: Arc<BepProcessor>,
     tcp_stream: TcpStream,
     acceptor: TlsAcceptor,
+    client_device_id: Arc<Mutex<Option<DeviceId>>>,
+    device_id_assigner: Arc<Mutex<bool>>,
 ) -> io::Result<()> {
-    let mut tls_stream = acceptor.accept(tcp_stream).await?;
+    let (tls_stream, cdid) = {
+        device_id_assigner.lock().unwrap();
+        let tls_stream = acceptor.accept(tcp_stream).await?;
+        let cdid: Option<DeviceId> = { client_device_id.lock().unwrap().clone() };
+        (tls_stream, cdid.unwrap())
+    };
+    info!("Cliend device id {:?}", cdid);
 
     let (mut reader, mut writer) = split(tls_stream);
 

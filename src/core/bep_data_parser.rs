@@ -1,6 +1,5 @@
 // Include the `syncthing` module, which is generated from syncthing.proto.
 // It is important to maintain the same structure as in the proto.
-use crate::connectivity::OpenConnection;
 use crate::device_id::DeviceId;
 use crate::syncthing;
 use prost::Message;
