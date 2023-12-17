@@ -36,27 +36,34 @@ impl BepProcessor {
     pub async fn handle_complete_message(
         &self,
         complete_message: CompleteMessage,
+        client_device_id: DeviceId,
     ) -> Vec<EncodedMessages> {
         match complete_message {
-            CompleteMessage::Hello(x) => self.handle_hello(x).await,
-            CompleteMessage::ClusterConfig(x) => self.handle_cluster_config(x).await,
-            CompleteMessage::Index(x) => self.handle_index(x).await,
-            CompleteMessage::IndexUpdate(x) => self.handle_index_update(x).await,
-            CompleteMessage::Request(x) => self.handle_request(x).await,
-            CompleteMessage::Response(x) => self.handle_response(x).await,
-            CompleteMessage::Ping(x) => self.handle_ping(x).await,
-            CompleteMessage::Close(x) => self.handle_close(x).await,
+            CompleteMessage::Hello(x) => self.handle_hello(x, client_device_id).await,
+            CompleteMessage::ClusterConfig(x) => {
+                self.handle_cluster_config(x, client_device_id).await
+            }
+            CompleteMessage::Index(x) => self.handle_index(x, client_device_id).await,
+            CompleteMessage::IndexUpdate(x) => self.handle_index_update(x, client_device_id).await,
+            CompleteMessage::Request(x) => self.handle_request(x, client_device_id).await,
+            CompleteMessage::Response(x) => self.handle_response(x, client_device_id).await,
+            CompleteMessage::Ping(x) => self.handle_ping(x, client_device_id).await,
+            CompleteMessage::Close(x) => self.handle_close(x, client_device_id).await,
             CompleteMessage::DownloadProgress(x) => todo!(),
             _ => todo!(),
         }
     }
 
-    async fn handle_hello(&self, hello: Hello) -> Vec<EncodedMessages> {
+    async fn handle_hello(&self, hello: Hello, client_device_id: DeviceId) -> Vec<EncodedMessages> {
         debug!("Handling Hello");
         vec![self.hello()]
     }
 
-    async fn handle_cluster_config(&self, cluster_config: ClusterConfig) -> Vec<EncodedMessages> {
+    async fn handle_cluster_config(
+        &self,
+        cluster_config: ClusterConfig,
+        client_device_id: DeviceId,
+    ) -> Vec<EncodedMessages> {
         debug!("Handling Cluster Config");
         trace!("Received Cluster Config: {:#?}", &cluster_config);
         {
@@ -82,16 +89,24 @@ impl BepProcessor {
         vec![self.cluster_config().await, self.index().await]
     }
 
-    async fn handle_index_update(&self, index_update: IndexUpdate) -> Vec<EncodedMessages> {
+    async fn handle_index_update(
+        &self,
+        index_update: IndexUpdate,
+        client_device_id: DeviceId,
+    ) -> Vec<EncodedMessages> {
         debug!("Handling Index Update");
         let index = Index {
             folder: index_update.folder,
             files: index_update.files,
         };
-        self.handle_index(index).await
+        self.handle_index(index, client_device_id).await
     }
 
-    async fn handle_index(&self, received_index: Index) -> Vec<EncodedMessages> {
+    async fn handle_index(
+        &self,
+        received_index: Index,
+        client_device_id: DeviceId,
+    ) -> Vec<EncodedMessages> {
         debug!("Handling Index");
         trace!("Received Index: {:#?}", &received_index);
 
@@ -151,14 +166,22 @@ impl BepProcessor {
         vec![ems.await]
     }
 
-    async fn handle_request(&self, request: Request) -> Vec<EncodedMessages> {
+    async fn handle_request(
+        &self,
+        request: Request,
+        client_device_id: DeviceId,
+    ) -> Vec<EncodedMessages> {
         debug!("Handling Request");
         debug!("{:?}", request);
 
         vec![]
     }
 
-    async fn handle_response(&self, response: Response) -> Vec<EncodedMessages> {
+    async fn handle_response(
+        &self,
+        response: Response,
+        client_device_id: DeviceId,
+    ) -> Vec<EncodedMessages> {
         debug!("Handling Response");
         debug!(
             "Received Response: {:?}, {}",
@@ -222,13 +245,13 @@ impl BepProcessor {
         vec![res.await]
     }
 
-    async fn handle_ping(&self, ping: Ping) -> Vec<EncodedMessages> {
+    async fn handle_ping(&self, ping: Ping, client_device_id: DeviceId) -> Vec<EncodedMessages> {
         debug!("Handling Ping");
         trace!("{:?}", ping);
         vec![]
     }
 
-    async fn handle_close(&self, close: Close) -> Vec<EncodedMessages> {
+    async fn handle_close(&self, close: Close, client_device_id: DeviceId) -> Vec<EncodedMessages> {
         debug!("Handling Close");
         trace!("{:?}", close);
         vec![]

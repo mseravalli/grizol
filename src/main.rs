@@ -150,7 +150,7 @@ async fn handle_incoming_data(
         let cdid: Option<DeviceId> = { client_device_id.lock().unwrap().clone() };
         (tls_stream, cdid.unwrap())
     };
-    info!("Cliend device id {:?}", cdid);
+    debug!("Cliend device id {:?}", cdid);
 
     let (mut reader, mut writer) = split(tls_stream);
 
@@ -179,7 +179,7 @@ async fn handle_incoming_data(
             let complete_messages = data_parser.parse_incoming_data(&buf[..n]).unwrap();
 
             for cm in complete_messages.into_iter() {
-                let ems = bep_processor.handle_complete_message(cm).await;
+                let ems = bep_processor.handle_complete_message(cm, cdid).await;
 
                 for em in ems.into_iter() {
                     if let Err(e) = em_sender.send(em).await {
