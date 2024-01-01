@@ -96,26 +96,31 @@ impl BepProcessor {
         client_device_id: DeviceId,
     ) -> Vec<EncodedMessages> {
         debug!("Handling Index Update");
-        let index = Index {
+        let received_index = Index {
             folder: index_update.folder,
             files: index_update.files,
         };
-        self.handle_index(index, client_device_id).await
-    }
+        // self.handle_index(received_index, client_device_id).await
 
-    async fn handle_index(
-        &self,
-        received_index: Index,
-        client_device_id: DeviceId,
-    ) -> Vec<EncodedMessages> {
-        debug!("Handling Index");
-        trace!("Received Index: {:#?}", &received_index);
         let folder = received_index.folder.clone();
 
         let ems = async move {
             let diff = {
                 let state = &mut self.state.lock().await;
-                state.replace_index(received_index, &client_device_id).await;
+
+                // Update the local index of the connected device
+                let other_device_local_index = state
+                    .index(&folder, &self.config.id)
+                    .await
+                    .expect("The local index must exist");
+                let indices = vec![received_index];
+                let diff = diff_indices(&other_device_local_index, &indices)
+                    .expect("Should pass the same folders");
+                state
+                    .insert_file_info(&folder, &client_device_id, &diff.missing_files)
+                    .await;
+
+                // Update the local index of the current device
                 let local_index = state
                     .index(&folder, &self.config.id)
                     .await
@@ -151,63 +156,72 @@ impl BepProcessor {
             for request in requests_missing_files.into_iter() {
                 ems.append(encode_message(header.clone(), request).unwrap());
             }
+
             ems
         }
         .await;
 
         vec![ems]
+    }
 
-        // let ems = async move {
-        //     let missing_files = {
-        //         let state = &mut self.state.lock().await;
+    async fn handle_index(
+        &self,
+        received_index: Index,
+        client_device_id: DeviceId,
+    ) -> Vec<EncodedMessages> {
+        debug!("Handling Index");
+        trace!("Received Index: {:#?}", &received_index);
+        let folder = received_index.folder.clone();
 
-        //         let local_index: Index = state
-        //             .index(&received_index.folder, &self.config.id)
-        //             .await
-        //             .expect(&format!(
-        //                 "The index for local device {} must be present",
-        //                 &self.config.id
-        //             ));
+        let ems = async move {
+            let diff = {
+                let state = &mut self.state.lock().await;
 
-        //         let index_diff = diff_indices(&local_index, &received_index);
+                // Update the local index of the connected device
+                state.replace_index(received_index, &client_device_id).await;
 
-        //         state
-        //             .add_missing_files_to_local_index(
-        //                 &received_index.folder,
-        //                 &index_diff.missing_files,
-        //             )
-        //             .await;
+                // Update the local index of the current device
+                let local_index = state
+                    .index(&folder, &self.config.id)
+                    .await
+                    .expect("The local index must exist");
+                // TODO: ideally we should filter out the local index from all the indices
+                let indices = state.indices(Some(&folder), None).await;
+                let diff =
+                    diff_indices(&local_index, &indices).expect("Should pass the same folders");
+                state
+                    .insert_file_info(&folder, &self.config.id, &diff.missing_files)
+                    .await;
+                diff
+            };
 
-        //         state.insert_conflicting_files(
-        //             received_index.folder.to_string(),
-        //             index_diff.conflicting_files,
-        //         );
+            let requests_missing_files = {
+                let state = &mut self.state.lock().await;
+                let base_req_id = state.load_request_id();
+                let requests = create_requests(base_req_id, &folder, diff.missing_files);
+                let max_req_id = requests.iter().map(|x| x.id).max().unwrap_or(base_req_id);
+                state.fetch_add_request_id(max_req_id - base_req_id);
+                state.insert_requests(&requests);
+                requests
+            };
 
-        //         index_diff.missing_files
-        //     };
+            let mut ems = EncodedMessages::empty();
 
-        //     let requests = {
-        //         let state = &mut self.state.lock().await;
-        //         let base_req_id = state.load_request_id();
-        //         let requests = create_requests(base_req_id, &received_index.folder, missing_files);
-        //         let max_req_id = requests.iter().map(|x| x.id).max().unwrap_or(base_req_id);
-        //         state.fetch_add_request_id(max_req_id - base_req_id);
-        //         state.insert_requests(&requests);
-        //         requests
-        //     };
+            let header = Header {
+                compression: 0,
+                r#type: MessageType::Request.into(),
+            };
+            // TODO: it's better to send the requests asynchronously independently from
+            // receiving the index so that we can recover from crashed etc.
+            for request in requests_missing_files.into_iter() {
+                ems.append(encode_message(header.clone(), request).unwrap());
+            }
 
-        //     let mut ems = EncodedMessages::empty();
+            ems
+        }
+        .await;
 
-        //     let header = Header {
-        //         compression: 0,
-        //         r#type: MessageType::Request.into(),
-        //     };
-        //     for request in requests.into_iter() {
-        //         ems.append(encode_message(header.clone(), request).unwrap());
-        //     }
-        //     ems
-        // };
-        // vec![ems.await]
+        vec![ems]
     }
 
     async fn handle_request(
@@ -435,7 +449,7 @@ fn get_file_max_version(file: &FileInfo) -> &Counter {
         .expect("The file must be versioned")
 }
 
-/// Returns a files not present in the current index or that differ in other indices.
+/// Returns a files not present in the current index or that is differnt in other indices.
 fn diff_indices(local_index: &Index, remote_indices: &Vec<Index>) -> Result<IndexDiff, String> {
     if remote_indices
         .iter()
@@ -473,7 +487,7 @@ fn diff_indices(local_index: &Index, remote_indices: &Vec<Index>) -> Result<Inde
         conflicting_files: most_recent(conflicting_files),
     };
 
-    debug!("index diff: {:?}", diff);
+    debug!("Index diff: {:?}", diff);
 
     Ok(diff)
 }
