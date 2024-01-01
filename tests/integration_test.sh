@@ -55,12 +55,12 @@ echo "started syncthing with pid ${SYNCTHING_PID}"
 
 while [[ -z $(rg 'Ready to synchronize "orig_dir"' /tmp/syncthing) ]]; do sleep 1; done
 
-# 1: Test adding data
+echo "# 1: Test adding data"
 scripts/create_random_files.sh tests/util/orig_dir/ 3
 while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 3 ]]; do sleep 1; done
 run_diff tests/util/orig_dir tests/util/dest_dir
 
-# 2: Test adding more data
+echo "# 2: Test adding more data"
 scripts/create_random_files.sh tests/util/orig_dir/ 3
 while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 6 ]]; do sleep 1; done
 run_diff tests/util/orig_dir tests/util/dest_dir

@@ -142,13 +142,15 @@ impl BepProcessor {
 
             let mut ems = EncodedMessages::empty();
 
-            // let header = Header {
-            //     compression: 0,
-            //     r#type: MessageType::Request.into(),
-            // };
-            // for request in requests_missing_files.into_iter() {
-            //     ems.append(encode_message(header.clone(), request).unwrap());
-            // }
+            let header = Header {
+                compression: 0,
+                r#type: MessageType::Request.into(),
+            };
+            // TODO: it's better to send the requests asynchronously independently from
+            // receiving the index so that we can recover from crashed etc.
+            for request in requests_missing_files.into_iter() {
+                ems.append(encode_message(header.clone(), request).unwrap());
+            }
             ems
         }
         .await;
