@@ -82,7 +82,8 @@ impl BepProcessor {
                 .collect();
             debug!("shared folders {:?}", folders_shared_with_me);
             for folder in folders_shared_with_me.into_iter() {
-                state.init_index(&folder).await;
+                state.init_index(&folder, &client_device_id).await;
+                state.init_index(&folder, &self.config.id).await;
             }
         }
 
@@ -109,43 +110,30 @@ impl BepProcessor {
     ) -> Vec<EncodedMessages> {
         debug!("Handling Index");
         trace!("Received Index: {:#?}", &received_index);
-
-        // // state.replace_index(received_index);
-        // todo!()
+        let folder = received_index.folder.clone();
 
         let ems = async move {
-            let missing_files = {
+            let diff = {
                 let state = &mut self.state.lock().await;
-
-                let local_index: Index = state
-                    .index(&received_index.folder, &self.config.id)
+                state.replace_index(received_index, &client_device_id).await;
+                let local_index = state
+                    .index(&folder, &self.config.id)
                     .await
-                    .expect(&format!(
-                        "The index for local device {} must be present",
-                        &self.config.id
-                    ));
-
-                let index_diff = diff_indices(&local_index, &received_index);
-
+                    .expect("The local index must exist");
+                // TODO: ideally we should filter out the local index from all the indices
+                let indices = state.indices(Some(&folder), None).await;
+                let diff =
+                    diff_indices(&local_index, &indices).expect("Should pass the same folders");
                 state
-                    .add_missing_files_to_local_index(
-                        &received_index.folder,
-                        &index_diff.missing_files,
-                    )
+                    .insert_file_info(&folder, &self.config.id, &diff.missing_files)
                     .await;
-
-                state.insert_conflicting_files(
-                    received_index.folder.to_string(),
-                    index_diff.conflicting_files,
-                );
-
-                index_diff.missing_files
+                diff
             };
 
-            let requests = {
+            let requests_missing_files = {
                 let state = &mut self.state.lock().await;
                 let base_req_id = state.load_request_id();
-                let requests = create_requests(base_req_id, &received_index.folder, missing_files);
+                let requests = create_requests(base_req_id, &folder, diff.missing_files);
                 let max_req_id = requests.iter().map(|x| x.id).max().unwrap_or(base_req_id);
                 state.fetch_add_request_id(max_req_id - base_req_id);
                 state.insert_requests(&requests);
@@ -154,16 +142,70 @@ impl BepProcessor {
 
             let mut ems = EncodedMessages::empty();
 
-            let header = Header {
-                compression: 0,
-                r#type: MessageType::Request.into(),
-            };
-            for request in requests.into_iter() {
-                ems.append(encode_message(header.clone(), request).unwrap());
-            }
+            // let header = Header {
+            //     compression: 0,
+            //     r#type: MessageType::Request.into(),
+            // };
+            // for request in requests_missing_files.into_iter() {
+            //     ems.append(encode_message(header.clone(), request).unwrap());
+            // }
             ems
-        };
-        vec![ems.await]
+        }
+        .await;
+
+        vec![ems]
+
+        // let ems = async move {
+        //     let missing_files = {
+        //         let state = &mut self.state.lock().await;
+
+        //         let local_index: Index = state
+        //             .index(&received_index.folder, &self.config.id)
+        //             .await
+        //             .expect(&format!(
+        //                 "The index for local device {} must be present",
+        //                 &self.config.id
+        //             ));
+
+        //         let index_diff = diff_indices(&local_index, &received_index);
+
+        //         state
+        //             .add_missing_files_to_local_index(
+        //                 &received_index.folder,
+        //                 &index_diff.missing_files,
+        //             )
+        //             .await;
+
+        //         state.insert_conflicting_files(
+        //             received_index.folder.to_string(),
+        //             index_diff.conflicting_files,
+        //         );
+
+        //         index_diff.missing_files
+        //     };
+
+        //     let requests = {
+        //         let state = &mut self.state.lock().await;
+        //         let base_req_id = state.load_request_id();
+        //         let requests = create_requests(base_req_id, &received_index.folder, missing_files);
+        //         let max_req_id = requests.iter().map(|x| x.id).max().unwrap_or(base_req_id);
+        //         state.fetch_add_request_id(max_req_id - base_req_id);
+        //         state.insert_requests(&requests);
+        //         requests
+        //     };
+
+        //     let mut ems = EncodedMessages::empty();
+
+        //     let header = Header {
+        //         compression: 0,
+        //         r#type: MessageType::Request.into(),
+        //     };
+        //     for request in requests.into_iter() {
+        //         ems.append(encode_message(header.clone(), request).unwrap());
+        //     }
+        //     ems
+        // };
+        // vec![ems.await]
     }
 
     async fn handle_request(
@@ -222,7 +264,7 @@ impl BepProcessor {
                     .await
                     .expect("Error while storing the data");
                 let upload_status = state
-                    .update_index_block(&response.id, weak_hash)
+                    .update_index_block(&response.id, weak_hash, &client_device_id)
                     .await
                     .expect("It was not possible to update the index");
 
@@ -304,7 +346,12 @@ impl BepProcessor {
             r#type: MessageType::Index.into(),
         };
 
-        let indices: Vec<Index> = self.state.lock().await.indices(&self.config.id).await;
+        let indices: Vec<Index> = self
+            .state
+            .lock()
+            .await
+            .indices(None, Some(&self.config.id))
+            .await;
         trace!("Sending Index, {:?}", &indices);
 
         let mut res = EncodedMessages::empty();
@@ -368,6 +415,7 @@ fn encode_message<T: prost::Message>(
     Ok(EncodedMessages { data: message })
 }
 
+#[derive(Debug)]
 struct IndexDiff {
     // Files that are not in the index
     missing_files: Vec<FileInfo>,
@@ -385,34 +433,106 @@ fn get_file_max_version(file: &FileInfo) -> &Counter {
         .expect("The file must be versioned")
 }
 
-/// Returns a set of files present in [patch] that are not present in [base]. The returned files
-/// cointain only the blocks not present in [base].
-fn diff_indices(base: &Index, patch: &Index) -> IndexDiff {
-    debug!("Base index {:?}", base);
-    debug!("Patch index {:?}", patch);
+/// Returns a files not present in the current index or that differ in other indices.
+fn diff_indices(local_index: &Index, remote_indices: &Vec<Index>) -> Result<IndexDiff, String> {
+    if remote_indices
+        .iter()
+        .any(|x| x.folder != local_index.folder)
+    {
+        return Err(format!("The indices cover different folders"));
+    }
 
-    let mut conflicting_files: Vec<FileInfo> = vec![];
-    let mut missing_files: Vec<FileInfo> = vec![];
-    let base_file_map: HashMap<&String, &FileInfo> =
-        base.files.iter().map(|x| (&x.name, x)).collect();
+    let mut conflicting_files: HashMap<String, Vec<FileInfo>> = Default::default();
+    let mut missing_files: HashMap<String, Vec<FileInfo>> = Default::default();
 
-    for (name, patch_file_info) in patch.files.iter().map(|x| (&x.name, x)).into_iter() {
-        if let Some(base_file_info) = base_file_map.get(name) {
-            let mut index_diff = diff_conflicting_files(base_file_info, patch_file_info);
-            conflicting_files.append(&mut index_diff.conflicting_files);
-            missing_files.append(&mut index_diff.missing_files);
-        } else {
-            missing_files.push(patch_file_info.clone());
+    let local_files: HashMap<&String, &FileInfo> =
+        local_index.files.iter().map(|f| (&f.name, f)).collect();
+
+    for remote_index in remote_indices.iter() {
+        for remote_file in remote_index.files.iter() {
+            if let Some(local_file) = local_files.get(&remote_file.name) {
+                if file_has_conflict(local_file, remote_file) {
+                    conflicting_files
+                        .entry(remote_file.name.clone())
+                        .and_modify(|fs| fs.push(remote_file.clone()))
+                        .or_insert(vec![remote_file.clone()]);
+                }
+            } else {
+                missing_files
+                    .entry(remote_file.name.clone())
+                    .and_modify(|fs| fs.push(remote_file.clone()))
+                    .or_insert(vec![remote_file.clone()]);
+            }
         }
     }
 
-    debug!("Conflicting Files: {:?}", &conflicting_files);
-    debug!("Missing Files: {:?}", &missing_files);
+    let diff = IndexDiff {
+        missing_files: most_recent(missing_files),
+        conflicting_files: most_recent(conflicting_files),
+    };
 
-    IndexDiff {
-        missing_files,
-        conflicting_files,
+    debug!("index diff: {:?}", diff);
+
+    Ok(diff)
+}
+
+/// Returns the most recent instance for every file
+fn most_recent(fs: HashMap<String, Vec<FileInfo>>) -> Vec<FileInfo> {
+    // TODO: in case of tie use the device id as per https://docs.syncthing.net/users/syncing.html#conflicting-changes.
+    fs.iter()
+        .map(|(k, v)| {
+            v.iter().max_by(|a, b| {
+                a.modified_s
+                    .cmp(&b.modified_s)
+                    .then(a.modified_ns.cmp(&b.modified_ns))
+            })
+        })
+        .flatten()
+        .map(|x| x.clone())
+        .collect()
+}
+
+/// Checks if a remote file has a timestamp larger than the existing one as specified in
+/// https://docs.syncthing.net/users/syncing.html#conflicting-changes.
+fn file_has_conflict(local_file: &FileInfo, remote_file: &FileInfo) -> bool {
+    if local_file.modified_s < remote_file.modified_s {
+        return false;
     }
+
+    if local_file.modified_s == remote_file.modified_s
+        && local_file.modified_ns < remote_file.modified_ns
+    {
+        return false;
+    }
+
+    if local_file.modified_s == remote_file.modified_s
+        && local_file.modified_ns == remote_file.modified_ns
+    {
+        let mut has_conflict = false;
+
+        has_conflict = has_conflict || local_file.size != remote_file.size;
+        has_conflict = has_conflict || local_file.block_size != remote_file.block_size;
+        has_conflict = has_conflict || local_file.permissions != remote_file.permissions;
+        has_conflict = has_conflict || local_file.modified_by != remote_file.modified_by;
+        has_conflict = has_conflict || local_file.deleted != remote_file.deleted;
+        has_conflict = has_conflict || local_file.invalid != remote_file.invalid;
+        has_conflict = has_conflict || local_file.no_permissions != remote_file.no_permissions;
+        has_conflict = has_conflict || local_file.symlink_target != remote_file.symlink_target;
+
+        if !has_conflict {
+            for i in 0..local_file.blocks.len() {
+                if local_file.blocks[i] != remote_file.blocks[i] {
+                    has_conflict = true;
+                    break;
+                }
+            }
+        }
+
+        // TODO: add selection of device with largest id  as per https://docs.syncthing.net/users/syncing.html#conflicting-changes.;
+        return has_conflict;
+    }
+
+    true
 }
 
 fn file_modified_in_patch(base_file_info: &FileInfo, patch_file_info: &FileInfo) -> bool {
@@ -420,27 +540,6 @@ fn file_modified_in_patch(base_file_info: &FileInfo, patch_file_info: &FileInfo)
     let max_base_version = get_file_max_version(base_file_info);
     max_patch_version.value > max_base_version.value
         || base_file_info.sequence > base_file_info.sequence
-}
-
-fn diff_conflicting_files(base_file_info: &FileInfo, patch_file_info: &FileInfo) -> IndexDiff {
-    let mut conflicting_files: Vec<FileInfo> = vec![];
-    let mut missing_files: Vec<FileInfo> = vec![];
-
-    // TODO: ensure index_ids are the same
-
-    if file_modified_in_patch(base_file_info, patch_file_info) {
-        conflicting_files.push(patch_file_info.clone());
-    } else {
-        info!(
-            "File from patch will not be used: base {:?} - patch {:?}",
-            base_file_info, patch_file_info
-        );
-    }
-
-    IndexDiff {
-        missing_files,
-        conflicting_files,
-    }
 }
 
 // TODO: maybe it might make sense to pass an iterator to the function to generate the ids so that

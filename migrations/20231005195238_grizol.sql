@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS bep_file_info_type (
     PRIMARY KEY (type)
 );
 
+CREATE TABLE IF NOT EXISTS bep_storage_status (
+    storage_status INTEGER NOT NULL ,
+    PRIMARY KEY (storage_status)
+);
+
 CREATE TABLE IF NOT EXISTS bep_file_info
 (
     folder         TEXT    NOT NULL ,
@@ -89,8 +94,11 @@ CREATE TABLE IF NOT EXISTS bep_block_info (
     hash      BLOB    NOT NULL ,
     weak_hash INTEGER ,
 
+    storage_status  INTEGER NOT NULL,
+
     PRIMARY KEY (file_name, file_folder, file_device, offset, bi_size, hash) ,
-    FOREIGN KEY(file_name, file_folder, file_device) REFERENCES bep_file_info(name, folder, device)
+    FOREIGN KEY(file_name, file_folder, file_device) REFERENCES bep_file_info(name, folder, device) ON DELETE CASCADE ,
+    FOREIGN KEY(storage_status) REFERENCES bep_storage_status(storage_status)
 );
 
 CREATE TABLE IF NOT EXISTS bep_file_version (
@@ -102,12 +110,16 @@ CREATE TABLE IF NOT EXISTS bep_file_version (
     value     INTEGER NOT NULL , -- we will need to put a u64 into a i64 the assumption is that there won't be overflows.
 
     PRIMARY KEY (file_name, file_folder, file_device, id, value) ,
-    FOREIGN KEY(file_name, file_folder, file_device) REFERENCES bep_file_info(name, folder, device)
+    FOREIGN KEY(file_name, file_folder, file_device) REFERENCES bep_file_info(name, folder, device) ON DELETE CASCADE
 );
 
 INSERT INTO bep_compression VALUES( 0 );
 INSERT INTO bep_compression VALUES( 1 );
 INSERT INTO bep_compression VALUES( 2 );
+
+INSERT INTO bep_storage_status VALUES( 0 ); -- not stored
+INSERT INTO bep_storage_status VALUES( 1 ); -- stored locally
+INSERT INTO bep_storage_status VALUES( 2 ); -- stored remotely
 
 INSERT INTO bep_file_info_type VALUES( 0 ); -- 'FILE'             
 INSERT INTO bep_file_info_type VALUES( 1 ); -- 'DIRECTORY'        

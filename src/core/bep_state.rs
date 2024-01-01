@@ -39,8 +39,8 @@ impl BepState {
         todo!()
     }
 
-    pub async fn init_index(&self, folder: &str) {
-        let device_id = self.config.id.to_string();
+    pub async fn init_index(&self, folder: &str, device_id: &DeviceId) {
+        let device_id = device_id.to_string();
         let insert_res = sqlx::query!(
             "
         INSERT INTO bep_index (
@@ -58,6 +58,158 @@ impl BepState {
         .execute(&self.db_pool)
         .await
         .expect("Failed to execute query");
+    }
+
+    /// Remove index with same id and replace all the info associated.
+    pub async fn replace_index(&self, index: Index, device_id: &DeviceId) {
+        let device_id = device_id.to_string();
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        // We have a cascading removal.
+        let insert_res = sqlx::query!(
+            "
+                DELETE FROM bep_file_info
+                WHERE folder = ? AND device = ?;
+            ",
+            index.folder,
+            device_id,
+        )
+        .execute(&self.db_pool)
+        .await
+        .expect("Failed to execute query");
+
+        for file in index.files.into_iter() {
+            trace!("Updating index, inserting file {}", &file.name);
+            let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
+            let insert_res = sqlx::query!(
+                r#"
+            INSERT INTO bep_file_info (
+                folder        ,
+                device        ,
+                name          ,
+                type          ,
+                size          ,
+                permissions   ,
+                modified_s    ,
+                modified_ns   ,
+                modified_by   ,
+                deleted       ,
+                invalid       ,
+                no_permissions,
+                sequence      ,
+                block_size    ,
+                symlink_target
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(folder, device, name) DO UPDATE SET
+                folder         = excluded.folder          ,
+                device         = excluded.device          ,
+                name           = excluded.name            ,
+                type           = excluded.type            ,
+                size           = excluded.size            ,
+                permissions    = excluded.permissions     ,
+                modified_s     = excluded.modified_s      ,
+                modified_ns    = excluded.modified_ns     ,
+                modified_by    = excluded.modified_by     ,
+                deleted        = excluded.deleted         ,
+                invalid        = excluded.invalid         ,
+                no_permissions = excluded.no_permissions  ,
+                sequence       = excluded.sequence        ,
+                block_size     = excluded.block_size      ,
+                symlink_target = excluded.symlink_target  
+            "#,
+                index.folder,
+                device_id,
+                file.name,
+                file.r#type,
+                file.size,
+                file.permissions,
+                file.modified_s,
+                file.modified_ns,
+                modified_by,
+                file.deleted,
+                file.invalid,
+                file.no_permissions,
+                file.sequence,
+                file.block_size,
+                file.symlink_target,
+            )
+            .execute(&self.db_pool)
+            .await
+            .expect("Failed to execute query");
+
+            for counter in file
+                .version
+                .as_ref()
+                .expect("There must be a version")
+                .counters
+                .iter()
+            {
+                let short_id: Vec<u8> = counter.id.to_be_bytes().into();
+                let version_value: i64 = counter.value.try_into().unwrap();
+                let insert_res = sqlx::query!(
+                    r#"
+                    INSERT INTO bep_file_version (
+                        file_folder ,
+                        file_device ,
+                        file_name   ,
+                        id          ,
+                        value
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(file_folder, file_device, file_name, id, value) DO NOTHING
+                    "#,
+                    index.folder,
+                    device_id,
+                    file.name,
+                    short_id,
+                    version_value,
+                )
+                .execute(&self.db_pool)
+                .await
+                .expect("Failed to execute query");
+            }
+
+            // TODO: use enum
+            let storage_status = 0;
+
+            for block in file.blocks.iter() {
+                let insert_res = sqlx::query!(
+                    r#"
+                    INSERT INTO bep_block_info (
+                        file_name,  
+                        file_folder,  
+                        file_device,  
+                        offset,
+                        bi_size,
+                        hash,
+                        weak_hash,
+                        storage_status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(file_name, file_folder, file_device, offset, bi_size, hash) DO NOTHING
+                    "#,
+                    file.name,
+                    index.folder,
+                    device_id,
+                    block.offset,
+                    block.size,
+                    block.hash,
+                    block.weak_hash,
+                    storage_status
+                )
+                .execute(&self.db_pool)
+                .await
+                .expect("Failed to execute query");
+            }
+        }
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
     }
 
     pub async fn update_cluster_config(&mut self, other: &ClusterConfig) -> Vec<SqliteQueryResult> {
@@ -185,27 +337,65 @@ impl BepState {
         old_value
     }
 
-    pub async fn indices(&self, device_id: &DeviceId) -> Vec<Index> {
-        // TODO: this is very inefficient: improve
+    pub async fn indices(
+        &self,
+        folder: Option<&String>,
+        device_id: Option<&DeviceId>,
+    ) -> Vec<Index> {
+        // TODO: this method is very inefficient as it calls index() multiple times
 
-        let id = device_id.to_string();
-        let folders = sqlx::query!(
-            r#"
-            SELECT folder
-            FROM bep_index
-            WHERE device = ?
-            ;"#,
-            id,
-        )
-        .fetch_all(&self.db_pool)
-        .await
-        .expect("Error occurred");
+        // TODO: use a better way to pass the parameters, the API is currently *ugly*
+        if folder.is_none() && device_id.is_none() {
+            todo!("At least one must be set")
+        }
+
+        let device_ids: Vec<DeviceId> = if let Some(id) = device_id {
+            vec![*id]
+        } else {
+            let f = folder.clone().unwrap();
+            sqlx::query!(
+                r#"
+                SELECT device
+                FROM bep_index
+                WHERE folder = ?
+                ;"#,
+                f,
+            )
+            .fetch_all(&self.db_pool)
+            .await
+            .expect("Error occurred")
+            .iter()
+            .map(|record| DeviceId::try_from(record.device.as_str()).unwrap())
+            .collect()
+        };
+
+        let folders: Vec<String> = if let Some(f) = folder {
+            vec![f.clone()]
+        } else {
+            let id = device_ids.first().unwrap().to_string();
+            sqlx::query!(
+                r#"
+                SELECT folder
+                FROM bep_index
+                WHERE device = ?
+                ;"#,
+                id,
+            )
+            .fetch_all(&self.db_pool)
+            .await
+            .expect("Error occurred")
+            .into_iter()
+            .map(|record| record.folder)
+            .collect()
+        };
 
         let mut res = vec![];
-        for record in folders.iter() {
-            let index = self.index(&record.folder, device_id).await;
-            if let Some(i) = index {
-                res.push(i)
+        for folder in folders.iter() {
+            for device_id in device_ids.iter() {
+                let index = self.index(&folder, device_id).await;
+                if let Some(i) = index {
+                    res.push(i)
+                }
             }
         }
 
@@ -323,7 +513,9 @@ impl BepState {
         &self,
         request_id: &i32,
         weak_hash: u32,
+        device_id: &DeviceId,
     ) -> Result<UploadStatus, String> {
+        let device_id = device_id.to_string();
         let request = &self.outgoing_requests[request_id];
         debug!("Previously sent request: {:?}", &request);
 
@@ -332,7 +524,6 @@ impl BepState {
             .await
             .unwrap();
 
-        let device_id = self.config.id.to_string();
         let block_hash = request.hash.clone();
         let insert_res = sqlx::query!(
             r#"
@@ -404,117 +595,117 @@ impl BepState {
         }
     }
 
-    pub async fn add_missing_files_to_local_index(
-        &mut self,
-        folder_name: &str,
-        missing_files: &Vec<FileInfo>,
-    ) -> Result<(), String> {
-        let device_id = self.config.id.to_string();
+    // pub async fn add_files_to_index(
+    //     &mut self,
+    //     folder_name: &str,
+    //     device_id: &DeviceId,
+    //     files: &Vec<FileInfo>,
+    // ) -> Result<(), String> {
+    //     let device_id = device_id.to_string();
+    //     sqlx::query!("BEGIN TRANSACTION;")
+    //         .execute(&self.db_pool)
+    //         .await
+    //         .unwrap();
 
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+    //     for file in files.into_iter() {
+    //         let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
+    //         let insert_res = sqlx::query!(
+    //             r#"
+    //         INSERT INTO bep_file_info (
+    //             folder        ,
+    //             device        ,
+    //             name          ,
+    //             type          ,
+    //             size          ,
+    //             permissions   ,
+    //             modified_s    ,
+    //             modified_ns   ,
+    //             modified_by   ,
+    //             deleted       ,
+    //             invalid       ,
+    //             no_permissions,
+    //             sequence      ,
+    //             block_size    ,
+    //             symlink_target
+    //         )
+    //         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    //         ON CONFLICT(folder, device, name) DO UPDATE SET
+    //             folder         = excluded.folder          ,
+    //             device         = excluded.device          ,
+    //             name           = excluded.name            ,
+    //             type           = excluded.type            ,
+    //             size           = excluded.size            ,
+    //             permissions    = excluded.permissions     ,
+    //             modified_s     = excluded.modified_s      ,
+    //             modified_ns    = excluded.modified_ns     ,
+    //             modified_by    = excluded.modified_by     ,
+    //             deleted        = excluded.deleted         ,
+    //             invalid        = excluded.invalid         ,
+    //             no_permissions = excluded.no_permissions  ,
+    //             sequence       = excluded.sequence        ,
+    //             block_size     = excluded.block_size      ,
+    //             symlink_target = excluded.symlink_target
+    //         "#,
+    //             folder_name,
+    //             device_id,
+    //             file.name,
+    //             file.r#type,
+    //             file.size,
+    //             file.permissions,
+    //             file.modified_s,
+    //             file.modified_ns,
+    //             modified_by,
+    //             file.deleted,
+    //             file.invalid,
+    //             file.no_permissions,
+    //             file.sequence,
+    //             file.block_size,
+    //             file.symlink_target,
+    //         )
+    //         .execute(&self.db_pool)
+    //         .await
+    //         .expect("Failed to execute query");
 
-        for missing_file in missing_files.into_iter() {
-            let modified_by: Vec<u8> = missing_file.modified_by.to_be_bytes().into();
-            let insert_res = sqlx::query!(
-                r#"
-            INSERT INTO bep_file_info (
-                folder        ,
-                device        ,
-                name          ,
-                type          ,
-                size          ,
-                permissions   ,
-                modified_s    ,
-                modified_ns   ,
-                modified_by   ,
-                deleted       ,
-                invalid       ,
-                no_permissions,
-                sequence      ,
-                block_size    ,
-                symlink_target
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(folder, device, name) DO UPDATE SET
-                folder         = excluded.folder          ,
-                device         = excluded.device          ,
-                name           = excluded.name            ,
-                type           = excluded.type            ,
-                size           = excluded.size            ,
-                permissions    = excluded.permissions     ,
-                modified_s     = excluded.modified_s      ,
-                modified_ns    = excluded.modified_ns     ,
-                modified_by    = excluded.modified_by     ,
-                deleted        = excluded.deleted         ,
-                invalid        = excluded.invalid         ,
-                no_permissions = excluded.no_permissions  ,
-                sequence       = excluded.sequence        ,
-                block_size     = excluded.block_size      ,
-                symlink_target = excluded.symlink_target  
-            "#,
-                folder_name,
-                device_id,
-                missing_file.name,
-                missing_file.r#type,
-                missing_file.size,
-                missing_file.permissions,
-                missing_file.modified_s,
-                missing_file.modified_ns,
-                modified_by,
-                missing_file.deleted,
-                missing_file.invalid,
-                missing_file.no_permissions,
-                missing_file.sequence,
-                missing_file.block_size,
-                missing_file.symlink_target,
-            )
-            .execute(&self.db_pool)
-            .await
-            .expect("Failed to execute query");
+    //         for counter in file
+    //             .version
+    //             .as_ref()
+    //             .expect("There must be a version")
+    //             .counters
+    //             .iter()
+    //         {
+    //             let short_id: Vec<u8> = counter.id.to_be_bytes().into();
+    //             let version_value: i64 = counter.value.try_into().unwrap();
+    //             let insert_res = sqlx::query!(
+    //                 r#"
+    //                 INSERT INTO bep_file_version (
+    //                     file_folder ,
+    //                     file_device ,
+    //                     file_name   ,
+    //                     id          ,
+    //                     value
+    //                 )
+    //                 VALUES (?, ?, ?, ?, ?)
+    //                 ON CONFLICT(file_folder, file_device, file_name, id, value) DO NOTHING
+    //                 "#,
+    //                 folder_name,
+    //                 device_id,
+    //                 file.name,
+    //                 short_id,
+    //                 version_value,
+    //             )
+    //             .execute(&self.db_pool)
+    //             .await
+    //             .expect("Failed to execute query");
+    //         }
+    //     }
 
-            for counter in missing_file
-                .version
-                .as_ref()
-                .expect("There must be a version")
-                .counters
-                .iter()
-            {
-                let short_id: Vec<u8> = counter.id.to_be_bytes().into();
-                let version_value: i64 = counter.value.try_into().unwrap();
-                let insert_res = sqlx::query!(
-                    r#"
-                    INSERT INTO bep_file_version (
-                        file_folder ,
-                        file_device ,
-                        file_name   ,
-                        id          ,
-                        value
-                    )
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(file_folder, file_device, file_name, id, value) DO NOTHING
-                    "#,
-                    folder_name,
-                    device_id,
-                    missing_file.name,
-                    short_id,
-                    version_value,
-                )
-                .execute(&self.db_pool)
-                .await
-                .expect("Failed to execute query");
-            }
-        }
+    //     sqlx::query!("END TRANSACTION;")
+    //         .execute(&self.db_pool)
+    //         .await
+    //         .unwrap();
 
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
-
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     // TOOO: better handle conflicting files, also when updating the index
     pub fn insert_conflicting_files(&mut self, folder: String, conflicting_files: Vec<FileInfo>) {
@@ -714,6 +905,151 @@ impl BepState {
             .unwrap();
 
         Ok(ClusterConfig { folders })
+    }
+
+    // TODO: decide what to do when there are conflicts
+    /// Adds file info for a folder and a device
+    pub async fn insert_file_info(
+        &mut self,
+        folder: &str,
+        device_id: &DeviceId,
+        file_info: &Vec<FileInfo>,
+    ) {
+        let device_id = device_id.to_string();
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        for file in file_info.into_iter() {
+            trace!("Updating index, inserting file {}", &file.name);
+            let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
+            let insert_res = sqlx::query!(
+                r#"
+            INSERT INTO bep_file_info (
+                folder        ,
+                device        ,
+                name          ,
+                type          ,
+                size          ,
+                permissions   ,
+                modified_s    ,
+                modified_ns   ,
+                modified_by   ,
+                deleted       ,
+                invalid       ,
+                no_permissions,
+                sequence      ,
+                block_size    ,
+                symlink_target
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(folder, device, name) DO UPDATE SET
+                folder         = excluded.folder          ,
+                device         = excluded.device          ,
+                name           = excluded.name            ,
+                type           = excluded.type            ,
+                size           = excluded.size            ,
+                permissions    = excluded.permissions     ,
+                modified_s     = excluded.modified_s      ,
+                modified_ns    = excluded.modified_ns     ,
+                modified_by    = excluded.modified_by     ,
+                deleted        = excluded.deleted         ,
+                invalid        = excluded.invalid         ,
+                no_permissions = excluded.no_permissions  ,
+                sequence       = excluded.sequence        ,
+                block_size     = excluded.block_size      ,
+                symlink_target = excluded.symlink_target  
+            "#,
+                folder,
+                device_id,
+                file.name,
+                file.r#type,
+                file.size,
+                file.permissions,
+                file.modified_s,
+                file.modified_ns,
+                modified_by,
+                file.deleted,
+                file.invalid,
+                file.no_permissions,
+                file.sequence,
+                file.block_size,
+                file.symlink_target,
+            )
+            .execute(&self.db_pool)
+            .await
+            .expect("Failed to execute query");
+
+            for counter in file
+                .version
+                .as_ref()
+                .expect("There must be a version")
+                .counters
+                .iter()
+            {
+                let short_id: Vec<u8> = counter.id.to_be_bytes().into();
+                let version_value: i64 = counter.value.try_into().unwrap();
+                let insert_res = sqlx::query!(
+                    r#"
+                    INSERT INTO bep_file_version (
+                        file_folder ,
+                        file_device ,
+                        file_name   ,
+                        id          ,
+                        value
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(file_folder, file_device, file_name, id, value) DO NOTHING
+                    "#,
+                    folder,
+                    device_id,
+                    file.name,
+                    short_id,
+                    version_value,
+                )
+                .execute(&self.db_pool)
+                .await
+                .expect("Failed to execute query");
+            }
+
+            // TODO: use an enum
+            let storage_status = 0;
+
+            for block in file.blocks.iter() {
+                let insert_res = sqlx::query!(
+                    r#"
+                    INSERT INTO bep_block_info (
+                        file_name,  
+                        file_folder,  
+                        file_device,  
+                        offset,
+                        bi_size,
+                        hash,
+                        weak_hash,
+                        storage_status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(file_name, file_folder, file_device, offset, bi_size, hash) DO NOTHING
+                    "#,
+                    file.name,
+                    folder,
+                    device_id,
+                    block.offset,
+                    block.size,
+                    block.hash,
+                    block.weak_hash,
+                    storage_status,
+                )
+                .execute(&self.db_pool)
+                .await
+                .expect("Failed to execute query");
+            }
+        }
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
     }
 
     pub fn insert_requests(&mut self, requests: &Vec<Request>) {
