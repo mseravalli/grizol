@@ -7,6 +7,8 @@ description = "Grizol"
 publish = false
 
 [dependencies]
+chrono = "0"
+chrono-timesource = "0"
 clap = { version ="4", features = ["derive"] }
 data-encoding = "2"
 env_logger = "0.9.0" # 0.10 requires an MSRV bump to 1.60

@@ -321,7 +321,7 @@ impl StorageManager {
 // }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use crate::storage::StorageManager;
     use crate::syncthing::{ClusterConfig, Index, Request};
     use std::path::Path;
@@ -333,10 +333,7 @@ mod tests {
 
     #[tokio::test]
     async fn store_block__new_file__succeeds() {
-        let storage_manager = StorageManager::new(
-            format!("/tmp/grizol_cluster_config"),
-            format!("/tmp/grizol_staging"),
-        );
+        let storage_manager = StorageManager::new(format!("/tmp/grizol_staging"));
 
         let data = vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
         let request = Request {

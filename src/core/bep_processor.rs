@@ -4,10 +4,13 @@ use crate::core::{BepConfig, BepReply, EncodedMessages, UploadStatus};
 use crate::device_id::DeviceId;
 use crate::storage::StorageManager;
 use crate::syncthing;
+use chrono::prelude::*;
+use chrono_timesource::{ManualTimeSource, TimeSource};
 use prost::Message;
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::SqlitePool;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 use syncthing::{
     BlockInfo, Close, ClusterConfig, Counter, ErrorCode, FileInfo, Header, Hello, Index,
     IndexUpdate, MessageType, Ping, Request, Response,
@@ -15,15 +18,15 @@ use syncthing::{
 use tokio::sync::Mutex;
 
 // TODO: maybe change name to something like BepConnectionHandler
-pub struct BepProcessor {
+pub struct BepProcessor<TS: TimeSource<Utc>> {
     config: BepConfig,
-    state: Mutex<BepState>,
+    state: Mutex<BepState<TS>>,
     storage_manager: StorageManager,
 }
 
-impl BepProcessor {
-    pub fn new(config: BepConfig, db_pool: SqlitePool) -> Self {
-        let bep_state = BepState::new(config.clone(), db_pool);
+impl<TS: TimeSource<Utc>> BepProcessor<TS> {
+    pub fn new(config: BepConfig, db_pool: SqlitePool, clock: Arc<Mutex<TS>>) -> Self {
+        let bep_state = BepState::new(config.clone(), db_pool, clock);
 
         let base_dir = config.base_dir.clone();
         BepProcessor {
@@ -95,12 +98,12 @@ impl BepProcessor {
         index_update: IndexUpdate,
         client_device_id: DeviceId,
     ) -> Vec<EncodedMessages> {
-        debug!("Handling Index Update");
+        debug!("Handling IndexUpdate");
+        debug!("Received IndexUpdate: {:#?}", &index_update);
         let received_index = Index {
             folder: index_update.folder,
             files: index_update.files,
         };
-        // self.handle_index(received_index, client_device_id).await
 
         let folder = received_index.folder.clone();
 
@@ -119,6 +122,9 @@ impl BepProcessor {
                 state
                     .insert_file_info(&folder, &client_device_id, &diff.missing_files)
                     .await;
+                state
+                    .replace_file_info(&folder, &client_device_id, &diff.conflicting_files, false)
+                    .await;
 
                 // Update the local index of the current device
                 let local_index = state
@@ -132,10 +138,20 @@ impl BepProcessor {
                 state
                     .insert_file_info(&folder, &self.config.id, &diff.missing_files)
                     .await;
+                let file_dests = state
+                    .replace_file_info(&folder, &self.config.id, &diff.conflicting_files, true)
+                    .await;
+                for (orig, dest) in file_dests.iter() {
+                    debug!("moved files: {} -> {}", orig, dest);
+                    // TODO: actually move the file
+                }
+
                 diff
             };
 
-            let requests_missing_files = {
+            // TODO: add requests for missing files
+
+            let missing_files_requests = {
                 let state = &mut self.state.lock().await;
                 let base_req_id = state.load_request_id();
                 let requests = create_requests(base_req_id, &folder, diff.missing_files);
@@ -153,7 +169,7 @@ impl BepProcessor {
             };
             // TODO: it's better to send the requests asynchronously independently from
             // receiving the index so that we can recover from crashed etc.
-            for request in requests_missing_files.into_iter() {
+            for request in missing_files_requests.into_iter() {
                 ems.append(encode_message(header.clone(), request).unwrap());
             }
 
@@ -195,7 +211,7 @@ impl BepProcessor {
                 diff
             };
 
-            let requests_missing_files = {
+            let missing_files_requests = {
                 let state = &mut self.state.lock().await;
                 let base_req_id = state.load_request_id();
                 let requests = create_requests(base_req_id, &folder, diff.missing_files);
@@ -213,7 +229,7 @@ impl BepProcessor {
             };
             // TODO: it's better to send the requests asynchronously independently from
             // receiving the index so that we can recover from crashed etc.
-            for request in requests_missing_files.into_iter() {
+            for request in missing_files_requests.into_iter() {
                 ems.append(encode_message(header.clone(), request).unwrap());
             }
 
@@ -511,12 +527,17 @@ fn most_recent(fs: HashMap<String, Vec<FileInfo>>) -> Vec<FileInfo> {
 /// Checks if a remote file has a timestamp larger than the existing one as specified in
 /// https://docs.syncthing.net/users/syncing.html#conflicting-changes.
 fn file_has_conflict(local_file: &FileInfo, remote_file: &FileInfo) -> bool {
-    if local_file.modified_s < remote_file.modified_s {
+    trace!(
+        "local file: {:?}\nremote file {:?}",
+        local_file,
+        remote_file
+    );
+    if local_file.modified_s > remote_file.modified_s {
         return false;
     }
 
     if local_file.modified_s == remote_file.modified_s
-        && local_file.modified_ns < remote_file.modified_ns
+        && local_file.modified_ns > remote_file.modified_ns
     {
         return false;
     }

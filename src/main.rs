@@ -18,6 +18,8 @@ use crate::core::bep_data_parser::{BepDataParser, CompleteMessage};
 use crate::core::bep_processor::BepProcessor;
 use crate::core::{BepConfig, EncodedMessages};
 use crate::device_id::DeviceId;
+use chrono::prelude::*;
+use chrono_timesource::UtcTimeSource;
 use clap::Parser;
 use data_encoding::BASE32;
 use futures::future::FutureExt;
@@ -111,7 +113,8 @@ async fn main() -> io::Result<()> {
         .await
         .expect("Not possible to connect to the sqlite database.");
 
-    let bep_processor = Arc::new(BepProcessor::new(bep_config, db_pool));
+    let clock = Arc::new(tokio::sync::Mutex::new(UtcTimeSource {}));
+    let bep_processor = Arc::new(BepProcessor::new(bep_config, db_pool, clock));
 
     // We use this to ensure that the device id provided by the connection is assigned only by a
     // sigle client at a time.
@@ -138,7 +141,7 @@ async fn main() -> io::Result<()> {
 }
 
 async fn handle_incoming_data(
-    bep_processor: Arc<BepProcessor>,
+    bep_processor: Arc<BepProcessor<UtcTimeSource>>,
     tcp_stream: TcpStream,
     acceptor: TlsAcceptor,
     client_device_id: Arc<Mutex<Option<DeviceId>>>,

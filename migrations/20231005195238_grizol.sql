@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS bep_block_info (
     storage_status  INTEGER NOT NULL,
 
     PRIMARY KEY (file_name, file_folder, file_device, offset, bi_size, hash) ,
-    FOREIGN KEY(file_name, file_folder, file_device) REFERENCES bep_file_info(name, folder, device) ON DELETE CASCADE ,
+    FOREIGN KEY(file_name, file_folder, file_device) REFERENCES bep_file_info(name, folder, device) ON DELETE CASCADE ON UPDATE CASCADE ,
     FOREIGN KEY(storage_status) REFERENCES bep_storage_status(storage_status)
 );
 
@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS bep_file_version (
     value     INTEGER NOT NULL , -- we will need to put a u64 into a i64 the assumption is that there won't be overflows.
 
     PRIMARY KEY (file_name, file_folder, file_device, id, value) ,
-    FOREIGN KEY(file_name, file_folder, file_device) REFERENCES bep_file_info(name, folder, device) ON DELETE CASCADE
+    FOREIGN KEY(file_name, file_folder, file_device) REFERENCES bep_file_info(name, folder, device) ON DELETE CASCADE ON UPDATE CASCADE
 );
 
 INSERT INTO bep_compression VALUES( 0 );

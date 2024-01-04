@@ -1,15 +1,21 @@
 use crate::core::{BepConfig, UploadStatus};
 use crate::device_id::DeviceId;
 use crate::syncthing;
+use chrono::prelude::*;
+use chrono_timesource::{ManualTimeSource, TimeSource};
 use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use syncthing::{
     BlockInfo, Close, ClusterConfig, Compression, Counter, ErrorCode, FileInfo, Header, Hello,
     Index, IndexUpdate, MessageType, Ping, Request, Response,
 };
+use tokio::sync::Mutex;
 
 #[derive(Debug)]
-pub struct BepState {
+pub struct BepState<TS: TimeSource<Utc>> {
+    clock: Arc<Mutex<TS>>,
     config: BepConfig,
     db_pool: SqlitePool,
     indices: HashMap<String, HashMap<DeviceId, syncthing::Index>>,
@@ -20,9 +26,10 @@ pub struct BepState {
     outgoing_requests: HashMap<i32, Request>,
 }
 
-impl BepState {
-    pub fn new(config: BepConfig, db_pool: SqlitePool) -> Self {
+impl<TS: TimeSource<Utc>> BepState<TS> {
+    pub fn new(config: BepConfig, db_pool: SqlitePool, clock: Arc<Mutex<TS>>) -> Self {
         BepState {
+            clock,
             config,
             db_pool,
             indices: Default::default(),
@@ -922,6 +929,201 @@ impl BepState {
             .unwrap();
     }
 
+    // TODO: rethink the interface of this method a bit e.g. should we directly move the file?
+    // TODO: use an enum instead of move_file: bool
+    /// Adds file info for a folder and a device, returns the new destination of the file if the
+    /// file is moved.
+    pub async fn replace_file_info(
+        &mut self,
+        folder: &str,
+        device_id: &DeviceId,
+        file_info: &Vec<FileInfo>,
+        move_file: bool,
+    ) -> HashMap<String, String> {
+        let device_id = device_id.to_string();
+
+        let mut file_dests: HashMap<String, String> = Default::default();
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        for file in file_info.into_iter() {
+            // Rename according to
+            // https://docs.syncthing.net/users/syncing.html#conflicting-changes
+            if move_file {
+                debug!("Moving files");
+                let new_path = {
+                    let clock = self.clock.lock().await;
+                    new_file_path(&file.name, &device_id, clock.now().unwrap())
+                };
+                // We have a cascading updates.
+                let insert_res = sqlx::query!(
+                    "
+                    UPDATE OR ROLLBACK bep_file_info
+                    SET name = ?
+                    WHERE folder = ? AND device = ? AND name = ?; 
+                    ",
+                    new_path,
+                    folder,
+                    device_id,
+                    file.name,
+                )
+                .execute(&self.db_pool)
+                .await
+                .expect("Failed to execute query");
+
+                file_dests.insert(file.name.clone(), new_path);
+            } else {
+                // We have a cascading removal.
+                let insert_res = sqlx::query!(
+                    "
+                    DELETE FROM bep_file_info
+                    WHERE folder = ? AND device = ? AND name = ?; 
+                    ",
+                    folder,
+                    device_id,
+                    file.name,
+                )
+                .execute(&self.db_pool)
+                .await
+                .expect("Failed to execute query");
+            }
+
+            trace!("Updating index, inserting file {}", &file.name);
+            let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
+            let insert_res = sqlx::query!(
+                r#"
+            INSERT INTO bep_file_info (
+                folder        ,
+                device        ,
+                name          ,
+                type          ,
+                size          ,
+                permissions   ,
+                modified_s    ,
+                modified_ns   ,
+                modified_by   ,
+                deleted       ,
+                invalid       ,
+                no_permissions,
+                sequence      ,
+                block_size    ,
+                symlink_target
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(folder, device, name) DO UPDATE SET
+                folder         = excluded.folder          ,
+                device         = excluded.device          ,
+                name           = excluded.name            ,
+                type           = excluded.type            ,
+                size           = excluded.size            ,
+                permissions    = excluded.permissions     ,
+                modified_s     = excluded.modified_s      ,
+                modified_ns    = excluded.modified_ns     ,
+                modified_by    = excluded.modified_by     ,
+                deleted        = excluded.deleted         ,
+                invalid        = excluded.invalid         ,
+                no_permissions = excluded.no_permissions  ,
+                sequence       = excluded.sequence        ,
+                block_size     = excluded.block_size      ,
+                symlink_target = excluded.symlink_target
+            "#,
+                folder,
+                device_id,
+                file.name,
+                file.r#type,
+                file.size,
+                file.permissions,
+                file.modified_s,
+                file.modified_ns,
+                modified_by,
+                file.deleted,
+                file.invalid,
+                file.no_permissions,
+                file.sequence,
+                file.block_size,
+                file.symlink_target,
+            )
+            .execute(&self.db_pool)
+            .await
+            .expect("Failed to execute query");
+
+            for counter in file
+                .version
+                .as_ref()
+                .expect("There must be a version")
+                .counters
+                .iter()
+            {
+                let short_id: Vec<u8> = counter.id.to_be_bytes().into();
+                let version_value: i64 = counter.value.try_into().unwrap();
+                let insert_res = sqlx::query!(
+                    r#"
+                    INSERT INTO bep_file_version (
+                        file_folder ,
+                        file_device ,
+                        file_name   ,
+                        id          ,
+                        value
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(file_folder, file_device, file_name, id, value) DO NOTHING
+                    "#,
+                    folder,
+                    device_id,
+                    file.name,
+                    short_id,
+                    version_value,
+                )
+                .execute(&self.db_pool)
+                .await
+                .expect("Failed to execute query");
+            }
+
+            // TODO: use an enum
+            let storage_status = 0;
+
+            for block in file.blocks.iter() {
+                let insert_res = sqlx::query!(
+                    r#"
+                    INSERT INTO bep_block_info (
+                        file_name,
+                        file_folder,
+                        file_device,
+                        offset,
+                        bi_size,
+                        hash,
+                        weak_hash,
+                        storage_status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(file_name, file_folder, file_device, offset, bi_size, hash) DO NOTHING
+                    "#,
+                    file.name,
+                    folder,
+                    device_id,
+                    block.offset,
+                    block.size,
+                    block.hash,
+                    block.weak_hash,
+                    storage_status,
+                )
+                .execute(&self.db_pool)
+                .await
+                .expect("Failed to execute query");
+            }
+        }
+
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        debug!("File destinations: {:?}", file_dests);
+        file_dests
+    }
+
     pub fn insert_requests(&mut self, requests: &Vec<Request>) {
         for request in requests.iter() {
             self.outgoing_requests.insert(request.id, request.clone());
@@ -934,5 +1136,54 @@ impl BepState {
 
     pub fn remove_request(&mut self, request_id: &i32) -> Option<Request> {
         self.outgoing_requests.remove(request_id)
+    }
+}
+
+/// Rename a file according to
+/// https://docs.syncthing.net/users/syncing.html#conflicting-changes
+fn new_file_path(old_file_path: &str, device_id: &str, now: DateTime<Utc>) -> String {
+    let old_path = PathBuf::from(old_file_path);
+
+    let mut name = old_path
+        .clone()
+        .file_name()
+        .map(|x| PathBuf::from(x))
+        .expect("Invalid file name")
+        .into_os_string();
+    let date = now.format("%Y%m%d");
+    let time = now.format("%H%M%S");
+    let modified_by = &device_id;
+    name.push(format!(".sync-conflict-{}-{}-{}", date, time, modified_by));
+    let new_name: PathBuf = name.into();
+
+    let extension = old_path.extension().map(|x| PathBuf::from(x));
+
+    let new_path_parts = [
+        old_path.parent().map(|x| x.clone().into()),
+        Some(new_name.clone()),
+        extension,
+    ];
+
+    let new_path: PathBuf = new_path_parts.iter().flatten().collect();
+    new_path
+        .to_str()
+        .expect("Not possible to convert into String")
+        .into()
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn new_file_path_adds_suffix() {
+        let now = Utc.with_ymd_and_hms(1970, 1, 2, 3, 4, 5).unwrap();
+
+        let new_file_path = new_file_path("ABC", "deviceid", now);
+
+        assert_eq!(
+            new_file_path,
+            "ABC.sync-conflict-19700102-030405-deviceid".to_string()
+        );
     }
 }

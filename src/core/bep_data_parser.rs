@@ -475,7 +475,7 @@ impl BepDataParser {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use crate::core::{BepDataParser, CompleteMessage};
     use crate::syncthing;
     use crate::DeviceId;
