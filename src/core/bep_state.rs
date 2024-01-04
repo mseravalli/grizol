@@ -929,11 +929,31 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .unwrap();
     }
 
+    pub async fn rm_replace_file_info(
+        &mut self,
+        folder: &str,
+        device_id: &DeviceId,
+        file_info: &Vec<FileInfo>,
+    ) {
+        self.replace_file_info(folder, device_id, file_info, false)
+            .await;
+    }
+
     // TODO: rethink the interface of this method a bit e.g. should we directly move the file?
-    // TODO: use an enum instead of move_file: bool
+    pub async fn mv_replace_file_info(
+        &mut self,
+        folder: &str,
+        device_id: &DeviceId,
+        file_info: &Vec<FileInfo>,
+    ) -> HashMap<String, String> {
+        self.replace_file_info(folder, device_id, file_info, true)
+            .await
+    }
+
+    // TODO: use an enum instead of move_file: bool?, it's just an internal method though..
     /// Adds file info for a folder and a device, returns the new destination of the file if the
     /// file is moved.
-    pub async fn replace_file_info(
+    async fn replace_file_info(
         &mut self,
         folder: &str,
         device_id: &DeviceId,

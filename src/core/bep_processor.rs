@@ -123,7 +123,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     .insert_file_info(&folder, &client_device_id, &diff.missing_files)
                     .await;
                 state
-                    .replace_file_info(&folder, &client_device_id, &diff.conflicting_files, false)
+                    .rm_replace_file_info(&folder, &client_device_id, &diff.conflicting_files)
                     .await;
 
                 // Update the local index of the current device
@@ -139,7 +139,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     .insert_file_info(&folder, &self.config.id, &diff.missing_files)
                     .await;
                 let file_dests = state
-                    .replace_file_info(&folder, &self.config.id, &diff.conflicting_files, true)
+                    .mv_replace_file_info(&folder, &self.config.id, &diff.conflicting_files)
                     .await;
                 for (orig, dest) in file_dests.iter() {
                     debug!("moved files: {} -> {}", orig, dest);
