@@ -15,11 +15,8 @@ pub struct StorageManager {
 
 impl StorageManager {
     pub fn new(stage_dir: String) -> Self {
+        // TODO: init stage_dir if it does not exist
         StorageManager { stage_dir }
-    }
-
-    pub async fn save_client_index(&self, index: &Index) -> io::Result<()> {
-        todo!();
     }
 
     pub async fn store_block(
@@ -82,6 +79,10 @@ impl StorageManager {
         file.set_len(file_size).await?;
 
         Ok(file)
+    }
+
+    pub async fn move_file(&self, orig: &str, dest: &str) {
+        todo!();
     }
 }
 
@@ -328,7 +329,7 @@ mod test {
 
     // TODO: use a better file path
     fn file_path() -> String {
-        "/home/marco/test_000/test_1".to_string()
+        "/tmp/test_1".to_string()
     }
 
     #[tokio::test]

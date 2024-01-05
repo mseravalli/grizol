@@ -142,6 +142,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     .mv_replace_file_info(&folder, &self.config.id, &diff.conflicting_files)
                     .await;
                 for (orig, dest) in file_dests.iter() {
+                    self.storage_manager.move_file(orig, dest);
                     debug!("moved files: {} -> {}", orig, dest);
                     // TODO: actually move the file
                 }
