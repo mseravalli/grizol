@@ -1164,27 +1164,36 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 fn new_file_path(old_file_path: &str, device_id: &str, now: DateTime<Utc>) -> String {
     let old_path = PathBuf::from(old_file_path);
 
+    let extension = old_path
+        .extension()
+        .map(|x| PathBuf::from(x))
+        .map(|x| x.to_str().unwrap().to_string())
+        .map(|x| format!(".{}", x))
+        .unwrap_or(format!(""));
+
     let mut name = old_path
         .clone()
         .file_name()
         .map(|x| PathBuf::from(x))
         .expect("Invalid file name")
-        .into_os_string();
+        .file_stem()
+        .unwrap()
+        .to_os_string();
     let date = now.format("%Y%m%d");
     let time = now.format("%H%M%S");
     let modified_by = &device_id;
-    name.push(format!(".sync-conflict-{}-{}-{}", date, time, modified_by));
+    name.push(format!(
+        ".sync-conflict-{}-{}-{}{}",
+        date, time, modified_by, extension
+    ));
     let new_name: PathBuf = name.into();
-
-    let extension = old_path.extension().map(|x| PathBuf::from(x));
 
     let new_path_parts = [
         old_path.parent().map(|x| x.clone().into()),
         Some(new_name.clone()),
-        extension,
     ];
 
-    let new_path: PathBuf = new_path_parts.iter().flatten().collect();
+    let mut new_path: PathBuf = new_path_parts.iter().flatten().collect();
     new_path
         .to_str()
         .expect("Not possible to convert into String")
@@ -1196,7 +1205,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn new_file_path_adds_suffix() {
+    fn new_file_path_wo_parent_adds_suffix() {
         let now = Utc.with_ymd_and_hms(1970, 1, 2, 3, 4, 5).unwrap();
 
         let new_file_path = new_file_path("ABC", "deviceid", now);
@@ -1204,6 +1213,42 @@ mod test {
         assert_eq!(
             new_file_path,
             "ABC.sync-conflict-19700102-030405-deviceid".to_string()
+        );
+    }
+
+    #[test]
+    fn new_file_path_w_parent_adds_suffix() {
+        let now = Utc.with_ymd_and_hms(1970, 1, 2, 3, 4, 5).unwrap();
+
+        let new_file_path = new_file_path("ABC/ABC", "deviceid", now);
+
+        assert_eq!(
+            new_file_path,
+            "ABC/ABC.sync-conflict-19700102-030405-deviceid".to_string()
+        );
+    }
+
+    #[test]
+    fn new_file_path_w_ext_adds_suffix() {
+        let now = Utc.with_ymd_and_hms(1970, 1, 2, 3, 4, 5).unwrap();
+
+        let new_file_path = new_file_path("ABC/ABC.xyz", "deviceid", now);
+
+        assert_eq!(
+            new_file_path,
+            "ABC/ABC.sync-conflict-19700102-030405-deviceid.xyz".to_string()
+        );
+    }
+
+    #[test]
+    fn new_file_path_w_ext_wo_parent_adds_suffix() {
+        let now = Utc.with_ymd_and_hms(1970, 1, 2, 3, 4, 5).unwrap();
+
+        let new_file_path = new_file_path("ABC.xyz", "deviceid", now);
+
+        assert_eq!(
+            new_file_path,
+            "ABC.sync-conflict-19700102-030405-deviceid.xyz".to_string()
         );
     }
 }
