@@ -11,6 +11,14 @@ function controlled_exit() {
   kill ${GRIZOL_PID} ${SYNCTHING_PID}
 }
 
+function trigger_syncthing_rescan() {
+  sleep 1
+  curl 'http://localhost:8384/rest/db/scan' \
+    -X 'POST' \
+    -H 'X-CSRF-Token-RFJWU2I: DRzPJNiGgMhcPchiAEbZPnptv6qsAwXa' \
+    --compressed
+}
+
 function run_diff() {
   orig_dir=$1
   dest_dir=$2
@@ -53,17 +61,20 @@ echo "started syncthing with pid ${SYNCTHING_PID}"
 while [[ -z $(rg 'Ready to synchronize "orig_dir"' /tmp/syncthing) ]]; do sleep 1; done
 echo "# 1: Test adding data"
 scripts/create_random_files.sh tests/util/orig_dir/ 3
+trigger_syncthing_rescan
 while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 3 ]]; do sleep 1; done
 run_diff tests/util/orig_dir tests/util/dest_dir
 
 echo "# 2: Test adding more data"
 scripts/create_random_files.sh tests/util/orig_dir/ 3
+trigger_syncthing_rescan
 while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 6 ]]; do sleep 1; done
 run_diff tests/util/orig_dir tests/util/dest_dir
 
 echo "# 3: Test modifying data"
 file_name=$(ls tests/util/orig_dir/ | sort | head -n 1)
 head -c 100 "tests/util/orig_dir/${file_name}" > "tests/util/orig_dir/${file_name}" 
+trigger_syncthing_rescan
 while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 7 ]]; do sleep 1; done
 run_diff tests/util/orig_dir tests/util/dest_dir
 
