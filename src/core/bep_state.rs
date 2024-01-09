@@ -596,16 +596,18 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .await
             .unwrap();
 
-        let expected_blocks =
-            (block_count.byte_size + block_count.block_size - 1) / block_count.block_size;
+        let expected_blocks = std::cmp::max(
+            (block_count.byte_size + block_count.block_size - 1) / block_count.block_size,
+            1,
+        );
         if block_count.stored_blocks == expected_blocks {
             Ok(UploadStatus::AllBlocks)
         } else if block_count.stored_blocks < expected_blocks {
             Ok(UploadStatus::BlocksMissing)
         } else {
             return Err(format!(
-                "We ended up storing too many blocks for file: {}",
-                &request.name
+                "We ended up storing too many blocks for file: {}, expected blocks {}, actual blocks {}",
+                &request.name, expected_blocks, block_count.stored_blocks
             ));
         }
     }

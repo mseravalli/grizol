@@ -56,13 +56,10 @@ scripts/create_random_files.sh tests/util/orig_dir/ 3
 while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 3 ]]; do sleep 1; done
 run_diff tests/util/orig_dir tests/util/dest_dir
 
-# echo "# 2: Test adding more data"
-# scripts/create_random_files.sh tests/util/orig_dir/ 3
-# while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 6 ]]; do sleep 1; done
-# run_diff tests/util/orig_dir tests/util/dest_dir
-
-# echo 'press Enter to continue'
-# read a
+echo "# 2: Test adding more data"
+scripts/create_random_files.sh tests/util/orig_dir/ 3
+while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 6 ]]; do sleep 1; done
+run_diff tests/util/orig_dir tests/util/dest_dir
 
 echo "# 3: Test modifying data"
 file_name=$(ls tests/util/orig_dir/ | sort | head -n 1)
