@@ -82,7 +82,12 @@ impl StorageManager {
     }
 
     pub async fn move_file(&self, orig: &str, dest: &str) {
-        todo!();
+        tokio::fs::rename(
+            format!("{}/{}", self.stage_dir, orig),
+            format!("{}/{}", self.stage_dir, dest),
+        )
+        .await
+        .expect("Error while moving the file")
     }
 }
 

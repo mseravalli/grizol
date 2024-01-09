@@ -13,6 +13,30 @@ use syncthing::{
 };
 use tokio::sync::Mutex;
 
+/// Stores BlockInfo and addtitional data to simplify processing.
+#[derive(Hash, Clone, Debug, Eq, PartialEq)]
+pub struct BlockInfoExt {
+    pub device_id: DeviceId,
+    pub folder: String,
+    pub name: String,
+    pub hash: Vec<u8>,
+    pub size: i32,
+    pub offset: i64,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum StorageStatus {
+    NotStored = 0,
+    StoredLocally = 1,
+    StoredRemotely = 2,
+}
+
+impl Into<i32> for StorageStatus {
+    fn into(self) -> i32 {
+        self as i32
+    }
+}
+
 #[derive(Debug)]
 pub struct BepState<TS: TimeSource<Utc>> {
     clock: Arc<Mutex<TS>>,
@@ -181,7 +205,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             }
 
             // TODO: use enum
-            let storage_status = 0;
+            let not_stored: i32 = StorageStatus::NotStored.into();
 
             for block in file.blocks.iter() {
                 let insert_res = sqlx::query!(
@@ -206,7 +230,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     block.size,
                     block.hash,
                     block.weak_hash,
-                    storage_status
+                    not_stored,
                 )
                 .execute(&self.db_pool)
                 .await
@@ -337,7 +361,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         self.request_id
     }
 
-    /// Increments the current value by 1, returning the previous value of [request_id].
+    /// Increments the current value by [val], returning the previous value of [request_id].
     pub fn fetch_add_request_id(&mut self, val: i32) -> i32 {
         let old_value = self.request_id;
         self.request_id += val;
@@ -421,7 +445,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             r#"
             SELECT f.*, bi.*
             FROM bep_file_info f
-                JOIN bep_block_info bi ON f.name = bi.file_name
+                JOIN bep_block_info bi ON f.name = bi.file_name AND f.folder = bi.file_folder AND f.device = bi.file_device
             WHERE f.folder = ? AND f.device = ?
             ;"#,
             folder,
@@ -433,7 +457,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             r#"
             SELECT f.name,v.id, v.value
             FROM bep_file_info f
-                JOIN bep_file_version v ON f.name = v.file_name
+                JOIN bep_file_version v ON f.name = v.file_name AND f.folder = v.file_folder AND f.device = v.file_device
             WHERE f.folder = ? and f.device = ?
             ;"#,
             folder,
@@ -531,13 +555,15 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .await
             .unwrap();
 
+        let stored_locally: i32 = StorageStatus::StoredLocally.into();
         let block_hash = request.hash.clone();
         let insert_res = sqlx::query!(
             r#"
             UPDATE OR ROLLBACK bep_block_info
-            SET storage_status = 1
+            SET storage_status = ?
             WHERE file_name = ? AND file_folder = ? AND file_device = ? AND hash = ?
             "#,
+            stored_locally,
             request.name,
             request.folder,
             device_id,
@@ -584,12 +610,55 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         }
     }
 
-    // TOOO: better handle conflicting files, also when updating the index
-    pub fn insert_conflicting_files(&mut self, folder: String, conflicting_files: Vec<FileInfo>) {
-        for file in conflicting_files.into_iter() {
-            self.conflicting_files
-                .insert((folder.clone(), file.name.clone()), file);
-        }
+    /// Returns a list of [BlockInfo] filtered by the provided parameters
+    // TODO: provide a better way to filter rather than passing a parameter
+    pub async fn blocks_info(
+        &mut self,
+        device_id: &DeviceId,
+        storage_status: StorageStatus,
+    ) -> Vec<BlockInfoExt> {
+        let device_id_str = device_id.to_string();
+        let storage_status: i32 = storage_status.into();
+
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        let file_blocks = sqlx::query!(
+            r#"
+              SELECT *
+              FROM  bep_block_info
+              WHERE file_device = ?
+                AND storage_status = ?
+              ;"#,
+            device_id_str,
+            storage_status
+        )
+        .fetch_all(&self.db_pool)
+        .await;
+
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        let mut blocks: Vec<BlockInfoExt> = file_blocks
+            .unwrap()
+            .into_iter()
+            .map(|block| BlockInfoExt {
+                device_id: *device_id,
+                folder: block.file_folder,
+                name: block.file_name,
+                hash: block.hash,
+                size: block.bi_size.try_into().unwrap(),
+                offset: block.offset,
+            })
+            .collect();
+
+        debug!("Blocks to be requested: {:?}", blocks);
+
+        blocks
     }
 
     pub async fn file_from_local_index(
@@ -891,7 +960,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             }
 
             // TODO: use an enum
-            let storage_status = 0;
+            let not_stored: i32 = StorageStatus::NotStored.into();
 
             for block in file.blocks.iter() {
                 let insert_res = sqlx::query!(
@@ -916,7 +985,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     block.size,
                     block.hash,
                     block.weak_hash,
-                    storage_status,
+                    not_stored,
                 )
                 .execute(&self.db_pool)
                 .await
@@ -935,6 +1004,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         device_id: &DeviceId,
         file_info: &Vec<FileInfo>,
     ) {
+        debug!("About to remove files: {:?}", file_info);
         self.replace_file_info(folder, device_id, file_info, false)
             .await;
     }
@@ -980,6 +1050,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 // We have a cascading updates.
                 let insert_res = sqlx::query!(
                     "
+                    PRAGMA foreign_keys = ON;
                     UPDATE OR ROLLBACK bep_file_info
                     SET name = ?
                     WHERE folder = ? AND device = ? AND name = ?; 
@@ -995,9 +1066,11 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
                 file_dests.insert(file.name.clone(), new_path);
             } else {
+                debug!("Deleting files");
                 // We have a cascading removal.
                 let insert_res = sqlx::query!(
                     "
+                    PRAGMA foreign_keys = ON;
                     DELETE FROM bep_file_info
                     WHERE folder = ? AND device = ? AND name = ?; 
                     ",
@@ -1010,7 +1083,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 .expect("Failed to execute query");
             }
 
-            trace!("Updating index, inserting file {}", &file.name);
+            debug!("Updating index, inserting file {:?}", &file);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
             let insert_res = sqlx::query!(
                 r#"
@@ -1101,8 +1174,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 .expect("Failed to execute query");
             }
 
-            // TODO: use an enum
-            let storage_status = 0;
+            let not_stored: i32 = StorageStatus::NotStored.into();
 
             for block in file.blocks.iter() {
                 let insert_res = sqlx::query!(
@@ -1127,7 +1199,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     block.size,
                     block.hash,
                     block.weak_hash,
-                    storage_status,
+                    not_stored,
                 )
                 .execute(&self.db_pool)
                 .await

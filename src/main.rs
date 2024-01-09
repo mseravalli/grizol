@@ -28,6 +28,7 @@ use prost_types::FileDescriptorSet;
 use rustls_pemfile::{certs, rsa_private_keys};
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::Executor;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -109,6 +110,15 @@ async fn main() -> io::Result<()> {
     // TODO: implement multiple connections
     let db_pool = SqlitePoolOptions::new()
         .max_connections(1)
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                // When directly invoking `Executor` methods,
+                // it is possible to execute multiple statements with one call.
+                conn.execute("PRAGMA foreign_keys = ON;").await?;
+
+                Ok(())
+            })
+        })
         .connect(&bep_config.db_url)
         .await
         .expect("Not possible to connect to the sqlite database.");

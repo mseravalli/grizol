@@ -1,5 +1,5 @@
 use crate::core::bep_data_parser::{BepDataParser, CompleteMessage, MAGIC_NUMBER};
-use crate::core::bep_state::BepState;
+use crate::core::bep_state::{BepState, BlockInfoExt, StorageStatus};
 use crate::core::{BepConfig, BepReply, EncodedMessages, UploadStatus};
 use crate::device_id::DeviceId;
 use crate::storage::StorageManager;
@@ -9,6 +9,7 @@ use chrono_timesource::{ManualTimeSource, TimeSource};
 use prost::Message;
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::SqlitePool;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use syncthing::{
@@ -108,54 +109,57 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         let folder = received_index.folder.clone();
 
         let ems = async move {
-            let diff = {
+            let unstored_blocks = {
                 let state = &mut self.state.lock().await;
 
                 // Update the local index of the connected device
                 let other_device_local_index = state
-                    .index(&folder, &self.config.id)
+                    .index(&folder, &client_device_id)
                     .await
                     .expect("The local index must exist");
-                let indices = vec![received_index];
-                let diff = diff_indices(&other_device_local_index, &indices)
+                let diff = diff_indices(&folder, &received_index, &other_device_local_index)
                     .expect("Should pass the same folders");
                 state
-                    .insert_file_info(&folder, &client_device_id, &diff.missing_files)
-                    .await;
-                state
-                    .rm_replace_file_info(&folder, &client_device_id, &diff.conflicting_files)
+                    .rm_replace_file_info(&folder, &client_device_id, &diff.newly_added_files)
                     .await;
 
                 // Update the local index of the current device
                 let local_index = state
                     .index(&folder, &self.config.id)
                     .await
-                    .expect("The local index must exist");
-                // TODO: ideally we should filter out the local index from all the indices
-                let indices = state.indices(Some(&folder), None).await;
-                let diff =
-                    diff_indices(&local_index, &indices).expect("Should pass the same folders");
+                    .expect("The index must exist");
+                let other_device_local_index = state
+                    .index(&folder, &client_device_id)
+                    .await
+                    .expect("The index must exist");
+                let diff = diff_indices(&folder, &other_device_local_index, &local_index)
+                    .expect("Should pass the same folders");
                 state
-                    .insert_file_info(&folder, &self.config.id, &diff.missing_files)
+                    .rm_replace_file_info(&folder, &self.config.id, &diff.newly_added_files)
                     .await;
-                let file_dests = state
-                    .mv_replace_file_info(&folder, &self.config.id, &diff.conflicting_files)
-                    .await;
-                for (orig, dest) in file_dests.iter() {
-                    self.storage_manager.move_file(orig, dest);
-                    debug!("moved files: {} -> {}", orig, dest);
-                    // TODO: actually move the file
-                }
+                // let file_dests = state
+                //     .mv_replace_file_info(
+                //         &folder,
+                //         &self.config.id,
+                //         &diff.newly_added_conflicting_files,
+                //     )
+                //     .await;
+                // for (orig, dest) in file_dests.iter() {
+                //     self.storage_manager.move_file(orig, dest).await;
+                //     debug!("moved file: {} -> {}", orig, dest);
+                // }
 
-                diff
+                let unstored_blocks = state
+                    .blocks_info(&self.config.id, StorageStatus::NotStored)
+                    .await;
+
+                unstored_blocks
             };
 
-            // TODO: add requests for missing files
-
-            let missing_files_requests = {
+            let file_requests = {
                 let state = &mut self.state.lock().await;
                 let base_req_id = state.load_request_id();
-                let requests = create_requests(base_req_id, &folder, diff.missing_files);
+                let requests = requests_from_blocks(base_req_id, unstored_blocks);
                 let max_req_id = requests.iter().map(|x| x.id).max().unwrap_or(base_req_id);
                 state.fetch_add_request_id(max_req_id - base_req_id);
                 state.insert_requests(&requests);
@@ -168,9 +172,8 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                 compression: 0,
                 r#type: MessageType::Request.into(),
             };
-            // TODO: it's better to send the requests asynchronously independently from
-            // receiving the index so that we can recover from crashed etc.
-            for request in missing_files_requests.into_iter() {
+
+            for request in file_requests.into_iter() {
                 ems.append(encode_message(header.clone(), request).unwrap());
             }
 
@@ -187,15 +190,17 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         client_device_id: DeviceId,
     ) -> Vec<EncodedMessages> {
         debug!("Handling Index");
-        trace!("Received Index: {:#?}", &received_index);
+        debug!("Received Index: {:#?}", &received_index);
         let folder = received_index.folder.clone();
 
         let ems = async move {
-            let diff = {
+            let unstored_blocks = {
                 let state = &mut self.state.lock().await;
 
                 // Update the local index of the connected device
-                state.replace_index(received_index, &client_device_id).await;
+                state
+                    .replace_index(received_index.clone(), &client_device_id)
+                    .await;
 
                 // Update the local index of the current device
                 let local_index = state
@@ -204,18 +209,23 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     .expect("The local index must exist");
                 // TODO: ideally we should filter out the local index from all the indices
                 let indices = state.indices(Some(&folder), None).await;
-                let diff =
-                    diff_indices(&local_index, &indices).expect("Should pass the same folders");
+                let diff = diff_indices(&folder, &received_index, &local_index)
+                    .expect("Should pass the same folders");
                 state
-                    .insert_file_info(&folder, &self.config.id, &diff.missing_files)
+                    .insert_file_info(&folder, &self.config.id, &diff.newly_added_files)
                     .await;
-                diff
+
+                let unstored_blocks = state
+                    .blocks_info(&self.config.id, StorageStatus::NotStored)
+                    .await;
+
+                unstored_blocks
             };
 
-            let missing_files_requests = {
+            let file_requests = {
                 let state = &mut self.state.lock().await;
                 let base_req_id = state.load_request_id();
-                let requests = create_requests(base_req_id, &folder, diff.missing_files);
+                let requests = requests_from_blocks(base_req_id, unstored_blocks);
                 let max_req_id = requests.iter().map(|x| x.id).max().unwrap_or(base_req_id);
                 state.fetch_add_request_id(max_req_id - base_req_id);
                 state.insert_requests(&requests);
@@ -228,9 +238,8 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                 compression: 0,
                 r#type: MessageType::Request.into(),
             };
-            // TODO: it's better to send the requests asynchronously independently from
-            // receiving the index so that we can recover from crashed etc.
-            for request in missing_files_requests.into_iter() {
+
+            for request in file_requests.into_iter() {
                 ems.append(encode_message(header.clone(), request).unwrap());
             }
 
@@ -278,8 +287,9 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
             let state = &mut self.state.lock().await;
             debug!("Got the lock");
             if let Some(request) = state.get_request(&response.id) {
-                check_data(&response.data, &request.hash)
-                    .expect("The hash does not match the data");
+                if let Err(e) = check_data(&response.data, &request.hash) {
+                    panic!("Wrong data received: {}", e);
+                }
                 let weak_hash = compute_weak_hash(&response.data);
                 // TODO: check the weak hash against the hashes in other devices.
                 let file_size: u64 = state
@@ -297,7 +307,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     .await
                     .expect("Error while storing the data");
                 let upload_status = state
-                    .update_index_block(&response.id, weak_hash, &client_device_id)
+                    .update_index_block(&response.id, weak_hash, &self.config.id)
                     .await
                     .expect("It was not possible to update the index");
 
@@ -451,9 +461,9 @@ fn encode_message<T: prost::Message>(
 #[derive(Debug)]
 struct IndexDiff {
     // Files that are not in the index
-    missing_files: Vec<FileInfo>,
-    // Files that have differences
-    conflicting_files: Vec<FileInfo>,
+    newly_added_files: Vec<FileInfo>,
+    newly_added_conflicting_files: Vec<FileInfo>,
+    existing_conflicting_files: Vec<FileInfo>,
 }
 
 fn get_file_max_version(file: &FileInfo) -> &Counter {
@@ -466,8 +476,129 @@ fn get_file_max_version(file: &FileInfo) -> &Counter {
         .expect("The file must be versioned")
 }
 
-/// Returns a files not present in the current index or that is differnt in other indices.
-fn diff_indices(local_index: &Index, remote_indices: &Vec<Index>) -> Result<IndexDiff, String> {
+fn diff_indices(
+    folder: &str,
+    added_index: &Index,
+    existing_index: &Index,
+) -> Result<IndexDiff, String> {
+    if added_index.folder != folder && existing_index.folder != folder {
+        return Err(format!("The indices cover different folders"));
+    }
+
+    let existing_files: HashMap<&String, &FileInfo> =
+        existing_index.files.iter().map(|f| (&f.name, f)).collect();
+
+    let mut newly_added_files: Vec<FileInfo> = Default::default();
+    let mut newly_added_conflicting_files: Vec<FileInfo> = Default::default();
+    let mut existing_conflicting_files: Vec<FileInfo> = Default::default();
+
+    for newly_added_file in added_index.files.iter() {
+        if let Some(existing_file) = existing_files.get(&newly_added_file.name) {
+            match partial_cmp_file_version(existing_file, newly_added_file) {
+                Some(Ordering::Less) => {
+                    newly_added_files.push(newly_added_file.clone());
+                }
+                Some(Ordering::Equal) => {}
+                Some(Ordering::Greater) => { /* the existing file is newer than the added file*/ }
+                None => match partial_cmp_file_timestamp(existing_file, newly_added_file) {
+                    Ordering::Less => {
+                        newly_added_conflicting_files.push(newly_added_file.clone());
+                    }
+                    Ordering::Greater => {
+                        existing_conflicting_files.push(newly_added_file.clone());
+                    }
+                    Ordering::Equal => {
+                        panic!("It should mean we are comparing the same file, which should not happen");
+                    }
+                },
+            };
+        } else {
+            newly_added_files.push(newly_added_file.clone());
+        }
+    }
+
+    let diff = IndexDiff {
+        newly_added_files,
+        newly_added_conflicting_files,
+        existing_conflicting_files,
+    };
+
+    debug!("Diff: {:?}", &diff);
+
+    Ok(diff)
+}
+
+/// Compares [a] and [b] based on the version according to https://docs.syncthing.net/specs/bep-v1.html#fields-fileinfo-message.
+fn partial_cmp_file_version(a: &FileInfo, b: &FileInfo) -> Option<Ordering> {
+    trace!("partial_cmp_file_version\na: {:?}\nb: {:?}", a, b);
+    let max_counter_a = a
+        .version
+        .as_ref()
+        .unwrap()
+        .counters
+        .iter()
+        .max_by_key(|c| c.value)
+        .unwrap();
+    let max_counter_b = b
+        .version
+        .as_ref()
+        .unwrap()
+        .counters
+        .iter()
+        .max_by_key(|c| c.value)
+        .unwrap();
+
+    let res = if max_counter_a.value < max_counter_b.value {
+        Some(Ordering::Less)
+    } else if max_counter_a.value > max_counter_b.value {
+        Some(Ordering::Greater)
+    } else if max_counter_a.value == max_counter_b.value && max_counter_a.id == max_counter_b.id {
+        Some(Ordering::Equal)
+    } else {
+        None
+    };
+
+    trace!("partial_cmp_file_version: {:?}", res);
+    res
+}
+
+/// Compares [a] and [b] based on the timestamps.
+/// This is used in case of conflicts.
+fn partial_cmp_file_timestamp(a: &FileInfo, b: &FileInfo) -> Ordering {
+    trace!("a: {:?}\nb {:?}", a, b);
+
+    if a.modified_s < b.modified_s {
+        return Ordering::Less;
+    } else if a.modified_s == b.modified_s && a.modified_ns < b.modified_ns {
+        return Ordering::Less;
+    } else if a.modified_s > b.modified_s {
+        return Ordering::Greater;
+    } else if a.modified_s == b.modified_s && a.modified_ns > b.modified_ns {
+        return Ordering::Greater;
+    } else {
+        let max_counter_a = a
+            .version
+            .as_ref()
+            .unwrap()
+            .counters
+            .iter()
+            .max_by_key(|c| c.value)
+            .unwrap();
+        let max_counter_b = b
+            .version
+            .as_ref()
+            .unwrap()
+            .counters
+            .iter()
+            .max_by_key(|c| c.value)
+            .unwrap();
+
+        return max_counter_a.value.cmp(&max_counter_b.value);
+    }
+}
+
+/// Returns files not present in the current index or that are differnt in other indices.
+fn diff_indices_old(local_index: &Index, remote_indices: &Vec<Index>) -> Result<IndexDiff, String> {
     if remote_indices
         .iter()
         .any(|x| x.folder != local_index.folder)
@@ -476,7 +607,7 @@ fn diff_indices(local_index: &Index, remote_indices: &Vec<Index>) -> Result<Inde
     }
 
     let mut conflicting_files: HashMap<String, Vec<FileInfo>> = Default::default();
-    let mut missing_files: HashMap<String, Vec<FileInfo>> = Default::default();
+    let mut newly_added_files: HashMap<String, Vec<FileInfo>> = Default::default();
 
     let local_files: HashMap<&String, &FileInfo> =
         local_index.files.iter().map(|f| (&f.name, f)).collect();
@@ -491,7 +622,7 @@ fn diff_indices(local_index: &Index, remote_indices: &Vec<Index>) -> Result<Inde
                         .or_insert(vec![remote_file.clone()]);
                 }
             } else {
-                missing_files
+                newly_added_files
                     .entry(remote_file.name.clone())
                     .and_modify(|fs| fs.push(remote_file.clone()))
                     .or_insert(vec![remote_file.clone()]);
@@ -500,8 +631,9 @@ fn diff_indices(local_index: &Index, remote_indices: &Vec<Index>) -> Result<Inde
     }
 
     let diff = IndexDiff {
-        missing_files: most_recent(missing_files),
-        conflicting_files: most_recent(conflicting_files),
+        newly_added_files: most_recent(newly_added_files),
+        newly_added_conflicting_files: most_recent(conflicting_files),
+        existing_conflicting_files: Default::default(),
     };
 
     debug!("Index diff: {:?}", diff);
@@ -525,52 +657,31 @@ fn most_recent(fs: HashMap<String, Vec<FileInfo>>) -> Vec<FileInfo> {
         .collect()
 }
 
-/// Checks if a remote file has a timestamp larger than the existing one as specified in
-/// https://docs.syncthing.net/users/syncing.html#conflicting-changes.
 fn file_has_conflict(local_file: &FileInfo, remote_file: &FileInfo) -> bool {
     trace!(
         "local file: {:?}\nremote file {:?}",
         local_file,
         remote_file
     );
-    if local_file.modified_s > remote_file.modified_s {
-        return false;
-    }
+    let max_counter_local_file = local_file
+        .version
+        .as_ref()
+        .unwrap()
+        .counters
+        .iter()
+        .max_by_key(|c| c.value)
+        .unwrap();
+    let max_counter_remote_file = remote_file
+        .version
+        .as_ref()
+        .unwrap()
+        .counters
+        .iter()
+        .max_by_key(|c| c.value)
+        .unwrap();
 
-    if local_file.modified_s == remote_file.modified_s
-        && local_file.modified_ns > remote_file.modified_ns
-    {
-        return false;
-    }
-
-    if local_file.modified_s == remote_file.modified_s
-        && local_file.modified_ns == remote_file.modified_ns
-    {
-        let mut has_conflict = false;
-
-        has_conflict = has_conflict || local_file.size != remote_file.size;
-        has_conflict = has_conflict || local_file.block_size != remote_file.block_size;
-        has_conflict = has_conflict || local_file.permissions != remote_file.permissions;
-        has_conflict = has_conflict || local_file.modified_by != remote_file.modified_by;
-        has_conflict = has_conflict || local_file.deleted != remote_file.deleted;
-        has_conflict = has_conflict || local_file.invalid != remote_file.invalid;
-        has_conflict = has_conflict || local_file.no_permissions != remote_file.no_permissions;
-        has_conflict = has_conflict || local_file.symlink_target != remote_file.symlink_target;
-
-        if !has_conflict {
-            for i in 0..local_file.blocks.len() {
-                if local_file.blocks[i] != remote_file.blocks[i] {
-                    has_conflict = true;
-                    break;
-                }
-            }
-        }
-
-        // TODO: add selection of device with largest id  as per https://docs.syncthing.net/users/syncing.html#conflicting-changes.;
-        return has_conflict;
-    }
-
-    true
+    max_counter_local_file.value == max_counter_remote_file.value
+        && max_counter_local_file.id != max_counter_remote_file.id
 }
 
 fn file_modified_in_patch(base_file_info: &FileInfo, patch_file_info: &FileInfo) -> bool {
@@ -582,16 +693,16 @@ fn file_modified_in_patch(base_file_info: &FileInfo, patch_file_info: &FileInfo)
 
 // TODO: maybe it might make sense to pass an iterator to the function to generate the ids so that
 // we can be more flexible? Check if that's an overkill.
-fn create_requests(
-    base_request_id: i32,
-    folder: &String,
-    missing_files: Vec<FileInfo>,
-) -> Vec<Request> {
+fn create_requests(base_request_id: i32, folder: &String, files: Vec<FileInfo>) -> Vec<Request> {
     let mut request_id = base_request_id;
     let mut res: Vec<Request> = vec![];
-    for file in missing_files.iter() {
+    for file in files.iter() {
         for block in file.blocks.iter() {
             request_id += 1;
+            debug!(
+                "Outgoing request {} with hash {:?}",
+                request_id, &block.hash
+            );
             let request = Request {
                 id: request_id,
                 folder: folder.clone(),
@@ -607,6 +718,29 @@ fn create_requests(
     res
 }
 
+fn requests_from_blocks(base_request_id: i32, block_ids: Vec<BlockInfoExt>) -> Vec<Request> {
+    let mut request_id = base_request_id;
+    let mut res: Vec<Request> = vec![];
+    for block_id in block_ids.into_iter() {
+        request_id += 1;
+        debug!(
+            "Outgoing request {} with hash {:?}",
+            request_id, &block_id.hash
+        );
+        let request = Request {
+            id: request_id,
+            folder: block_id.folder,
+            name: block_id.name,
+            offset: block_id.offset,
+            size: block_id.size,
+            hash: block_id.hash.clone(),
+            from_temporary: false,
+        };
+        res.push(request)
+    }
+    res
+}
+
 fn check_data(data: &[u8], hash: &[u8]) -> Result<(), String> {
     debug!("Start checking the hashes");
     let mut hasher_sha256 = Sha256::new();
@@ -616,7 +750,10 @@ fn check_data(data: &[u8], hash: &[u8]) -> Result<(), String> {
     if data_hash == hash {
         Ok(())
     } else {
-        Err(format!("Hash of incoming data does not match request data"))
+        Err(format!(
+            "Hash of incoming data does not match requested data, expected {:?}, got {:?}",
+            hash, data_hash
+        ))
     }
 }
 

@@ -28,10 +28,7 @@ function run_diff() {
   fi
 }
 
-export RUST_BACKTRACE=1
-export RUSTFLAGS=-Awarnings
-export RUST_LOG=info,grizol=debug
-export DATABASE_URL="sqlite:tests/util/grizol.db"
+source scripts/env.sh
 cargo build
 cp target/debug/grizol tests/util/grizol
 
@@ -54,7 +51,6 @@ export SYNCTHING_PID=$!
 echo "started syncthing with pid ${SYNCTHING_PID}"
 
 while [[ -z $(rg 'Ready to synchronize "orig_dir"' /tmp/syncthing) ]]; do sleep 1; done
-
 echo "# 1: Test adding data"
 scripts/create_random_files.sh tests/util/orig_dir/ 3
 while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 3 ]]; do sleep 1; done
@@ -64,6 +60,9 @@ run_diff tests/util/orig_dir tests/util/dest_dir
 # scripts/create_random_files.sh tests/util/orig_dir/ 3
 # while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 6 ]]; do sleep 1; done
 # run_diff tests/util/orig_dir tests/util/dest_dir
+
+# echo 'press Enter to continue'
+# read a
 
 echo "# 3: Test modifying data"
 file_name=$(ls tests/util/orig_dir/ | sort | head -n 1)
