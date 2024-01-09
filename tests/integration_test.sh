@@ -12,7 +12,7 @@ function controlled_exit() {
 }
 
 function trigger_syncthing_rescan() {
-  sleep 1
+  while [[ $(rg 'Device .* client is .grizol' /tmp/syncthing | wc -l) -lt 1 ]]; do sleep 1; done
   curl 'http://localhost:8384/rest/db/scan' \
     -X 'POST' \
     -H 'X-CSRF-Token-RFJWU2I: DRzPJNiGgMhcPchiAEbZPnptv6qsAwXa' \
@@ -59,31 +59,35 @@ export SYNCTHING_PID=$!
 echo "started syncthing with pid ${SYNCTHING_PID}"
 
 while [[ -z $(rg 'Ready to synchronize "orig_dir"' /tmp/syncthing) ]]; do sleep 1; done
-echo "# 1: Test adding data"
+echo "# Test adding data"
 scripts/create_random_files.sh tests/util/orig_dir/ 3
 trigger_syncthing_rescan
 while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 3 ]]; do sleep 1; done
 run_diff tests/util/orig_dir tests/util/dest_dir
 
-echo "# 2: Test adding more data"
+echo "# Test adding more data"
 scripts/create_random_files.sh tests/util/orig_dir/ 3
 trigger_syncthing_rescan
 while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 6 ]]; do sleep 1; done
 run_diff tests/util/orig_dir tests/util/dest_dir
 
-echo "# 3: Test modifying data"
+echo "# Test modifying data"
 file_name=$(ls tests/util/orig_dir/ | sort | head -n 1)
 head -c 100 "tests/util/orig_dir/${file_name}" > "tests/util/orig_dir/${file_name}" 
 trigger_syncthing_rescan
 while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 7 ]]; do sleep 1; done
 run_diff tests/util/orig_dir tests/util/dest_dir
 
-# echo "# 4: Test deleting data"
-# file_name=$(ls tests/util/orig_dir/ | sort | head -n 1)
-# rm "tests/util/orig_dir/${file_name}"
-# while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 8 ]]; do sleep 1; done
-# run_diff tests/util/orig_dir tests/util/dest_dir
+echo "# Test deleting data"
+file_name=$(ls tests/util/orig_dir/ | sort | head -n 1)
+rm "tests/util/orig_dir/${file_name}"
+trigger_syncthing_rescan
+while [[ $(rg 'File .* was deleted on device' /tmp/grizol | wc -l) -ne 1 ]]; do sleep 1; done
+if [[ ! -f tests/util/orig_dir/{file_name} && -f tests/util/dest_dir/${file_name} ]]; then
+    echo "Success: file was deleted remotely but not locally"
+fi
+run_diff tests/util/orig_dir tests/util/dest_dir
 
 # Ensure not to be waiting forever
-sleep 10000
+# sleep 10000
 kill ${GRIZOL_PID} ${SYNCTHING_PID}

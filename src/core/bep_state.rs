@@ -1041,6 +1041,14 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .unwrap();
 
         for file in file_info.into_iter() {
+            if file.deleted {
+                // Load baring debug statement for the integration tests
+                debug!(
+                    "File '{}' was deleted on device '{}', it will not be deleted here ",
+                    &file.name, device_id
+                );
+                continue;
+            }
             // Rename according to
             // https://docs.syncthing.net/users/syncing.html#conflicting-changes
             if move_file {
