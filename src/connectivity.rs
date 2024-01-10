@@ -1,23 +1,14 @@
 use crate::device_id::DeviceId;
 use crate::grizol;
 
-
-
-use rustls::server::{
-    ClientCertVerified,
-    ClientCertVerifier,
-};
+use rustls::server::{ClientCertVerified, ClientCertVerifier};
 use rustls::Certificate;
 use rustls::DistinguishedName;
 use rustls::{self};
-use sha2::{Digest};
-
 
 use std::collections::HashSet;
 use std::fs;
-
-use std::io::{BufReader};
-
+use std::io::BufReader;
 
 use std::sync::Arc;
 use std::sync::Mutex;
