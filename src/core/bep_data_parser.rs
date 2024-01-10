@@ -3,7 +3,6 @@
 
 use crate::syncthing;
 use prost::Message;
-use rand::prelude::*;
 
 pub const MAGIC_NUMBER: [u8; 4] = [0x2e, 0xa7, 0xd9, 0x0b];
 
@@ -162,7 +161,6 @@ impl IncomingMessage {
             .header_byte_len()
             .map(|header_byte_len| HEADER_START + header_byte_len - self.total_byte_len());
 
-        missing_bytes.map(|x| assert!(x >= 0));
         missing_bytes
     }
     fn missing_message_bytes(&self) -> Option<usize> {
@@ -171,14 +169,12 @@ impl IncomingMessage {
                 let missing_bytes = self
                     .message_byte_len()
                     .map(|mbl| mbl + HELLO_START - self.data.len());
-                missing_bytes.map(|x| assert!(x >= 0));
                 missing_bytes
             }
             BepAuthStatus::PostHello => self.message_start_pos().and_then(|message_start_pos| {
                 let missing_bytes = self
                     .message_byte_len()
                     .map(|mbl| mbl + message_start_pos - self.data.len());
-                missing_bytes.map(|x| assert!(x >= 0));
                 missing_bytes
             }),
         }
@@ -630,7 +626,7 @@ mod test {
     }
 
     #[test]
-    fn parse_incoming_data__cluster_single_block__succeeds() {
+    fn parseincomingdata_clustersingleblock_succeeds() {
         let mut data_parser = BepDataParser::new();
         let mut incoming_data: Vec<u8> = vec![];
         incoming_data.extend(raw_hello_message());

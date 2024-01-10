@@ -5,28 +5,12 @@ pub mod bep_data_parser;
 pub mod bep_processor;
 pub mod bep_state;
 
-
-
 use crate::device_id::DeviceId;
 use crate::grizol;
 
-
-
-
-use futures::future::{Future, FutureExt};
-
-use rand::prelude::*;
-use sha2::{Digest};
-
-
-use std::collections::{HashSet};
+use std::collections::HashSet;
 use std::convert::From;
 use std::path::Path;
-use std::pin::Pin;
-use std::time::{Duration};
-
-
-const PING_INTERVAL: Duration = Duration::from_secs(45);
 
 // TODO: rethink this structure, e.g. if we should store CompleteMessages and encode them at the
 // time of reading.
@@ -107,5 +91,3 @@ impl From<grizol::Config> for BepConfig {
         }
     }
 }
-
-type BepReply<'a> = Pin<Box<dyn Future<Output = EncodedMessages> + Send + 'a>>;
