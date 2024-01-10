@@ -5,7 +5,7 @@ use std::convert::Into;
 use std::convert::TryFrom;
 use std::fmt;
 use std::fs::File;
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use std::path::Path;
 
 const DEVICE_ID_LEN: usize = 32;

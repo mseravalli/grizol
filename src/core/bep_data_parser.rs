@@ -1,17 +1,17 @@
 // Include the `syncthing` module, which is generated from syncthing.proto.
 // It is important to maintain the same structure as in the proto.
-use crate::device_id::DeviceId;
+
 use crate::syncthing;
 use prost::Message;
 use rand::prelude::*;
-use std::array::TryFromSliceError;
-use std::collections::HashSet;
-use std::io::Write;
-use std::path::Path;
-use std::sync::mpsc::{Receiver, Sender};
-use std::time::{Duration, Instant};
-use syncthing::Header;
-use syncthing::Hello;
+
+
+
+
+
+
+
+
 
 pub const MAGIC_NUMBER: [u8; 4] = [0x2e, 0xa7, 0xd9, 0x0b];
 

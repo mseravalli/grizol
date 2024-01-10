@@ -1,6 +1,6 @@
-use crate::syncthing::{ClusterConfig, Index, Request};
-use crate::DeviceId;
-use prost::Message;
+use crate::syncthing::{Request};
+
+
 use sha2::{Digest, Sha256};
 use std::io;
 use tokio::fs::{File, OpenOptions};
@@ -62,13 +62,13 @@ impl StorageManager {
     }
 
     // Always creates a new file if it does not exist
-    async fn create_empty_file(&self, rel_path: &str, file_size: u64) -> io::Result<(File)> {
+    async fn create_empty_file(&self, rel_path: &str, file_size: u64) -> io::Result<File> {
         debug!(
             "Creating new file of size {} under {}",
             &file_size, rel_path
         );
         // TODO: create the folder first if that does not exist
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)

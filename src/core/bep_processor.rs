@@ -1,19 +1,19 @@
-use crate::core::bep_data_parser::{BepDataParser, CompleteMessage, MAGIC_NUMBER};
+use crate::core::bep_data_parser::{CompleteMessage, MAGIC_NUMBER};
 use crate::core::bep_state::{BepState, BlockInfoExt, StorageStatus};
-use crate::core::{BepConfig, BepReply, EncodedMessages, UploadStatus};
+use crate::core::{BepConfig, EncodedMessages, UploadStatus};
 use crate::device_id::DeviceId;
 use crate::storage::StorageManager;
 use crate::syncthing;
 use chrono::prelude::*;
-use chrono_timesource::{ManualTimeSource, TimeSource};
+use chrono_timesource::{TimeSource};
 use prost::Message;
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::SqlitePool;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap};
 use std::sync::Arc;
 use syncthing::{
-    BlockInfo, Close, ClusterConfig, Counter, ErrorCode, FileInfo, Header, Hello, Index,
+    Close, ClusterConfig, Counter, ErrorCode, FileInfo, Header, Hello, Index,
     IndexUpdate, MessageType, Ping, Request, Response,
 };
 use tokio::sync::Mutex;
@@ -53,12 +53,12 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
             CompleteMessage::Response(x) => self.handle_response(x, client_device_id).await,
             CompleteMessage::Ping(x) => self.handle_ping(x, client_device_id).await,
             CompleteMessage::Close(x) => self.handle_close(x, client_device_id).await,
-            CompleteMessage::DownloadProgress(x) => todo!(),
+            CompleteMessage::DownloadProgress(_x) => todo!(),
             _ => todo!(),
         }
     }
 
-    async fn handle_hello(&self, hello: Hello, client_device_id: DeviceId) -> Vec<EncodedMessages> {
+    async fn handle_hello(&self, _hello: Hello, _client_device_id: DeviceId) -> Vec<EncodedMessages> {
         debug!("Handling Hello");
         vec![self.hello()]
     }
@@ -208,7 +208,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     .await
                     .expect("The local index must exist");
                 // TODO: ideally we should filter out the local index from all the indices
-                let indices = state.indices(Some(&folder), None).await;
+                let _indices = state.indices(Some(&folder), None).await;
                 let diff = diff_indices(&folder, &received_index, &local_index)
                     .expect("Should pass the same folders");
                 state
@@ -253,7 +253,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
     async fn handle_request(
         &self,
         request: Request,
-        client_device_id: DeviceId,
+        _client_device_id: DeviceId,
     ) -> Vec<EncodedMessages> {
         debug!("Handling Request");
         debug!("{:?}", request);
@@ -264,7 +264,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
     async fn handle_response(
         &self,
         response: Response,
-        client_device_id: DeviceId,
+        _client_device_id: DeviceId,
     ) -> Vec<EncodedMessages> {
         debug!("Handling Response");
         debug!(
@@ -330,13 +330,13 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         vec![res.await]
     }
 
-    async fn handle_ping(&self, ping: Ping, client_device_id: DeviceId) -> Vec<EncodedMessages> {
+    async fn handle_ping(&self, ping: Ping, _client_device_id: DeviceId) -> Vec<EncodedMessages> {
         debug!("Handling Ping");
         trace!("{:?}", ping);
         vec![]
     }
 
-    async fn handle_close(&self, close: Close, client_device_id: DeviceId) -> Vec<EncodedMessages> {
+    async fn handle_close(&self, close: Close, _client_device_id: DeviceId) -> Vec<EncodedMessages> {
         debug!("Handling Close");
         trace!("{:?}", close);
         vec![]
@@ -645,7 +645,7 @@ fn diff_indices_old(local_index: &Index, remote_indices: &Vec<Index>) -> Result<
 fn most_recent(fs: HashMap<String, Vec<FileInfo>>) -> Vec<FileInfo> {
     // TODO: in case of tie use the device id as per https://docs.syncthing.net/users/syncing.html#conflicting-changes.
     fs.iter()
-        .map(|(k, v)| {
+        .map(|(_k, v)| {
             v.iter().max_by(|a, b| {
                 a.modified_s
                     .cmp(&b.modified_s)
@@ -757,6 +757,6 @@ fn check_data(data: &[u8], hash: &[u8]) -> Result<(), String> {
     }
 }
 
-fn compute_weak_hash(data: &[u8]) -> u32 {
+fn compute_weak_hash(_data: &[u8]) -> u32 {
     0
 }

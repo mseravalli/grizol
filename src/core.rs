@@ -5,29 +5,26 @@ pub mod bep_data_parser;
 pub mod bep_processor;
 pub mod bep_state;
 
-use crate::core::bep_data_parser::{BepDataParser, CompleteMessage, MAGIC_NUMBER};
-use crate::core::bep_state::BepState;
+
+
 use crate::device_id::DeviceId;
 use crate::grizol;
-use crate::storage;
-use crate::storage::StorageManager;
+
+
 use crate::syncthing;
-use core::future::IntoFuture;
+
 use futures::future::{Future, FutureExt};
-use prost::Message;
+
 use rand::prelude::*;
-use sha2::{Digest, Sha256};
-use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
-use std::array::TryFromSliceError;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use sha2::{Digest};
+
+
+use std::collections::{HashSet};
 use std::convert::From;
 use std::path::Path;
 use std::pin::Pin;
-use std::time::{Duration, Instant};
-use syncthing::{
-    BlockInfo, Close, ClusterConfig, Counter, ErrorCode, FileInfo, Header, Hello, Index,
-    IndexUpdate, MessageType, Ping, Request, Response,
-};
+use std::time::{Duration};
+
 
 const PING_INTERVAL: Duration = Duration::from_secs(45);
 

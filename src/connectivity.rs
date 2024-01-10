@@ -1,24 +1,24 @@
 use crate::device_id::DeviceId;
 use crate::grizol;
-use clap::Parser;
-use data_encoding::BASE32;
-use mio::net::{TcpListener, TcpStream};
+
+
+
 use rustls::server::{
-    AllowAnyAnonymousOrAuthenticatedClient, AllowAnyAuthenticatedClient, ClientCertVerified,
-    ClientCertVerifier, NoClientAuth,
+    ClientCertVerified,
+    ClientCertVerifier,
 };
 use rustls::Certificate;
 use rustls::DistinguishedName;
-use rustls::{self, RootCertStore, ServerConnection};
-use sha2::{Digest, Sha256};
-use std::cell::RefCell;
-use std::collections::HashMap;
+use rustls::{self};
+use sha2::{Digest};
+
+
 use std::collections::HashSet;
 use std::fs;
-use std::io;
-use std::io::{BufReader, Read, Write};
-use std::net;
-use std::rc::Rc;
+
+use std::io::{BufReader};
+
+
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -59,8 +59,8 @@ impl ClientCertVerifier for PresharedAuth {
     fn verify_client_cert(
         &self,
         end_entity: &Certificate,
-        intermediates: &[Certificate],
-        now: SystemTime,
+        _intermediates: &[Certificate],
+        _now: SystemTime,
     ) -> Result<ClientCertVerified, rustls::Error> {
         trace!("verifying the certificate");
         let client_id = DeviceId::from(end_entity);

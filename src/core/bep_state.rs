@@ -2,14 +2,14 @@ use crate::core::{BepConfig, UploadStatus};
 use crate::device_id::DeviceId;
 use crate::syncthing;
 use chrono::prelude::*;
-use chrono_timesource::{ManualTimeSource, TimeSource};
+use chrono_timesource::{TimeSource};
 use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::{HashMap};
+use std::path::{PathBuf};
 use std::sync::Arc;
 use syncthing::{
-    BlockInfo, Close, ClusterConfig, Compression, Counter, ErrorCode, FileInfo, Header, Hello,
-    Index, IndexUpdate, MessageType, Ping, Request, Response,
+    BlockInfo, ClusterConfig, Counter, FileInfo,
+    Index, Request,
 };
 use tokio::sync::Mutex;
 
@@ -66,13 +66,13 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             outgoing_requests: Default::default(),
         }
     }
-    async fn init_device(&self, folder: &str) {
+    async fn init_device(&self, _folder: &str) {
         todo!()
     }
 
     pub async fn init_index(&self, folder: &str, device_id: &DeviceId) {
         let device_id = device_id.to_string();
-        let insert_res = sqlx::query!(
+        let _insert_res = sqlx::query!(
             "
         INSERT INTO bep_index (
             device,
@@ -100,7 +100,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .unwrap();
 
         // We have a cascading removal.
-        let insert_res = sqlx::query!(
+        let _insert_res = sqlx::query!(
             "
                 DELETE FROM bep_file_info
                 WHERE folder = ? AND device = ?;
@@ -115,7 +115,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         for file in index.files.into_iter() {
             trace!("Updating index, inserting file {}", &file.name);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
-            let insert_res = sqlx::query!(
+            let _insert_res = sqlx::query!(
                 r#"
             INSERT INTO bep_file_info (
                 folder        ,
@@ -181,7 +181,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             {
                 let short_id: Vec<u8> = counter.id.to_be_bytes().into();
                 let version_value: i64 = counter.value.try_into().unwrap();
-                let insert_res = sqlx::query!(
+                let _insert_res = sqlx::query!(
                     r#"
                     INSERT INTO bep_file_version (
                         file_folder ,
@@ -208,7 +208,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             let not_stored: i32 = StorageStatus::NotStored.into();
 
             for block in file.blocks.iter() {
-                let insert_res = sqlx::query!(
+                let _insert_res = sqlx::query!(
                     r#"
                     INSERT INTO bep_block_info (
                         file_name,  
@@ -298,7 +298,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     .expect("Wrong device id format")
                     .to_string();
 
-                let insert_res = sqlx::query!(
+                let _insert_res = sqlx::query!(
                     "
                     INSERT INTO bep_devices (
                         folder                     ,
@@ -543,7 +543,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
     pub async fn update_index_block(
         &self,
         request_id: &i32,
-        weak_hash: u32,
+        _weak_hash: u32,
         device_id: &DeviceId,
     ) -> Result<UploadStatus, String> {
         let device_id = device_id.to_string();
@@ -557,7 +557,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
         let stored_locally: i32 = StorageStatus::StoredLocally.into();
         let block_hash = request.hash.clone();
-        let insert_res = sqlx::query!(
+        let _insert_res = sqlx::query!(
             r#"
             UPDATE OR ROLLBACK bep_block_info
             SET storage_status = ?
@@ -645,7 +645,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .await
             .unwrap();
 
-        let mut blocks: Vec<BlockInfoExt> = file_blocks
+        let blocks: Vec<BlockInfoExt> = file_blocks
             .unwrap()
             .into_iter()
             .map(|block| BlockInfoExt {
@@ -824,7 +824,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             })
             .collect();
 
-        let folders: Vec<(syncthing::Folder)> = folders
+        let folders: Vec<syncthing::Folder> = folders
             .await
             .expect("Error occured")
             .into_iter()
@@ -839,8 +839,8 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     paused: x.paused == 1,
                     devices: devices
                         .iter()
-                        .filter(|(f, d)| f == &x.id)
-                        .map(|(f, d)| d.clone())
+                        .filter(|(f, _d)| f == &x.id)
+                        .map(|(_f, d)| d.clone())
                         .collect(),
                 };
                 folder
@@ -872,7 +872,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         for file in file_info.into_iter() {
             trace!("Updating index, inserting file {}", &file.name);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
-            let insert_res = sqlx::query!(
+            let _insert_res = sqlx::query!(
                 r#"
             INSERT INTO bep_file_info (
                 folder        ,
@@ -938,7 +938,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             {
                 let short_id: Vec<u8> = counter.id.to_be_bytes().into();
                 let version_value: i64 = counter.value.try_into().unwrap();
-                let insert_res = sqlx::query!(
+                let _insert_res = sqlx::query!(
                     r#"
                     INSERT INTO bep_file_version (
                         file_folder ,
@@ -965,7 +965,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             let not_stored: i32 = StorageStatus::NotStored.into();
 
             for block in file.blocks.iter() {
-                let insert_res = sqlx::query!(
+                let _insert_res = sqlx::query!(
                     r#"
                     INSERT INTO bep_block_info (
                         file_name,  
@@ -1058,7 +1058,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     new_file_path(&file.name, &device_id, clock.now().unwrap())
                 };
                 // We have a cascading updates.
-                let insert_res = sqlx::query!(
+                let _insert_res = sqlx::query!(
                     "
                     PRAGMA foreign_keys = ON;
                     UPDATE OR ROLLBACK bep_file_info
@@ -1078,7 +1078,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             } else {
                 debug!("Deleting files");
                 // We have a cascading removal.
-                let insert_res = sqlx::query!(
+                let _insert_res = sqlx::query!(
                     "
                     PRAGMA foreign_keys = ON;
                     DELETE FROM bep_file_info
@@ -1095,7 +1095,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
             debug!("Updating index, inserting file {:?}", &file);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
-            let insert_res = sqlx::query!(
+            let _insert_res = sqlx::query!(
                 r#"
             INSERT INTO bep_file_info (
                 folder        ,
@@ -1161,7 +1161,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             {
                 let short_id: Vec<u8> = counter.id.to_be_bytes().into();
                 let version_value: i64 = counter.value.try_into().unwrap();
-                let insert_res = sqlx::query!(
+                let _insert_res = sqlx::query!(
                     r#"
                     INSERT INTO bep_file_version (
                         file_folder ,
@@ -1187,7 +1187,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             let not_stored: i32 = StorageStatus::NotStored.into();
 
             for block in file.blocks.iter() {
-                let insert_res = sqlx::query!(
+                let _insert_res = sqlx::query!(
                     r#"
                     INSERT INTO bep_block_info (
                         file_name,
@@ -1271,11 +1271,11 @@ fn new_file_path(old_file_path: &str, device_id: &str, now: DateTime<Utc>) -> St
     let new_name: PathBuf = name.into();
 
     let new_path_parts = [
-        old_path.parent().map(|x| x.clone().into()),
+        old_path.parent().map(|x| x.into()),
         Some(new_name.clone()),
     ];
 
-    let mut new_path: PathBuf = new_path_parts.iter().flatten().collect();
+    let new_path: PathBuf = new_path_parts.iter().flatten().collect();
     new_path
         .to_str()
         .expect("Not possible to convert into String")

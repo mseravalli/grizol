@@ -14,41 +14,41 @@ mod grizol {
 }
 
 use crate::connectivity::server_config;
-use crate::core::bep_data_parser::{BepDataParser, CompleteMessage};
+use crate::core::bep_data_parser::{BepDataParser};
 use crate::core::bep_processor::BepProcessor;
 use crate::core::{BepConfig, EncodedMessages};
 use crate::device_id::DeviceId;
 use chrono::prelude::*;
 use chrono_timesource::UtcTimeSource;
 use clap::Parser;
-use data_encoding::BASE32;
-use futures::future::FutureExt;
-use prost_reflect::{DescriptorPool, DynamicMessage, Value};
-use prost_types::FileDescriptorSet;
-use rustls_pemfile::{certs, rsa_private_keys};
-use sha2::{Digest, Sha256};
+
+
+use prost_reflect::{DescriptorPool, DynamicMessage};
+
+
+use sha2::{Digest};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::Executor;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::collections::HashSet;
+
+
+
 use std::fs;
-use std::fs::File;
-use std::io::{self, BufReader, Read, Write};
+
+use std::io::{self, Read, Write};
 use std::net;
-use std::net::ToSocketAddrs;
-use std::path::Path;
-use std::rc::Rc;
+
+
+
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::thread;
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant, UNIX_EPOCH};
-use tokio::io::{copy, sink, split, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+
+
+use std::time::{Duration};
+use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio::task::JoinSet;
-use tokio_rustls::rustls::{self, Certificate, PrivateKey};
+
+
 use tokio_rustls::TlsAcceptor;
 
 #[derive(Parser, Debug, Clone)]
