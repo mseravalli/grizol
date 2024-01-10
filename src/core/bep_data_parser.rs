@@ -5,14 +5,6 @@ use crate::syncthing;
 use prost::Message;
 use rand::prelude::*;
 
-
-
-
-
-
-
-
-
 pub const MAGIC_NUMBER: [u8; 4] = [0x2e, 0xa7, 0xd9, 0x0b];
 
 const HELLO_LEN_START: usize = 4;
@@ -476,9 +468,9 @@ impl BepDataParser {
 
 #[cfg(test)]
 mod test {
-    use crate::core::{BepDataParser, CompleteMessage};
+    use crate::core::bep_data_parser::BepDataParser;
+    use crate::core::bep_data_parser::CompleteMessage;
     use crate::syncthing;
-    use crate::DeviceId;
     use std::io::Write;
 
     fn setup_logging() {
@@ -622,10 +614,10 @@ mod test {
         let mut data_parser = BepDataParser::new();
         let incoming_data: Vec<u8> = raw_hello_message();
 
-        let complete_messages = data_parser.parse_incoming_data(&incoming_data[..1]);
-        let complete_messages = data_parser.parse_incoming_data(&incoming_data[1..4]);
-        let complete_messages = data_parser.parse_incoming_data(&incoming_data[4..10]);
-        let complete_messages = data_parser.parse_incoming_data(&incoming_data[10..20]);
+        let _complete_messages = data_parser.parse_incoming_data(&incoming_data[..1]);
+        let _complete_messages = data_parser.parse_incoming_data(&incoming_data[1..4]);
+        let _complete_messages = data_parser.parse_incoming_data(&incoming_data[4..10]);
+        let _complete_messages = data_parser.parse_incoming_data(&incoming_data[10..20]);
         let complete_messages = data_parser.parse_incoming_data(&incoming_data[20..]);
 
         assert_eq!(complete_messages.as_ref().unwrap().len(), 1);

@@ -329,8 +329,8 @@ impl StorageManager {
 #[cfg(test)]
 mod test {
     use crate::storage::StorageManager;
-    use crate::syncthing::{ClusterConfig, Index, Request};
-    use std::path::Path;
+    use crate::syncthing::{Request};
+    
 
     // TODO: use a better file path
     fn file_path() -> String {
@@ -358,7 +358,7 @@ mod test {
             .await;
 
         match result {
-            Ok(x) => assert_eq!(0, 0),
+            Ok(_x) => assert_eq!(0, 0),
             Err(e) => {
                 assert_eq!("No error expected", format!("{}", e))
             }
