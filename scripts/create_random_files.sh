@@ -11,8 +11,10 @@ fi
 pushd ${dest_dir}
 
 for i in $(seq 1 ${file_amount}); do
-  file=$(cat /dev/urandom | head -c 2000000 | base32)
-  echo ${file} > $(echo ${file}| head -c 20)
+  file_size=$(echo "scale = 0; ($RANDOM % 10) * 1000000 + $RANDOM" | bc)
+  file_content=$(cat /dev/urandom | head -c ${file_size} | base32)
+  file_name=$(echo ${file_content}| head -c 20)
+  echo ${file_content} > ${file_name}
 done
 
 popd
