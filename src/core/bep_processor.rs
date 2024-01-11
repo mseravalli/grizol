@@ -5,16 +5,16 @@ use crate::device_id::DeviceId;
 use crate::storage::StorageManager;
 use crate::syncthing;
 use chrono::prelude::*;
-use chrono_timesource::{TimeSource};
+use chrono_timesource::TimeSource;
 use prost::Message;
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::SqlitePool;
 use std::cmp::Ordering;
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 use syncthing::{
-    Close, ClusterConfig, Counter, ErrorCode, FileInfo, Header, Hello, Index,
-    IndexUpdate, MessageType, Ping, Request, Response,
+    Close, ClusterConfig, ErrorCode, FileInfo, Header, Hello, Index, IndexUpdate, MessageType,
+    Ping, Request, Response,
 };
 use tokio::sync::Mutex;
 
@@ -54,11 +54,14 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
             CompleteMessage::Ping(x) => self.handle_ping(x, client_device_id).await,
             CompleteMessage::Close(x) => self.handle_close(x, client_device_id).await,
             CompleteMessage::DownloadProgress(_x) => todo!(),
-            _ => todo!(),
         }
     }
 
-    async fn handle_hello(&self, _hello: Hello, _client_device_id: DeviceId) -> Vec<EncodedMessages> {
+    async fn handle_hello(
+        &self,
+        _hello: Hello,
+        _client_device_id: DeviceId,
+    ) -> Vec<EncodedMessages> {
         debug!("Handling Hello");
         vec![self.hello()]
     }
@@ -274,7 +277,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         );
 
         if ErrorCode::NoError
-            != ErrorCode::from_i32(response.code).expect("Enum value must be valid")
+            != ErrorCode::try_from(response.code).expect("Enum value must be valid")
         {
             warn!(
                 "Request with id {} genereated an error: {:?} ",
@@ -336,7 +339,11 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         vec![]
     }
 
-    async fn handle_close(&self, close: Close, _client_device_id: DeviceId) -> Vec<EncodedMessages> {
+    async fn handle_close(
+        &self,
+        close: Close,
+        _client_device_id: DeviceId,
+    ) -> Vec<EncodedMessages> {
         debug!("Handling Close");
         trace!("{:?}", close);
         vec![]
@@ -462,18 +469,8 @@ fn encode_message<T: prost::Message>(
 struct IndexDiff {
     // Files that are not in the index
     newly_added_files: Vec<FileInfo>,
-    newly_added_conflicting_files: Vec<FileInfo>,
-    existing_conflicting_files: Vec<FileInfo>,
-}
-
-fn get_file_max_version(file: &FileInfo) -> &Counter {
-    file.version
-        .as_ref()
-        .expect("The file must be versioned")
-        .counters
-        .iter()
-        .max_by_key(|c| c.value)
-        .expect("The file must be versioned")
+    _newly_added_conflicting_files: Vec<FileInfo>,
+    _existing_conflicting_files: Vec<FileInfo>,
 }
 
 fn diff_indices(
@@ -519,8 +516,8 @@ fn diff_indices(
 
     let diff = IndexDiff {
         newly_added_files,
-        newly_added_conflicting_files,
-        existing_conflicting_files,
+        _newly_added_conflicting_files: newly_added_conflicting_files,
+        _existing_conflicting_files: existing_conflicting_files,
     };
 
     debug!("Diff: {:?}", &diff);
@@ -597,127 +594,8 @@ fn partial_cmp_file_timestamp(a: &FileInfo, b: &FileInfo) -> Ordering {
     }
 }
 
-/// Returns files not present in the current index or that are differnt in other indices.
-fn diff_indices_old(local_index: &Index, remote_indices: &Vec<Index>) -> Result<IndexDiff, String> {
-    if remote_indices
-        .iter()
-        .any(|x| x.folder != local_index.folder)
-    {
-        return Err(format!("The indices cover different folders"));
-    }
-
-    let mut conflicting_files: HashMap<String, Vec<FileInfo>> = Default::default();
-    let mut newly_added_files: HashMap<String, Vec<FileInfo>> = Default::default();
-
-    let local_files: HashMap<&String, &FileInfo> =
-        local_index.files.iter().map(|f| (&f.name, f)).collect();
-
-    for remote_index in remote_indices.iter() {
-        for remote_file in remote_index.files.iter() {
-            if let Some(local_file) = local_files.get(&remote_file.name) {
-                if file_has_conflict(local_file, remote_file) {
-                    conflicting_files
-                        .entry(remote_file.name.clone())
-                        .and_modify(|fs| fs.push(remote_file.clone()))
-                        .or_insert(vec![remote_file.clone()]);
-                }
-            } else {
-                newly_added_files
-                    .entry(remote_file.name.clone())
-                    .and_modify(|fs| fs.push(remote_file.clone()))
-                    .or_insert(vec![remote_file.clone()]);
-            }
-        }
-    }
-
-    let diff = IndexDiff {
-        newly_added_files: most_recent(newly_added_files),
-        newly_added_conflicting_files: most_recent(conflicting_files),
-        existing_conflicting_files: Default::default(),
-    };
-
-    debug!("Index diff: {:?}", diff);
-
-    Ok(diff)
-}
-
-/// Returns the most recent instance for every file
-fn most_recent(fs: HashMap<String, Vec<FileInfo>>) -> Vec<FileInfo> {
-    // TODO: in case of tie use the device id as per https://docs.syncthing.net/users/syncing.html#conflicting-changes.
-    fs.iter()
-        .map(|(_k, v)| {
-            v.iter().max_by(|a, b| {
-                a.modified_s
-                    .cmp(&b.modified_s)
-                    .then(a.modified_ns.cmp(&b.modified_ns))
-            })
-        })
-        .flatten()
-        .map(|x| x.clone())
-        .collect()
-}
-
-fn file_has_conflict(local_file: &FileInfo, remote_file: &FileInfo) -> bool {
-    trace!(
-        "local file: {:?}\nremote file {:?}",
-        local_file,
-        remote_file
-    );
-    let max_counter_local_file = local_file
-        .version
-        .as_ref()
-        .unwrap()
-        .counters
-        .iter()
-        .max_by_key(|c| c.value)
-        .unwrap();
-    let max_counter_remote_file = remote_file
-        .version
-        .as_ref()
-        .unwrap()
-        .counters
-        .iter()
-        .max_by_key(|c| c.value)
-        .unwrap();
-
-    max_counter_local_file.value == max_counter_remote_file.value
-        && max_counter_local_file.id != max_counter_remote_file.id
-}
-
-fn file_modified_in_patch(base_file_info: &FileInfo, patch_file_info: &FileInfo) -> bool {
-    let max_patch_version = get_file_max_version(patch_file_info);
-    let max_base_version = get_file_max_version(base_file_info);
-    max_patch_version.value > max_base_version.value
-        || base_file_info.sequence > base_file_info.sequence
-}
-
 // TODO: maybe it might make sense to pass an iterator to the function to generate the ids so that
 // we can be more flexible? Check if that's an overkill.
-fn create_requests(base_request_id: i32, folder: &String, files: Vec<FileInfo>) -> Vec<Request> {
-    let mut request_id = base_request_id;
-    let mut res: Vec<Request> = vec![];
-    for file in files.iter() {
-        for block in file.blocks.iter() {
-            request_id += 1;
-            debug!(
-                "Outgoing request {} with hash {:?}",
-                request_id, &block.hash
-            );
-            let request = Request {
-                id: request_id,
-                folder: folder.clone(),
-                name: file.name.clone(),
-                offset: block.offset,
-                size: block.size,
-                hash: block.hash.clone(),
-                from_temporary: false,
-            };
-            res.push(request)
-        }
-    }
-    res
-}
-
 fn requests_from_blocks(base_request_id: i32, block_ids: Vec<BlockInfoExt>) -> Vec<Request> {
     let mut request_id = base_request_id;
     let mut res: Vec<Request> = vec![];

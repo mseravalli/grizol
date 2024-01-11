@@ -2,15 +2,12 @@ use crate::core::{BepConfig, UploadStatus};
 use crate::device_id::DeviceId;
 use crate::syncthing;
 use chrono::prelude::*;
-use chrono_timesource::{TimeSource};
+use chrono_timesource::TimeSource;
 use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
-use std::collections::{HashMap};
-use std::path::{PathBuf};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
-use syncthing::{
-    BlockInfo, ClusterConfig, Counter, FileInfo,
-    Index, Request,
-};
+use syncthing::{BlockInfo, ClusterConfig, Counter, FileInfo, Index, Request};
 use tokio::sync::Mutex;
 
 /// Stores BlockInfo and addtitional data to simplify processing.
@@ -28,7 +25,7 @@ pub struct BlockInfoExt {
 pub enum StorageStatus {
     NotStored = 0,
     StoredLocally = 1,
-    StoredRemotely = 2,
+    _StoredRemotely = 2,
 }
 
 impl Into<i32> for StorageStatus {
@@ -42,11 +39,8 @@ pub struct BepState<TS: TimeSource<Utc>> {
     clock: Arc<Mutex<TS>>,
     config: BepConfig,
     db_pool: SqlitePool,
-    indices: HashMap<String, HashMap<DeviceId, syncthing::Index>>,
-    cluster: ClusterConfig,
-    sequence: u64,
+    sequence: i64,
     request_id: i32,
-    conflicting_files: HashMap<(String, String), FileInfo>,
     outgoing_requests: HashMap<i32, Request>,
 }
 
@@ -56,18 +50,10 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             clock,
             config,
             db_pool,
-            indices: Default::default(),
-            cluster: ClusterConfig {
-                folders: Default::default(),
-            },
             sequence: 0,
             request_id: 0,
-            conflicting_files: Default::default(),
             outgoing_requests: Default::default(),
         }
-    }
-    async fn init_device(&self, _folder: &str) {
-        todo!()
     }
 
     pub async fn init_index(&self, folder: &str, device_id: &DeviceId) {
@@ -92,7 +78,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
     }
 
     /// Remove index with same id and replace all the info associated.
-    pub async fn replace_index(&self, index: Index, device_id: &DeviceId) {
+    pub async fn replace_index(&mut self, index: Index, device_id: &DeviceId) {
         let device_id = device_id.to_string();
         sqlx::query!("BEGIN TRANSACTION;")
             .execute(&self.db_pool)
@@ -111,6 +97,8 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         .execute(&self.db_pool)
         .await
         .expect("Failed to execute query");
+
+        self.sequence += 1;
 
         for file in index.files.into_iter() {
             trace!("Updating index, inserting file {}", &file.name);
@@ -164,7 +152,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 file.deleted,
                 file.invalid,
                 file.no_permissions,
-                file.sequence,
+                self.sequence,
                 file.block_size,
                 file.symlink_target,
             )
@@ -1000,6 +988,8 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .unwrap();
     }
 
+    // TODO: This should remove directly the file
+    // TODO: add a method _mv_replace_file_info
     pub async fn rm_replace_file_info(
         &mut self,
         folder: &str,
@@ -1009,17 +999,6 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         debug!("About to remove files: {:?}", file_info);
         self.replace_file_info(folder, device_id, file_info, false)
             .await;
-    }
-
-    // TODO: rethink the interface of this method a bit e.g. should we directly move the file?
-    pub async fn mv_replace_file_info(
-        &mut self,
-        folder: &str,
-        device_id: &DeviceId,
-        file_info: &Vec<FileInfo>,
-    ) -> HashMap<String, String> {
-        self.replace_file_info(folder, device_id, file_info, true)
-            .await
     }
 
     // TODO: use an enum instead of move_file: bool?, it's just an internal method though..
@@ -1270,10 +1249,7 @@ fn new_file_path(old_file_path: &str, device_id: &str, now: DateTime<Utc>) -> St
     ));
     let new_name: PathBuf = name.into();
 
-    let new_path_parts = [
-        old_path.parent().map(|x| x.into()),
-        Some(new_name.clone()),
-    ];
+    let new_path_parts = [old_path.parent().map(|x| x.into()), Some(new_name.clone())];
 
     let new_path: PathBuf = new_path_parts.iter().flatten().collect();
     new_path

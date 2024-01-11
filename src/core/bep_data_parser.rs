@@ -226,9 +226,9 @@ fn decode_post_hello_message(im: &IncomingMessage) -> Result<CompleteMessage, Pa
     let message_start_pos = im.message_start_pos().unwrap();
     // TODO: Use a refence here
     let header = im.header.as_ref().unwrap().clone();
-    let decompressed_raw_message = match syncthing::MessageCompression::from_i32(header.compression)
+    let decompressed_raw_message = match syncthing::MessageCompression::try_from(header.compression)
     {
-        Some(syncthing::MessageCompression::Lz4) => {
+        Ok(syncthing::MessageCompression::Lz4) => {
             let decompress_byte_size_start = message_start_pos;
             let decompress_byte_size_end = decompress_byte_size_start + 4;
             let decompressed_byte_size: usize = u32::from_be_bytes(
@@ -254,7 +254,7 @@ fn decode_post_hello_message(im: &IncomingMessage) -> Result<CompleteMessage, Pa
 
     trace!("Raw message to decode len {}", &raw_msg.len());
 
-    let complete_message: CompleteMessage = match syncthing::MessageType::from_i32(header.r#type)
+    let complete_message: CompleteMessage = match syncthing::MessageType::try_from(header.r#type)
         .unwrap()
     {
         syncthing::MessageType::ClusterConfig => {
@@ -467,26 +467,6 @@ mod test {
     use crate::core::bep_data_parser::BepDataParser;
     use crate::core::bep_data_parser::CompleteMessage;
     use crate::syncthing;
-    use std::io::Write;
-
-    fn setup_logging() {
-        env_logger::builder()
-            .format(|buf, record| {
-                let ts = buf.timestamp_micros();
-                writeln!(
-                    buf,
-                    "{} {} {:?} {}:{}: {}",
-                    ts,
-                    buf.default_level_style(record.level())
-                        .value(record.level()),
-                    std::thread::current().id(),
-                    record.file().unwrap_or("unknown"),
-                    record.line().unwrap_or(0),
-                    record.args()
-                )
-            })
-            .init();
-    }
 
     #[rustfmt::skip]
     fn raw_hello_message() -> Vec<u8> {
@@ -590,7 +570,7 @@ mod test {
     }
 
     #[test]
-    fn parse_incoming_data__hello_single_block__succeeds() {
+    fn parse_incoming_data_hello_single_block_succeeds() {
         let mut data_parser = BepDataParser::new();
         let incoming_data: Vec<u8> = raw_hello_message();
 
@@ -606,7 +586,7 @@ mod test {
     }
 
     #[test]
-    fn parse_incoming_data__hello_multiple_blocks__succeeds() {
+    fn parse_incoming_data_hello_multiple_blocks_succeeds() {
         let mut data_parser = BepDataParser::new();
         let incoming_data: Vec<u8> = raw_hello_message();
 

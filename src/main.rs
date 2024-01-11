@@ -18,15 +18,13 @@ use crate::core::bep_data_parser::BepDataParser;
 use crate::core::bep_processor::BepProcessor;
 use crate::core::{BepConfig, EncodedMessages};
 use crate::device_id::DeviceId;
-use chrono::prelude::*;
 use chrono_timesource::UtcTimeSource;
 use clap::Parser;
 use prost_reflect::{DescriptorPool, DynamicMessage};
-use sha2::Digest;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::Executor;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::net;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -115,7 +113,7 @@ async fn main() -> io::Result<()> {
 
     // We use this to ensure that the device id provided by the connection is assigned only by a
     // sigle client at a time.
-    let device_id_assigner: Arc<Mutex<bool>> = Arc::new(Mutex::new(true));
+    let device_id_assigner: Arc<tokio::sync::Mutex<bool>> = Arc::new(tokio::sync::Mutex::new(true));
 
     loop {
         debug!("Wating for a new connection on {}", &addr);
@@ -133,8 +131,6 @@ async fn main() -> io::Result<()> {
             }
         });
     }
-
-    Ok(())
 }
 
 async fn handle_incoming_data(
@@ -142,10 +138,10 @@ async fn handle_incoming_data(
     tcp_stream: TcpStream,
     acceptor: TlsAcceptor,
     client_device_id: Arc<Mutex<Option<DeviceId>>>,
-    device_id_assigner: Arc<Mutex<bool>>,
+    device_id_assigner: Arc<tokio::sync::Mutex<bool>>,
 ) -> io::Result<()> {
     let (tls_stream, cdid) = {
-        device_id_assigner.lock().unwrap();
+        let _ = device_id_assigner.lock().await;
         let tls_stream = acceptor.accept(tcp_stream).await?;
         let cdid: Option<DeviceId> = { client_device_id.lock().unwrap().clone() };
         (tls_stream, cdid.unwrap())
@@ -198,7 +194,7 @@ async fn handle_incoming_data(
     // FIXME: add a handle here and in case it is reached, return the error
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(Duration::from_secs(45)).await;
+            tokio::time::sleep(PING_INTERVAL).await;
 
             let ping = bep_processor.ping().await;
 

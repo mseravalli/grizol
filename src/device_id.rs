@@ -5,7 +5,7 @@ use std::convert::Into;
 use std::convert::TryFrom;
 use std::fmt;
 use std::fs::File;
-use std::io::{BufReader, Write};
+use std::io::BufReader;
 use std::path::Path;
 
 const DEVICE_ID_LEN: usize = 32;
@@ -207,7 +207,7 @@ fn unluhnify(s: &str) -> Result<String, String> {
     Ok(String::from_iter(res.iter()))
 }
 
-const luhnBase32: [char; 32] = [
+const LUHN_BASE32: [char; 32] = [
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
     'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '2', '3', '4', '5', '6', '7',
 ];
@@ -219,14 +219,14 @@ fn codepoint32(b: char) -> Result<u32, String> {
     } else if '2' <= b && b <= '7' {
         Ok(u32::from(b) + 26 - u32::from('2'))
     } else {
-        Err(format!("Invalid char {} in alphabet {:?}", b, luhnBase32))
+        Err(format!("Invalid char {} in alphabet {:?}", b, LUHN_BASE32))
     }
 }
 
-// luhn32 returns a check digit for the string s, which should be composed
-// of characters from the alphabet luhnBase32.
-// Doesn't follow the actual Luhn algorithm
-// see https://forum.syncthing.net/t/v0-9-0-new-node-id-format/478/6 for more.
+/// luhn32 returns a check digit for the string s, which should be composed
+/// of characters from the alphabet [luhnBase32].
+/// Doesn't follow the actual Luhn algorithm
+/// see https://forum.syncthing.net/t/v0-9-0-new-node-id-format/478/6 for more.
 fn luhn32(s: &[char]) -> Result<char, String> {
     let mut factor = 1;
     let mut sum = 0;
@@ -240,6 +240,6 @@ fn luhn32(s: &[char]) -> Result<char, String> {
         sum += addend;
     }
     let remainder = sum % n;
-    let checkCodepoint = usize::try_from((n - remainder) % n).map_err(|e| e.to_string())?;
-    Ok(char::from(luhnBase32[checkCodepoint]))
+    let check_codepoint = usize::try_from((n - remainder) % n).map_err(|e| e.to_string())?;
+    Ok(char::from(LUHN_BASE32[check_codepoint]))
 }

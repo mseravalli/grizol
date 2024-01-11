@@ -1,13 +1,9 @@
-use crate::syncthing::{Request};
-
+use crate::syncthing::Request;
 
 use sha2::{Digest, Sha256};
 use std::io;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
-
-// TODO: verify this is a reasonable size
-const BUF_SIZE: usize = 1 << 14; // 16 KiB
 
 pub struct StorageManager {
     stage_dir: String,
@@ -81,14 +77,14 @@ impl StorageManager {
         Ok(file)
     }
 
-    pub async fn move_file(&self, orig: &str, dest: &str) {
-        tokio::fs::rename(
-            format!("{}/{}", self.stage_dir, orig),
-            format!("{}/{}", self.stage_dir, dest),
-        )
-        .await
-        .expect("Error while moving the file")
-    }
+    // pub async fn move_file(&self, orig: &str, dest: &str) {
+    //     tokio::fs::rename(
+    //         format!("{}/{}", self.stage_dir, orig),
+    //         format!("{}/{}", self.stage_dir, dest),
+    //     )
+    //     .await
+    //     .expect("Error while moving the file")
+    // }
 }
 
 // pub fn data_from_file_block(
@@ -246,7 +242,8 @@ impl StorageManager {
 //         )),
 //     }
 // }
-
+// // TODO: verify this is a reasonable size
+// const BUF_SIZE: usize = 1 << 14; // 16 KiB
 // fn blocks_from_path(
 //     file_path: &Path,
 //     block_size: usize,
@@ -329,16 +326,10 @@ impl StorageManager {
 #[cfg(test)]
 mod test {
     use crate::storage::StorageManager;
-    use crate::syncthing::{Request};
-    
-
-    // TODO: use a better file path
-    fn file_path() -> String {
-        "/tmp/test_1".to_string()
-    }
+    use crate::syncthing::Request;
 
     #[tokio::test]
-    async fn store_block__new_file__succeeds() {
+    async fn store_block_new_file_succeeds() {
         let storage_manager = StorageManager::new(format!("/tmp/grizol_staging"));
 
         let data = vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
