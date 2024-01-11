@@ -4,6 +4,7 @@ use crate::syncthing;
 use chrono::prelude::*;
 use chrono_timesource::TimeSource;
 use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,9 +29,9 @@ pub enum StorageStatus {
     _StoredRemotely = 2,
 }
 
-impl Into<i32> for StorageStatus {
-    fn into(self) -> i32 {
-        self as i32
+impl From<StorageStatus> for i32 {
+    fn from(val: StorageStatus) -> Self {
+        val as i32
     }
 }
 
@@ -342,7 +343,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
         debug!("Updated internal tracked folders");
 
-        return insert_results;
+        insert_results
     }
 
     pub fn load_request_id(&self) -> i32 {
@@ -371,7 +372,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         let device_ids: Vec<DeviceId> = if let Some(id) = device_id {
             vec![*id]
         } else {
-            let f = folder.clone().unwrap();
+            let f = folder.unwrap();
             sqlx::query!(
                 r#"
                 SELECT device
@@ -411,7 +412,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         let mut res = vec![];
         for folder in folders.iter() {
             for device_id in device_ids.iter() {
-                let index = self.index(&folder, device_id).await;
+                let index = self.index(folder, device_id).await;
                 if let Some(i) = index {
                     res.push(i)
                 }
@@ -464,9 +465,9 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     weak_hash: file.weak_hash.unwrap_or(0).try_into().unwrap(),
                 };
 
-                existing_files
-                    .get_mut(&file.name)
-                    .map(|f| f.blocks.push(bi));
+                if let Some(f) = existing_files.get_mut(&file.name) {
+                    f.blocks.push(bi)
+                }
             } else {
                 let mut short_id: [u8; 8] = [0; 8];
                 for (i, x) in file.modified_by.iter().enumerate() {
@@ -477,14 +478,14 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     r#type: file.r#type.try_into().unwrap(),
                     size: file.size,
                     permissions: file.permissions.try_into().unwrap(),
-                    modified_s: file.modified_s.try_into().unwrap(),
+                    modified_s: file.modified_s,
                     modified_ns: file.modified_ns.try_into().unwrap(),
                     modified_by: u64::from_be_bytes(short_id),
                     deleted: file.deleted == 1,
                     invalid: file.invalid == 1,
                     no_permissions: file.no_permissions == 1,
                     version: Some(syncthing::Vector { counters: vec![] }),
-                    sequence: file.sequence.try_into().unwrap(),
+                    sequence: file.sequence,
                     block_size: file.block_size.try_into().unwrap(),
                     blocks: vec![],
                     symlink_target: file.symlink_target,
@@ -502,7 +503,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         }
 
         for version in file_versions.await.unwrap() {
-            existing_files.get_mut(&version.name).map(|f| {
+            if let Some(f) = existing_files.get_mut(&version.name) {
                 let mut short_id: [u8; 8] = [0; 8];
                 for (i, x) in version.id.iter().enumerate() {
                     short_id[i] = *x;
@@ -511,7 +512,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     id: u64::from_be_bytes(short_id),
                     value: version.value.try_into().unwrap(),
                 })
-            });
+            };
         }
 
         let index = Index {
@@ -588,16 +589,28 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             (block_count.byte_size + block_count.block_size - 1) / block_count.block_size,
             1,
         );
-        if block_count.stored_blocks == expected_blocks {
-            Ok(UploadStatus::AllBlocks)
-        } else if block_count.stored_blocks < expected_blocks {
-            Ok(UploadStatus::BlocksMissing)
-        } else {
-            return Err(format!(
+
+        match block_count.stored_blocks.cmp(&expected_blocks) {
+            Ordering::Equal => Ok(UploadStatus::AllBlocks),
+            Ordering::Less => Ok(UploadStatus::BlocksMissing),
+            Ordering::Greater => {
+                Err(format!(
                 "We ended up storing too many blocks for file: {}, expected blocks {}, actual blocks {}",
                 &request.name, expected_blocks, block_count.stored_blocks
-            ));
+                ))
+            }
         }
+
+        // if block_count.stored_blocks == expected_blocks {
+        //     Ok(UploadStatus::AllBlocks)
+        // } else if block_count.stored_blocks < expected_blocks {
+        //     Ok(UploadStatus::BlocksMissing)
+        // } else {
+        //     return Err(format!(
+        //         "We ended up storing too many blocks for file: {}, expected blocks {}, actual blocks {}",
+        //         &request.name, expected_blocks, block_count.stored_blocks
+        //     ));
+        // }
     }
 
     /// Returns a list of [BlockInfo] filtered by the provided parameters
@@ -741,16 +754,16 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             r#type: file.r#type.try_into().unwrap(),
             size: file.size,
             permissions: file.permissions.try_into().unwrap(),
-            modified_s: file.modified_s.try_into().unwrap(),
+            modified_s: file.modified_s,
             modified_ns: file.modified_ns.try_into().unwrap(),
             modified_by: u64::from_be_bytes(short_id),
             deleted: file.deleted == 1,
             invalid: file.invalid == 1,
             no_permissions: file.no_permissions == 1,
             version: Some(syncthing::Vector { counters: versions }),
-            sequence: file.sequence.try_into().unwrap(),
+            sequence: file.sequence,
             block_size: file.block_size.try_into().unwrap(),
-            blocks: blocks,
+            blocks,
             symlink_target: file.symlink_target,
         };
 
@@ -799,10 +812,10 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 let device = syncthing::Device {
                     id: device_id.into(),
                     name: x.name,
-                    addresses: x.addresses.split(",").map(|y| y.to_string()).collect(),
+                    addresses: x.addresses.split(',').map(|y| y.to_string()).collect(),
                     compression: syncthing::Compression::Never.into(), // TODO: update
                     cert_name: x.cert_name,
-                    max_sequence: x.max_sequence.try_into().unwrap(),
+                    max_sequence: x.max_sequence,
                     introducer: x.introducer == 1,
                     index_id: u64::from_be_bytes(index_id),
                     skip_introduction_removals: x.skip_introduction_removals == 1,
@@ -849,7 +862,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         &mut self,
         folder: &str,
         device_id: &DeviceId,
-        file_info: &Vec<FileInfo>,
+        file_info: &[FileInfo],
     ) {
         let device_id = device_id.to_string();
         sqlx::query!("BEGIN TRANSACTION;")
@@ -857,7 +870,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .await
             .unwrap();
 
-        for file in file_info.into_iter() {
+        for file in file_info.iter() {
             trace!("Updating index, inserting file {}", &file.name);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
             let _insert_res = sqlx::query!(
@@ -1008,7 +1021,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         &mut self,
         folder: &str,
         device_id: &DeviceId,
-        file_info: &Vec<FileInfo>,
+        file_info: &[FileInfo],
         move_file: bool,
     ) -> HashMap<String, String> {
         let device_id = device_id.to_string();
@@ -1019,7 +1032,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .await
             .unwrap();
 
-        for file in file_info.into_iter() {
+        for file in file_info.iter() {
             if file.deleted {
                 // Load baring debug statement for the integration tests
                 debug!(
@@ -1205,7 +1218,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         file_dests
     }
 
-    pub fn insert_requests(&mut self, requests: &Vec<Request>) {
+    pub fn insert_requests(&mut self, requests: &[Request]) {
         for request in requests.iter() {
             self.outgoing_requests.insert(request.id, request.clone());
         }
@@ -1227,15 +1240,15 @@ fn new_file_path(old_file_path: &str, device_id: &str, now: DateTime<Utc>) -> St
 
     let extension = old_path
         .extension()
-        .map(|x| PathBuf::from(x))
+        .map(PathBuf::from)
         .map(|x| x.to_str().unwrap().to_string())
         .map(|x| format!(".{}", x))
-        .unwrap_or(format!(""));
+        .unwrap_or("".to_string());
 
     let mut name = old_path
         .clone()
         .file_name()
-        .map(|x| PathBuf::from(x))
+        .map(PathBuf::from)
         .expect("Invalid file name")
         .file_stem()
         .unwrap()

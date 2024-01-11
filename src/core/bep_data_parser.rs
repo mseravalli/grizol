@@ -24,16 +24,14 @@ enum ParseError {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Default)]
 enum IncomingMessageStatus {
+    #[default]
     Incomplete,
     Complete,
 }
 
-impl Default for IncomingMessageStatus {
-    fn default() -> Self {
-        IncomingMessageStatus::Incomplete
-    }
-}
+
 
 #[derive(Debug)]
 struct IncomingMessage {
@@ -67,13 +65,11 @@ impl IncomingMessage {
             BepAuthStatus::PostHello => {
                 trace!("status: incoming message: {:02x?}", &self);
                 if self.header.is_none() {
-                    return IncomingMessageStatus::Incomplete;
+                    IncomingMessageStatus::Incomplete
+                } else if let Some(0) = self.missing_message_bytes() {
+                    IncomingMessageStatus::Complete
                 } else {
-                    if let Some(0) = self.missing_message_bytes() {
-                        return IncomingMessageStatus::Complete;
-                    } else {
-                        return IncomingMessageStatus::Incomplete;
-                    }
+                    IncomingMessageStatus::Incomplete
                 }
             }
         }
@@ -128,7 +124,7 @@ impl IncomingMessage {
         }
     }
     fn add_data(&mut self, buf: &[u8]) {
-        self.data.extend_from_slice(&buf);
+        self.data.extend_from_slice(buf);
 
         match self.auth_status {
             BepAuthStatus::PreHello => {}
@@ -157,25 +153,25 @@ impl IncomingMessage {
         Some(header_byte_len)
     }
     fn missing_header_bytes(&self) -> Option<usize> {
-        let missing_bytes = self
-            .header_byte_len()
-            .map(|header_byte_len| HEADER_START + header_byte_len - self.total_byte_len());
+        
 
-        missing_bytes
+        self
+            .header_byte_len()
+            .map(|header_byte_len| HEADER_START + header_byte_len - self.total_byte_len())
     }
     fn missing_message_bytes(&self) -> Option<usize> {
         match self.auth_status {
             BepAuthStatus::PreHello => {
-                let missing_bytes = self
+                
+                self
                     .message_byte_len()
-                    .map(|mbl| mbl + HELLO_START - self.data.len());
-                missing_bytes
+                    .map(|mbl| mbl + HELLO_START - self.data.len())
             }
             BepAuthStatus::PostHello => self.message_start_pos().and_then(|message_start_pos| {
-                let missing_bytes = self
+                
+                self
                     .message_byte_len()
-                    .map(|mbl| mbl + message_start_pos - self.data.len());
-                missing_bytes
+                    .map(|mbl| mbl + message_start_pos - self.data.len())
             }),
         }
     }
@@ -209,7 +205,7 @@ fn starts_with_magic_number(buf: &[u8]) -> bool {
 }
 
 fn decode_hello(buf: &[u8]) -> Result<CompleteMessage, ParseError> {
-    if !starts_with_magic_number(&buf) {
+    if !starts_with_magic_number(buf) {
         return Err(ParseError::NoMagicHello);
     }
     // FIXME: return the errors
@@ -258,27 +254,27 @@ fn decode_post_hello_message(im: &IncomingMessage) -> Result<CompleteMessage, Pa
         .unwrap()
     {
         syncthing::MessageType::ClusterConfig => {
-            syncthing::ClusterConfig::decode(raw_msg).map(|m| CompleteMessage::ClusterConfig(m))
+            syncthing::ClusterConfig::decode(raw_msg).map(CompleteMessage::ClusterConfig)
         }
         syncthing::MessageType::Index => {
-            syncthing::Index::decode(raw_msg).map(|m| CompleteMessage::Index(m))
+            syncthing::Index::decode(raw_msg).map(CompleteMessage::Index)
         }
         syncthing::MessageType::IndexUpdate => {
-            syncthing::IndexUpdate::decode(raw_msg).map(|m| CompleteMessage::IndexUpdate(m))
+            syncthing::IndexUpdate::decode(raw_msg).map(CompleteMessage::IndexUpdate)
         }
         syncthing::MessageType::Request => {
-            syncthing::Request::decode(raw_msg).map(|m| CompleteMessage::Request(m))
+            syncthing::Request::decode(raw_msg).map(CompleteMessage::Request)
         }
         syncthing::MessageType::Response => {
-            syncthing::Response::decode(raw_msg).map(|m| CompleteMessage::Response(m))
+            syncthing::Response::decode(raw_msg).map(CompleteMessage::Response)
         }
         syncthing::MessageType::DownloadProgress => syncthing::DownloadProgress::decode(raw_msg)
-            .map(|m| CompleteMessage::DownloadProgress(m)),
+            .map(CompleteMessage::DownloadProgress),
         syncthing::MessageType::Ping => {
-            syncthing::Ping::decode(raw_msg).map(|m| CompleteMessage::Ping(m))
+            syncthing::Ping::decode(raw_msg).map(CompleteMessage::Ping)
         }
         syncthing::MessageType::Close => {
-            syncthing::Close::decode(raw_msg).map(|m| CompleteMessage::Close(m))
+            syncthing::Close::decode(raw_msg).map(CompleteMessage::Close)
         }
     }
     .map_err(|e| ParseError::Generic(format!("Error: {:?}", e)))?;
@@ -323,8 +319,7 @@ impl BepDataParser {
                     let is_header_missing = self
                         .incoming_message
                         .as_ref()
-                        .map(|im| im.header.as_ref())
-                        .flatten()
+                        .and_then(|im| im.header.as_ref())
                         .is_none();
                     if is_header_missing {
                         processed_bytes += self.populate_header(&buf[processed_bytes..])?;
@@ -392,9 +387,8 @@ impl BepDataParser {
                             .missing_message_bytes()
                             .unwrap(),
                     );
-                    self.incoming_message
-                        .as_mut()
-                        .map(|im| im.add_data(&buf[..available_for_hello]));
+                    if let Some(im) = self.incoming_message
+                        .as_mut() { im.add_data(&buf[..available_for_hello]) }
                     processed_bytes += available_for_hello;
                 }
             }
@@ -445,7 +439,7 @@ impl BepDataParser {
             if let Some(missing_message_bytes) = im.missing_message_bytes() {
                 let available_bytes = std::cmp::min(missing_message_bytes, buf.len());
                 im.add_data(&buf[..available_bytes]);
-                return Ok(available_bytes);
+                Ok(available_bytes)
             } else {
                 let header_byte_len: usize =
                     u16::from_be_bytes(im.data[..HEADER_START].try_into().unwrap()).into();
@@ -454,12 +448,29 @@ impl BepDataParser {
                 let missing_message_len_bytes = message_start - im.data.len();
                 let available_bytes = std::cmp::min(missing_message_len_bytes, buf.len());
                 im.add_data(&buf[..available_bytes]);
-                return Ok(available_bytes);
+                Ok(available_bytes)
             }
         } else {
             todo!()
         }
     }
+}
+fn try_parse_header(buf: &[u8]) -> Result<syncthing::Header, ParseError> {
+    if buf.len() < HEADER_START {
+        return Err(ParseError::NotEnoughHeaderLenData);
+    }
+
+    // Length of the Header in bytes
+    let header_byte_len: usize = u16::from_be_bytes(buf[..HEADER_START].try_into().unwrap()).into();
+
+    let header_end = HEADER_START + header_byte_len;
+    if buf.len() < header_end {
+        return Err(ParseError::NotEnoughHeaderData);
+    }
+
+    let header = syncthing::Header::decode(&buf[HEADER_START..header_end]).unwrap();
+    trace!("Received Header: {:?}", &header);
+    Ok(header)
 }
 
 #[cfg(test)]
@@ -578,9 +589,9 @@ mod test {
 
         assert_eq!(complete_messages.as_ref().unwrap().len(), 1);
         let hello = syncthing::Hello {
-            device_name: format!("remote-dev"),
-            client_name: format!("syncthing"),
-            client_version: format!("v1.23.5-dev.17.g7226b845.dirty"),
+            device_name: "remote-dev".to_string(),
+            client_name: "syncthing".to_string(),
+            client_version: "v1.23.5-dev.17.g7226b845.dirty".to_string(),
         };
         assert_eq!(complete_messages.unwrap()[0], CompleteMessage::Hello(hello));
     }
@@ -598,9 +609,9 @@ mod test {
 
         assert_eq!(complete_messages.as_ref().unwrap().len(), 1);
         let hello = syncthing::Hello {
-            device_name: format!("remote-dev"),
-            client_name: format!("syncthing"),
-            client_version: format!("v1.23.5-dev.17.g7226b845.dirty"),
+            device_name: "remote-dev".to_string(),
+            client_name: "syncthing".to_string(),
+            client_version: "v1.23.5-dev.17.g7226b845.dirty".to_string(),
         };
         assert_eq!(complete_messages.unwrap()[0], CompleteMessage::Hello(hello));
     }
@@ -616,21 +627,4 @@ mod test {
 
         assert_eq!(complete_messages.as_ref().unwrap().len(), 3);
     }
-}
-fn try_parse_header(buf: &[u8]) -> Result<syncthing::Header, ParseError> {
-    if buf.len() < HEADER_START {
-        return Err(ParseError::NotEnoughHeaderLenData);
-    }
-
-    // Length of the Header in bytes
-    let header_byte_len: usize = u16::from_be_bytes(buf[..HEADER_START].try_into().unwrap()).into();
-
-    let header_end = HEADER_START + header_byte_len;
-    if buf.len() < header_end {
-        return Err(ParseError::NotEnoughHeaderData);
-    }
-
-    let header = syncthing::Header::decode(&buf[HEADER_START..header_end]).unwrap();
-    trace!("Received Header: {:?}", &header);
-    Ok(header)
 }

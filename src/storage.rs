@@ -37,7 +37,7 @@ impl StorageManager {
 
         // Compute hash of the written block to double check correctness.
         file.seek(SeekFrom::Start(offset)).await?;
-        let mut buf: Vec<u8> = Vec::with_capacity(data.len());
+        let mut buf: Vec<u8> = vec![0; data.len()];
         buf.resize(data.len(), 0);
         file.read_exact(&mut buf).await?;
         let hasher_sha256 = Sha256::new_with_prefix(&buf);
@@ -330,13 +330,13 @@ mod test {
 
     #[tokio::test]
     async fn store_block_new_file_succeeds() {
-        let storage_manager = StorageManager::new(format!("/tmp/grizol_staging"));
+        let storage_manager = StorageManager::new("/tmp/grizol_staging".to_string());
 
         let data = vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
         let request = Request {
             id: 0,
-            folder: format!("test_dir"),
-            name: format!("a_file"),
+            folder: "test_dir".to_string(),
+            name: "a_file".to_string(),
             offset: 0,
             size: data.len().try_into().unwrap(),
             hash: vec![],

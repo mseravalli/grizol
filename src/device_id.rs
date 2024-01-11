@@ -18,7 +18,7 @@ pub struct DeviceId {
 impl fmt::Display for DeviceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let res = BASE32.encode(&self.id);
-        let res = res.trim_end_matches("=");
+        let res = res.trim_end_matches('=');
         let res = luhnify(res).expect("It must always be possible to lunhify");
         write!(f, "{}", chunkify(&res))
     }
@@ -26,7 +26,7 @@ impl fmt::Display for DeviceId {
 
 impl fmt::Debug for DeviceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "DeviceId \"{}\"", self.to_string())
+        write!(f, "DeviceId \"{}\"", self)
     }
 }
 
@@ -35,20 +35,17 @@ impl TryFrom<&str> for DeviceId {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         if !value.is_ascii() {
-            return Err(format!(
-                "Invalid string provided, only ASCII characters allowed"
-            ));
+            return Err("Invalid string provided, only ASCII characters allowed".to_string());
         }
 
         let value = value
             .to_uppercase()
             // remove chunks
-            .replace("-", "")
-            .replace(" ", "")
+            .replace(['-', ' '], "")
             // replace possible typos
-            .replace("0", "O")
-            .replace("1", "I")
-            .replace("8", "B");
+            .replace('0', "O")
+            .replace('1', "I")
+            .replace('8', "B");
         let value = unluhnify(&value)?;
         let dec = BASE32
             .decode((value + "====").as_bytes())
@@ -114,37 +111,37 @@ impl TryFrom<&Vec<u8>> for DeviceId {
     type Error = String;
 
     fn try_from(input: &Vec<u8>) -> Result<Self, Self::Error> {
-        return DeviceId::try_from(&input[..]);
+        DeviceId::try_from(&input[..])
     }
 }
 
-impl Into<Vec<u8>> for DeviceId {
-    fn into(self) -> Vec<u8> {
-        self.id.into()
+impl From<DeviceId> for Vec<u8> {
+    fn from(val: DeviceId) -> Self {
+        val.id.into()
     }
 }
 
-impl Into<Vec<u8>> for &DeviceId {
-    fn into(self) -> Vec<u8> {
-        self.id.into()
+impl From<&DeviceId> for Vec<u8> {
+    fn from(val: &DeviceId) -> Self {
+        val.id.into()
     }
 }
 
-impl Into<[u8; DEVICE_ID_LEN]> for DeviceId {
-    fn into(self) -> [u8; DEVICE_ID_LEN] {
-        self.id
+impl From<DeviceId> for [u8; DEVICE_ID_LEN] {
+    fn from(val: DeviceId) -> Self {
+        val.id
     }
 }
 
-impl Into<[u8; DEVICE_ID_LEN]> for &DeviceId {
-    fn into(self) -> [u8; DEVICE_ID_LEN] {
-        self.id
+impl From<&DeviceId> for [u8; DEVICE_ID_LEN] {
+    fn from(val: &DeviceId) -> Self {
+        val.id
     }
 }
 
-impl Into<u64> for &DeviceId {
-    fn into(self) -> u64 {
-        u64::from_be_bytes(self.id[0..8].try_into().unwrap()).into()
+impl From<&DeviceId> for u64 {
+    fn from(val: &DeviceId) -> Self {
+        u64::from_be_bytes(val.id[0..8].try_into().unwrap())
     }
 }
 
@@ -193,7 +190,7 @@ fn unluhnify(s: &str) -> Result<String, String> {
 
     for i in 0..4 {
         let p = &s[i * (13 + 1)..(i + 1) * (13 + 1) - 1];
-        res[i * 13..(i + 1) * 13].copy_from_slice(&p);
+        res[i * 13..(i + 1) * 13].copy_from_slice(p);
         let l = luhn32(p)?;
         let check_pos = (i + 1) * 14 - 1;
         if s[check_pos] != l {
@@ -214,9 +211,9 @@ const LUHN_BASE32: [char; 32] = [
 
 fn codepoint32(b: char) -> Result<u32, String> {
     // TODO: see if we can use match here instead
-    if 'A' <= b && b <= 'Z' {
+    if b.is_ascii_uppercase() {
         Ok(u32::from(b) - u32::from('A'))
-    } else if '2' <= b && b <= '7' {
+    } else if ('2'..='7').contains(&b) {
         Ok(u32::from(b) + 26 - u32::from('2'))
     } else {
         Err(format!("Invalid char {} in alphabet {:?}", b, LUHN_BASE32))
@@ -232,8 +229,8 @@ fn luhn32(s: &[char]) -> Result<char, String> {
     let mut sum = 0;
     let n = 32;
 
-    for i in 0..s.len() {
-        let codepoint = codepoint32(s[i])?;
+    for c in s.iter() {
+        let codepoint = codepoint32(*c)?;
         let mut addend = factor * codepoint;
         factor = if factor == 2 { 1 } else { 2 };
         addend = (addend / n) + (addend % n);
@@ -241,5 +238,5 @@ fn luhn32(s: &[char]) -> Result<char, String> {
     }
     let remainder = sum % n;
     let check_codepoint = usize::try_from((n - remainder) % n).map_err(|e| e.to_string())?;
-    Ok(char::from(LUHN_BASE32[check_codepoint]))
+    Ok(LUHN_BASE32[check_codepoint])
 }

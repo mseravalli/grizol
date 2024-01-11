@@ -141,14 +141,14 @@ async fn handle_incoming_data(
     device_id_assigner: Arc<tokio::sync::Mutex<bool>>,
 ) -> io::Result<()> {
     let (tls_stream, cdid) = {
-        debug!("about to block");
+        // we take the lock for device_id_assigner to ensure that no other thread will write the
+        // client device id at the same time.
         let _ = device_id_assigner.lock().await;
         let tls_stream = acceptor.accept(tcp_stream).await?;
         let cdid: Option<DeviceId> = { *client_device_id.lock().unwrap() };
-        debug!("ready to unblock");
         (tls_stream, cdid.unwrap())
     };
-    debug!("Cliend device id {:?}", cdid);
+    debug!("Received a connection from device: {:?}", cdid);
 
     let (mut reader, mut writer) = split(tls_stream);
 

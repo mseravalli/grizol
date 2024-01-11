@@ -103,7 +103,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         client_device_id: DeviceId,
     ) -> Vec<EncodedMessages> {
         debug!("Handling IndexUpdate");
-        debug!("Received IndexUpdate: {:#?}", &index_update);
+        trace!("Received IndexUpdate: {:#?}", &index_update);
         let received_index = Index {
             folder: index_update.folder,
             files: index_update.files,
@@ -152,11 +152,9 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                 //     debug!("moved file: {} -> {}", orig, dest);
                 // }
 
-                let unstored_blocks = state
+                state
                     .blocks_info(&self.config.id, StorageStatus::NotStored)
-                    .await;
-
-                unstored_blocks
+                    .await
             };
 
             let file_requests = {
@@ -193,7 +191,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         client_device_id: DeviceId,
     ) -> Vec<EncodedMessages> {
         debug!("Handling Index");
-        debug!("Received Index: {:#?}", &received_index);
+        trace!("Received Index: {:#?}", &received_index);
         let folder = received_index.folder.clone();
 
         let ems = async move {
@@ -218,11 +216,9 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     .insert_file_info(&folder, &self.config.id, &diff.newly_added_files)
                     .await;
 
-                let unstored_blocks = state
+                state
                     .blocks_info(&self.config.id, StorageStatus::NotStored)
-                    .await;
-
-                unstored_blocks
+                    .await
             };
 
             let file_requests = {
@@ -298,10 +294,9 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                 let file_size: u64 = state
                     .file_from_local_index(&request.folder, &request.name)
                     .await
-                    .expect(&format!(
-                        "Requesting a file not in the index: {}",
-                        &request.name
-                    ))
+                    .unwrap_or_else(|| {
+                        panic!("Requesting a file not in the index: {}", &request.name)
+                    })
                     .size
                     .try_into()
                     .unwrap();
@@ -363,9 +358,9 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
 
         let message: Vec<u8> = vec![]
             .into_iter()
-            .chain(MAGIC_NUMBER.into_iter())
-            .chain(message_len.to_be_bytes().into_iter())
-            .chain(message_bytes.into_iter())
+            .chain(MAGIC_NUMBER)
+            .chain(message_len.to_be_bytes())
+            .chain(message_bytes)
             .collect();
 
         EncodedMessages::new(message)
@@ -444,10 +439,10 @@ fn encode_message<T: prost::Message>(
 
     let message: Vec<u8> = vec![]
         .into_iter()
-        .chain(header_len.to_be_bytes().into_iter())
-        .chain(header_bytes.into_iter())
-        .chain(message_len.to_be_bytes().into_iter())
-        .chain(message_bytes.into_iter())
+        .chain(header_len.to_be_bytes())
+        .chain(header_bytes)
+        .chain(message_len.to_be_bytes())
+        .chain(message_bytes)
         .collect();
 
     trace!(
@@ -479,7 +474,7 @@ fn diff_indices(
     existing_index: &Index,
 ) -> Result<IndexDiff, String> {
     if added_index.folder != folder && existing_index.folder != folder {
-        return Err(format!("The indices cover different folders"));
+        return Err("The indices cover different folders".to_string());
     }
 
     let existing_files: HashMap<&String, &FileInfo> =
@@ -564,13 +559,12 @@ fn partial_cmp_file_version(a: &FileInfo, b: &FileInfo) -> Option<Ordering> {
 fn partial_cmp_file_timestamp(a: &FileInfo, b: &FileInfo) -> Ordering {
     trace!("a: {:?}\nb {:?}", a, b);
 
-    if a.modified_s < b.modified_s {
-        return Ordering::Less;
-    } else if a.modified_s == b.modified_s && a.modified_ns < b.modified_ns {
-        return Ordering::Less;
-    } else if a.modified_s > b.modified_s {
-        return Ordering::Greater;
-    } else if a.modified_s == b.modified_s && a.modified_ns > b.modified_ns {
+    if a.modified_s < b.modified_s || a.modified_s == b.modified_s && a.modified_ns < b.modified_ns
+    {
+        Ordering::Less
+    } else if a.modified_s > b.modified_s
+        || a.modified_s == b.modified_s && a.modified_ns > b.modified_ns
+    {
         return Ordering::Greater;
     } else {
         let max_counter_a = a
