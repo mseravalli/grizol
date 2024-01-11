@@ -600,17 +600,6 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 ))
             }
         }
-
-        // if block_count.stored_blocks == expected_blocks {
-        //     Ok(UploadStatus::AllBlocks)
-        // } else if block_count.stored_blocks < expected_blocks {
-        //     Ok(UploadStatus::BlocksMissing)
-        // } else {
-        //     return Err(format!(
-        //         "We ended up storing too many blocks for file: {}, expected blocks {}, actual blocks {}",
-        //         &request.name, expected_blocks, block_count.stored_blocks
-        //     ));
-        // }
     }
 
     /// Returns a list of [BlockInfo] filtered by the provided parameters
