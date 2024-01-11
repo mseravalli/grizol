@@ -12,6 +12,11 @@ function controlled_exit() {
 }
 
 function trigger_syncthing_rescan() {
+  
+  # TODO: given the initial setup of syncthing can take some time, we need to find a better way to see when syncthing is ready
+  sleep_time="${VARIABLE:-0}"
+  sleep ${sleep_time}
+
   while [[ $(rg 'Device .* client is .grizol' /tmp/syncthing | wc -l) -lt 1 ]]; do sleep 1; done
   curl 'http://localhost:8384/rest/db/scan' \
     -X 'POST' \
@@ -37,6 +42,8 @@ function run_diff() {
 }
 
 source scripts/env.sh
+export RUST_LOG=info,grizol=debug
+
 cargo build
 cp target/debug/grizol tests/util/grizol
 
@@ -61,7 +68,7 @@ echo "started syncthing with pid ${SYNCTHING_PID}"
 while [[ -z $(rg 'Ready to synchronize "orig_dir"' /tmp/syncthing) ]]; do sleep 1; done
 echo "# Test adding data"
 scripts/create_random_files.sh tests/util/orig_dir/ 3
-trigger_syncthing_rescan
+trigger_syncthing_rescan 2
 while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 3 ]]; do sleep 1; done
 run_diff tests/util/orig_dir tests/util/dest_dir
 
