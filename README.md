@@ -1,5 +1,7 @@
 # Grizol a [syncthing](https://github.com/syncthing/syncthing) compatible client.
 
+The source of truth is at https://gitlab.com/com.marcoseravalli/grizol/.
+
 ## Developer Setup
 
 Install the following dependencies.
