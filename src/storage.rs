@@ -1,18 +1,54 @@
 use crate::syncthing::Request;
 
+use crate::BepConfig;
+use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::io;
+use std::path::Path;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
+use tokio::process::Command;
 
 pub struct StorageManager {
-    stage_dir: String,
+    config: BepConfig,
+    storage_backends: Vec<String>,
+}
+
+// This should *not* be async, we want to wait for this to finish and then process the result.
+fn storage_backends_from_conf(rclone_config: &Option<String>) -> Vec<String> {
+    let config_location = rclone_config
+        .as_ref()
+        .map(|x| format!("--config={}", x))
+        .unwrap_or("".to_string());
+    let command = &["rclone", &config_location, "config", "show"];
+    info!("Running: `{}`", command.join(" "));
+    let output = std::process::Command::new(command[0])
+        .args(&command[1..])
+        .output()
+        .unwrap();
+    let data = std::str::from_utf8(&output.stdout).unwrap();
+
+    // TODO: verify if this is makes always sense
+    let re = Regex::new(r"^\[(.*)\]$").unwrap();
+    let res = data
+        .lines()
+        .map(|x| x.trim())
+        .filter(|x| re.is_match(x))
+        .map(|x| re.captures(x).unwrap().get(1).unwrap().as_str().to_string())
+        .collect();
+    info!("Storage backends: {:?}", res);
+    res
+
+    // todo!()
 }
 
 impl StorageManager {
-    pub fn new(stage_dir: String) -> Self {
-        // TODO: init stage_dir if it does not exist
-        StorageManager { stage_dir }
+    pub fn new(config: BepConfig) -> Self {
+        let storage_backends = storage_backends_from_conf(&config.rclone_config);
+        StorageManager {
+            config,
+            storage_backends,
+        }
     }
 
     pub async fn store_block(
@@ -23,7 +59,8 @@ impl StorageManager {
     ) -> io::Result<()> {
         debug!("Start storing block");
         // TODO: the file should already be there
-        let mut file = self.create_empty_file(&request.name, file_size).await?;
+        let file_rel_path = format!("{}/{}", &request.folder, &request.name);
+        let mut file = self.create_empty_file(&file_rel_path, file_size).await?;
 
         let offset = request.offset.try_into().unwrap();
 
@@ -59,6 +96,10 @@ impl StorageManager {
 
     // Always creates a new file if it does not exist
     async fn create_empty_file(&self, rel_path: &str, file_size: u64) -> io::Result<File> {
+        let abs_path = format!("{}/{}", self.config.local_base_dir, rel_path);
+        let parent = Path::new(&abs_path).parent().unwrap();
+        debug!("parent: {:?}", parent);
+        tokio::fs::create_dir_all(parent).await?;
         debug!(
             "Creating new file of size {} under {}",
             &file_size, rel_path
@@ -69,7 +110,7 @@ impl StorageManager {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(format!("{}/{}", self.stage_dir, rel_path))
+            .open(abs_path)
             .await?;
 
         file.set_len(file_size).await?;
@@ -77,14 +118,46 @@ impl StorageManager {
         Ok(file)
     }
 
-    // pub async fn move_file(&self, orig: &str, dest: &str) {
-    //     tokio::fs::rename(
-    //         format!("{}/{}", self.stage_dir, orig),
-    //         format!("{}/{}", self.stage_dir, dest),
-    //     )
-    //     .await
-    //     .expect("Error while moving the file")
-    // }
+    // TODO: Consider using a struct instread of (String, String)
+    pub async fn cp_to_remote(
+        &self,
+        folder: &str,
+        name: &str,
+    ) -> Result<Vec<(String, String)>, String> {
+        let orig = format!("{}/{}/{}", self.config.local_base_dir, folder, name);
+
+        let mut res = vec![];
+        for storage_backend in self.storage_backends.iter() {
+            let bucket = "seravalli-grizol";
+            let dest = format!("{storage_backend}:{bucket}/{folder}/{name}");
+            let config_location = self
+                .config
+                .rclone_config
+                .as_ref()
+                .map(|x| format!("--config={}", x))
+                .unwrap_or("".to_string());
+            let command = &["rclone", &config_location, "copyto", &orig, &dest];
+            info!("Running: `{}`", command.join(" "));
+            Command::new(command[0])
+                .args(&command[1..])
+                .spawn()
+                .expect("command failed to start")
+                .wait()
+                .await
+                .expect("command failed to run");
+            res.push((storage_backend.to_string(), dest));
+        }
+        Ok(res)
+    }
+
+    pub async fn rm_local_file(&self, folder: &str, name: &str) -> Result<(), String> {
+        let orig = format!("{}/{}/{}", self.config.local_base_dir, folder, name);
+
+        tokio::fs::remove_file(Path::new(&orig))
+            .await
+            .map_err(|e| format!("{}", e))?;
+        Ok(())
+    }
 }
 
 // pub fn data_from_file_block(
@@ -325,12 +398,18 @@ impl StorageManager {
 
 #[cfg(test)]
 mod test {
+    use crate::grizol;
     use crate::storage::StorageManager;
     use crate::syncthing::Request;
+    use crate::BepConfig;
 
     #[tokio::test]
     async fn store_block_new_file_succeeds() {
-        let storage_manager = StorageManager::new("/tmp/grizol_staging".to_string());
+        let mut config = grizol::Config::default();
+        config.cert = "tests/util/cert.pem".to_string();
+        config.key = "tests/util/key.pem".to_string();
+        let bep_config = BepConfig::from(config);
+        let storage_manager = StorageManager::new(bep_config);
 
         let data = vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
         let request = Request {

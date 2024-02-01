@@ -20,6 +20,7 @@ prost = "0"
 prost-types = "0"
 prost-reflect = { version = "0", features = ["text-format", "derive"] }
 rand = "0"
+regex = "1"
 rustls-pemfile = "1.0.0"
 rustls = { version = "0.21", features = [ "logging", "dangerous_configuration" ]}
 sct = "0.7"

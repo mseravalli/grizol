@@ -28,8 +28,11 @@ function run_diff() {
   orig_dir=$1
   dest_dir=$2
   res=""
-  for f in $(ls ${orig_dir}); do
-    d=$(diff "${orig_dir}/${f}" "${dest_dir}/${f}" || true)
+  # check only the files not the directories 
+  for f in $(fdfind ".*" ${orig_dir} | rg -v "/$"); do
+    f=$(echo $f | sd "${orig_dir}/" "")
+    orig_dir_name=$(echo "${orig_dir}" | rg -o "/([^/.]+)$" -r '$1')
+    d=$(diff "${orig_dir}/${f}" "${dest_dir}/${orig_dir_name}/${f}" || true)
     if [[ ! -z "$d" ]]; then
       res="${f} ${res}"
     fi
@@ -78,11 +81,18 @@ trigger_syncthing_rescan
 while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 6 ]]; do sleep 1; done
 run_diff tests/util/orig_dir tests/util/dest_dir
 
-echo "# Test modifying data"
+echo "# Test modifying data, change file content"
 file_name=$(ls tests/util/orig_dir/ | sort | head -n 1)
-head -c 100 "tests/util/orig_dir/${file_name}" > "tests/util/orig_dir/${file_name}" 
+cat /dev/urandom | head -c 100 | base32  > "tests/util/orig_dir/${file_name}"
 trigger_syncthing_rescan
 while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 7 ]]; do sleep 1; done
+run_diff tests/util/orig_dir tests/util/dest_dir
+
+echo "# Test modifying data, remove file content"
+file_name=$(ls tests/util/orig_dir/ | sort | head -n 1)
+head -c 1 "tests/util/orig_dir/${file_name}" > "tests/util/orig_dir/${file_name}" 
+trigger_syncthing_rescan
+while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 8 ]]; do sleep 1; done
 run_diff tests/util/orig_dir tests/util/dest_dir
 
 echo "# Test deleting data"

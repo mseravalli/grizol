@@ -7,3 +7,6 @@ trusted_peers: [
 ]
 base_dir: "tests/util/dest_dir"
 db_url: "sqlite:tests/util/grizol.db"
+storage_strategy: 1
+rclone_config: "tests/util/rclone.conf.key"
+remote_base_dir: "seravalli-grizol"

@@ -621,6 +621,7 @@ dependencies = [
  "prost-reflect-build",
  "prost-types",
  "rand",
+ "regex",
  "rustls",
  "rustls-pemfile",
  "sct",

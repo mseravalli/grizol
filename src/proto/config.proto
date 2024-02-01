@@ -2,13 +2,23 @@ syntax = "proto3";
 
 package grizol;
 
+enum StorageStrategy {
+  // Files are removed from disk once they are stored on the remote targets
+  REMOTE = 0;
+  // Files are kept both locally and remotely, mostly used for testing.
+  LOCAL_REMOTE = 1;
+}
+
 message Config {
-    string name                   = 1;
-    string address                = 2;
-    string cert                   = 3;
-    string key                    = 4;
-    repeated string trusted_peers = 5;
-    string base_dir               = 6;
-    string db_url                 = 7;
+    string name                      =  1;
+    string address                   =  2;
+    string cert                      =  3;
+    string key                       =  4;
+    repeated string trusted_peers    =  5;
+    string base_dir                  =  6;
+    string db_url                    =  7;
+    StorageStrategy storage_strategy =  8;
+    string rclone_config             =  9;
+    string remote_base_dir           = 10;
 // next 
 }

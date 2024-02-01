@@ -1,4 +1,4 @@
-# Grizol - a syncthing compatible service.
+# Grizol a [syncthing](https://github.com/syncthing/syncthing) compatible client.
 
 ## Developer Setup
 

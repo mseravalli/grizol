@@ -2,6 +2,7 @@ use crate::core::bep_data_parser::{CompleteMessage, MAGIC_NUMBER};
 use crate::core::bep_state::{BepState, BlockInfoExt, StorageStatus};
 use crate::core::{BepConfig, EncodedMessages, UploadStatus};
 use crate::device_id::DeviceId;
+use crate::grizol::StorageStrategy;
 use crate::storage::StorageManager;
 use crate::syncthing;
 use chrono::prelude::*;
@@ -29,11 +30,10 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
     pub fn new(config: BepConfig, db_pool: SqlitePool, clock: Arc<Mutex<TS>>) -> Self {
         let bep_state = BepState::new(config.clone(), db_pool, clock);
 
-        let base_dir = config.base_dir.clone();
         BepProcessor {
-            config,
+            storage_manager: StorageManager::new(config.clone()),
             state: Mutex::new(bep_state),
-            storage_manager: StorageManager::new(base_dir),
+            config,
         }
     }
 
@@ -83,14 +83,16 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                 .map(|f| (f.id.clone(), f.devices.clone()))
                 .filter(|x| {
                     x.1.iter()
-                        .any(|d| DeviceId::try_from(&d.id).unwrap() == self.config.id)
+                        .any(|d| DeviceId::try_from(&d.id).unwrap() == self.config.local_device_id)
                 })
                 .map(|x| x.0)
                 .collect();
             debug!("shared folders {:?}", folders_shared_with_me);
             for folder in folders_shared_with_me.into_iter() {
                 state.init_index(&folder, &client_device_id).await;
-                state.init_index(&folder, &self.config.id).await;
+                state
+                    .init_index(&folder, &self.config.local_device_id)
+                    .await;
             }
         }
 
@@ -128,7 +130,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
 
                 // Update the local index of the current device
                 let local_index = state
-                    .index(&folder, &self.config.id)
+                    .index(&folder, &self.config.local_device_id)
                     .await
                     .expect("The index must exist");
                 let other_device_local_index = state
@@ -138,7 +140,11 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                 let diff = diff_indices(&folder, &other_device_local_index, &local_index)
                     .expect("Should pass the same folders");
                 state
-                    .rm_replace_file_info(&folder, &self.config.id, &diff.newly_added_files)
+                    .rm_replace_file_info(
+                        &folder,
+                        &self.config.local_device_id,
+                        &diff.newly_added_files,
+                    )
                     .await;
                 // let file_dests = state
                 //     .mv_replace_file_info(
@@ -153,7 +159,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                 // }
 
                 state
-                    .blocks_info(&self.config.id, StorageStatus::NotStored)
+                    .blocks_info(&self.config.local_device_id, StorageStatus::NotStored)
                     .await
             };
 
@@ -205,7 +211,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
 
                 // Update the local index of the current device
                 let local_index = state
-                    .index(&folder, &self.config.id)
+                    .index(&folder, &self.config.local_device_id)
                     .await
                     .expect("The local index must exist");
                 // TODO: ideally we should filter out the local index from all the indices
@@ -213,11 +219,15 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                 let diff = diff_indices(&folder, &received_index, &local_index)
                     .expect("Should pass the same folders");
                 state
-                    .insert_file_info(&folder, &self.config.id, &diff.newly_added_files)
+                    .insert_file_info(
+                        &folder,
+                        &self.config.local_device_id,
+                        &diff.newly_added_files,
+                    )
                     .await;
 
                 state
-                    .blocks_info(&self.config.id, StorageStatus::NotStored)
+                    .blocks_info(&self.config.local_device_id, StorageStatus::NotStored)
                     .await
             };
 
@@ -305,12 +315,53 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     .await
                     .expect("Error while storing the data");
                 let upload_status = state
-                    .update_index_block(&response.id, weak_hash, &self.config.id)
+                    .update_block_storage_state(
+                        &response.id,
+                        weak_hash,
+                        &self.config.local_device_id,
+                    )
                     .await
                     .expect("It was not possible to update the index");
 
+                // TODO: test behaviour with directory
                 if upload_status == UploadStatus::AllBlocks {
-                    // TODO: move the file to a remote backend
+                    if self.config.storage_strategy == StorageStrategy::Remote
+                        || self.config.storage_strategy == StorageStrategy::LocalRemote
+                    {
+                        let locations = self
+                            .storage_manager
+                            .cp_to_remote(&request.folder, &request.name)
+                            .await
+                            .expect("Error occured when uploading file");
+                        state
+                            .update_file_locations(
+                                &request.folder,
+                                &self.config.local_device_id,
+                                &request.name,
+                                locations,
+                            )
+                            .await;
+                    }
+
+                    if self.config.storage_strategy == StorageStrategy::Remote {
+                        state
+                            .remove_file_locations(
+                                &request.folder,
+                                &self.config.local_device_id,
+                                &request.name,
+                                vec!["local".to_string()],
+                            )
+                            .await;
+                        self.storage_manager
+                            .rm_local_file(&request.folder, &request.name)
+                            .await
+                            .unwrap_or_else(|_| {
+                                panic!(
+                                    "Error occured when removing the local file {}/{}",
+                                    &request.folder, &request.name
+                                )
+                            });
+                    }
                     debug!("Stored whole file: {}", &request.name);
                 }
 
@@ -395,7 +446,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
             .state
             .lock()
             .await
-            .indices(None, Some(&self.config.id))
+            .indices(None, Some(&self.config.local_device_id))
             .await;
         trace!("Sending Index, {:?}", &indices);
 

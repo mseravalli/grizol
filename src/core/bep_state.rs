@@ -99,11 +99,10 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         .await
         .expect("Failed to execute query");
 
-        self.sequence += 1;
-
         for file in index.files.into_iter() {
             trace!("Updating index, inserting file {}", &file.name);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
+            self.sequence += 1;
             let _insert_res = sqlx::query!(
                 r#"
             INSERT INTO bep_file_info (
@@ -529,7 +528,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         Some(index)
     }
 
-    pub async fn update_index_block(
+    pub async fn update_block_storage_state(
         &self,
         request_id: &i32,
         _weak_hash: u32,
@@ -580,17 +579,13 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         .await
         .expect("Failed to execute query");
 
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
-
+        // Even if the size of the file is 0 there will still be one block_info
         let expected_blocks = std::cmp::max(
             (block_count.byte_size + block_count.block_size - 1) / block_count.block_size,
             1,
         );
 
-        match block_count.stored_blocks.cmp(&expected_blocks) {
+        let file_state = match block_count.stored_blocks.cmp(&expected_blocks) {
             Ordering::Equal => Ok(UploadStatus::AllBlocks),
             Ordering::Less => Ok(UploadStatus::BlocksMissing),
             Ordering::Greater => {
@@ -599,7 +594,44 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 &request.name, expected_blocks, block_count.stored_blocks
                 ))
             }
+        };
+
+        let storage_backend = "local".to_string();
+        if let Ok(UploadStatus::AllBlocks) = file_state {
+            let _insert_res = sqlx::query!(
+                "
+                INSERT INTO bep_file_location (
+                    loc_device,
+                    loc_folder,
+                    loc_name,
+                    storage_backend,
+                    location
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(loc_folder, loc_device, loc_name, storage_backend, location) DO UPDATE SET
+                    loc_device       = excluded.loc_device,
+                    loc_folder       = excluded.loc_folder,
+                    loc_name         = excluded.loc_name,
+                    storage_backend  = excluded.storage_backend,
+                    location         = excluded.location
+                ",
+                device_id,
+                request.folder,
+                request.name,
+                storage_backend,
+                request.name,
+            )
+            .execute(&self.db_pool)
+            .await
+            .expect("Failed to execute query");
         }
+
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        file_state
     }
 
     /// Returns a list of [BlockInfo] filtered by the provided parameters
@@ -666,7 +698,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .await
             .unwrap();
 
-        let device_id = self.config.id.to_string();
+        let device_id = self.config.local_device_id.to_string();
 
         let file = sqlx::query!(
             r#"
@@ -862,6 +894,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         for file in file_info.iter() {
             trace!("Updating index, inserting file {}", &file.name);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
+            self.sequence += 1;
             let _insert_res = sqlx::query!(
                 r#"
             INSERT INTO bep_file_info (
@@ -911,7 +944,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 file.deleted,
                 file.invalid,
                 file.no_permissions,
-                file.sequence,
+                self.sequence,
                 file.block_size,
                 file.symlink_target,
             )
@@ -1076,6 +1109,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
             debug!("Updating index, inserting file {:?}", &file);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
+            self.sequence += 1;
             let _insert_res = sqlx::query!(
                 r#"
             INSERT INTO bep_file_info (
@@ -1125,7 +1159,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 file.deleted,
                 file.invalid,
                 file.no_permissions,
-                file.sequence,
+                self.sequence,
                 file.block_size,
                 file.symlink_target,
             )
@@ -1205,6 +1239,91 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
         debug!("File destinations: {:?}", file_dests);
         file_dests
+    }
+
+    pub async fn update_file_locations(
+        &self,
+        folder: &str,
+        device_id: &DeviceId,
+        file_name: &str,
+        locations: Vec<(String, String)>,
+    ) {
+        let device_id = device_id.to_string();
+        let file_name = file_name.to_string();
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+        for location in locations.into_iter() {
+            let _insert_res = sqlx::query!(
+                "
+            INSERT INTO bep_file_location (
+                loc_folder      ,
+                loc_device      ,
+                loc_name        ,
+                storage_backend ,
+                location        
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(loc_folder, loc_device, loc_name, storage_backend, location) DO UPDATE SET
+                loc_device      = excluded.loc_device     ,
+                loc_folder      = excluded.loc_folder     ,
+                loc_name        = excluded.loc_name       ,
+                storage_backend = excluded.storage_backend,
+                location        = excluded.location
+            ",
+                folder,
+                device_id,
+                file_name,
+                location.0,
+                location.1
+            )
+            .execute(&self.db_pool)
+            .await
+            .expect("Failed to execute query");
+        }
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+    }
+
+    pub async fn remove_file_locations(
+        &self,
+        folder: &str,
+        device_id: &DeviceId,
+        file_name: &str,
+        storage_backends: Vec<String>,
+    ) {
+        let device_id = device_id.to_string();
+        let file_name = file_name.to_string();
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+        for storage_backend in storage_backends.into_iter() {
+            let _insert_res = sqlx::query!(
+                "
+                DELETE FROM bep_file_location 
+                WHERE TRUE
+                    AND loc_folder       = ?
+                    AND loc_device       = ?
+                    AND loc_name         = ?
+                    AND storage_backend  = ?
+                ",
+                folder,
+                device_id,
+                file_name,
+                storage_backend,
+            )
+            .execute(&self.db_pool)
+            .await
+            .expect("Failed to execute query");
+        }
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
     }
 
     pub fn insert_requests(&mut self, requests: &[Request]) {

@@ -1,3 +1,4 @@
+*.key
 /target
 **/*.db*
 tests/util/grizol

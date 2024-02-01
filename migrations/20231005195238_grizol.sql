@@ -84,6 +84,19 @@ CREATE TABLE IF NOT EXISTS bep_file_info
     FOREIGN KEY(type)   REFERENCES bep_file_info_type(type)
 );
 
+CREATE TABLE IF NOT EXISTS bep_file_location
+(
+    loc_folder      TEXT    NOT NULL ,
+    loc_device      TEXT    NOT NULL ,
+    loc_name        TEXT    NOT NULL ,
+
+    storage_backend TEXT    NOT NULL ,
+    location        TEXT    NOT NULL ,
+
+    PRIMARY KEY(loc_folder, loc_device, loc_name, storage_backend, location) ,
+    FOREIGN KEY(loc_name, loc_folder, loc_device) REFERENCES bep_file_info(name, folder, device) ON DELETE CASCADE ON UPDATE CASCADE 
+);
+
 CREATE TABLE IF NOT EXISTS bep_block_info (
     file_name   TEXT    NOT NULL ,
     file_folder TEXT    NOT NULL ,
@@ -119,7 +132,6 @@ INSERT INTO bep_compression VALUES( 2 );
 
 INSERT INTO bep_storage_status VALUES( 0 ); -- not stored
 INSERT INTO bep_storage_status VALUES( 1 ); -- stored locally
-INSERT INTO bep_storage_status VALUES( 2 ); -- stored remotely
 
 INSERT INTO bep_file_info_type VALUES( 0 ); -- 'FILE'             
 INSERT INTO bep_file_info_type VALUES( 1 ); -- 'DIRECTORY'        
