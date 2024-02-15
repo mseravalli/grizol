@@ -146,7 +146,8 @@ pub fn server_config(
 // }
 
 fn load_certs(filename: &str) -> Vec<rustls::Certificate> {
-    let certfile = fs::File::open(filename).expect("cannot open certificate file");
+    let certfile = fs::File::open(filename)
+        .expect(format!("cannot open certificate file at {}", filename).as_str());
     let mut reader = BufReader::new(certfile);
     rustls_pemfile::certs(&mut reader)
         .unwrap()
