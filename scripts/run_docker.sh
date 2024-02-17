@@ -29,10 +29,11 @@ sqlx migrate run
 docker run \
   --rm \
   --name grizol \
-  -d \
+  -it \
   -p 23456:23456 \
   --volume=${CONFIG_DIR}/config.textproto:/opt/grizol/config/config.textproto \
   --volume=${CONFIG_DIR}/grizol.db:/opt/grizol/state/grizol.db \
   --volume=$PWD/tests/util/cert.pem:/opt/grizol/config/cert.pem \
   --volume=$PWD/tests/util/key.pem:/opt/grizol/config/key.pem \
+  --volume=$PWD/tests/util/rclone.conf.key:/opt/grizol/config/rclone.conf \
   grizol/grizol:latest
