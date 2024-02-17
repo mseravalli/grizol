@@ -1,3 +1,11 @@
+FROM rust:latest as builder
+WORKDIR /usr/src/myapp
+COPY . .
+RUN apt update
+RUN apt install -y protobuf-compiler
+ENV DATABASE_URL="sqlite:tests/util/grizol.db"
+RUN cargo build --release
+
 FROM ubuntu:latest 
 
 MAINTAINER Marco Seravalli <grizol@marcoseravalli.com>
@@ -17,4 +25,4 @@ CMD ["/opt/grizol/bin/grizol", "--config", "config/config.textproto"]
 
 COPY ./tests/util/rclone /usr/bin/rclone
 
-COPY ./target/release/grizol /opt/grizol/bin/grizol
+COPY --from=builder /usr/src/myapp/target/release/grizol /opt/grizol/bin/grizol
