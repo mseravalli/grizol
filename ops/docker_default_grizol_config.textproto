@@ -1,0 +1,6 @@
+cert: "config/cert.pem"
+key: "config/key.pem"
+base_dir: "data"
+db_url: "sqlite:state/grizol.db"
+storage_strategy: 1
+rclone_config: "config/rclone.conf"
