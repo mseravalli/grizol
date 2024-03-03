@@ -22,5 +22,7 @@
 -- ;
 
 SELECT *
-FROM bep_file_location
+FROM bep_file_location flo RIGHT JOIN bep_file_info fin ON
+ flo.loc_folder = fin.folder AND flo.loc_device = fin.device AND flo.loc_name = fin.name
+WHERE fin.device = 'DC3KS6Y-XZWHD4F-T2L5QY6-LJ2GR7X-THN23CX-33LLN46-WZ7FAQO-AVE3BQV'
 ;

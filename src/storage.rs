@@ -1,6 +1,6 @@
 use crate::syncthing::Request;
 
-use crate::BepConfig;
+use crate::GrizolConfig;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::io;
@@ -10,7 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::process::Command;
 
 pub struct StorageManager {
-    config: BepConfig,
+    config: GrizolConfig,
     storage_backends: Vec<String>,
 }
 
@@ -43,7 +43,7 @@ fn storage_backends_from_conf(rclone_config: &Option<String>) -> Vec<String> {
 }
 
 impl StorageManager {
-    pub fn new(config: BepConfig) -> Self {
+    pub fn new(config: GrizolConfig) -> Self {
         let storage_backends = storage_backends_from_conf(&config.rclone_config);
         StorageManager {
             config,
@@ -401,14 +401,14 @@ mod test {
     use crate::grizol;
     use crate::storage::StorageManager;
     use crate::syncthing::Request;
-    use crate::BepConfig;
+    use crate::GrizolConfig;
 
     #[tokio::test]
     async fn store_block_new_file_succeeds() {
         let mut config = grizol::Config::default();
         config.cert = "tests/util/cert.pem".to_string();
         config.key = "tests/util/key.pem".to_string();
-        let bep_config = BepConfig::from(config);
+        let bep_config = GrizolConfig::from(config);
         let storage_manager = StorageManager::new(bep_config);
 
         let data = vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];

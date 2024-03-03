@@ -1,4 +1,4 @@
-use crate::core::{BepConfig, UploadStatus};
+use crate::core::{GrizolConfig, UploadStatus};
 use crate::device_id::DeviceId;
 use crate::syncthing;
 use chrono::prelude::*;
@@ -29,6 +29,12 @@ pub enum StorageStatus {
     _StoredRemotely = 2,
 }
 
+#[derive(Clone, Debug)]
+pub struct FileLocation {
+    location: String,
+    storage_backend: String,
+}
+
 impl From<StorageStatus> for i32 {
     fn from(val: StorageStatus) -> Self {
         val as i32
@@ -38,7 +44,7 @@ impl From<StorageStatus> for i32 {
 #[derive(Debug)]
 pub struct BepState<TS: TimeSource<Utc>> {
     clock: Arc<Mutex<TS>>,
-    config: BepConfig,
+    config: GrizolConfig,
     db_pool: SqlitePool,
     sequence: i64,
     request_id: i32,
@@ -46,7 +52,7 @@ pub struct BepState<TS: TimeSource<Utc>> {
 }
 
 impl<TS: TimeSource<Utc>> BepState<TS> {
-    pub fn new(config: BepConfig, db_pool: SqlitePool, clock: Arc<Mutex<TS>>) -> Self {
+    pub fn new(config: GrizolConfig, db_pool: SqlitePool, clock: Arc<Mutex<TS>>) -> Self {
         BepState {
             clock,
             config,
@@ -685,9 +691,91 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         blocks
     }
 
-    pub async fn file_from_local_index(
+    /// Returns information that can be used for fuse.
+    /// [FileInfo] does not derive Hash, therefore it's not possible to directly use a [HashMap],
+    /// however the returned [Vec] guarantees that there are no duplicate [FileInfo]s.
+    // TODO: what's the best way to filter?? in the SQL? within this fuction, at the client?
+    pub async fn files_fuse(
         &self,
         folder_name: &str,
+        device_id: DeviceId,
+    ) -> Vec<(FileInfo, Vec<FileLocation>)> {
+        let folder_name = folder_name.to_string();
+        let device_id = device_id.to_string();
+
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        let files = sqlx::query!(
+            r#"
+            SELECT *
+            FROM bep_file_location flo RIGHT JOIN bep_file_info fin ON
+              flo.loc_folder = fin.folder AND flo.loc_device = fin.device AND flo.loc_name = fin.name
+            WHERE fin.folder = ? AND fin.device = ?
+            ;"#,
+            folder_name,
+            device_id,
+        )
+        .fetch_all(&self.db_pool).await;
+
+        let mut files_fuse: HashMap<
+            (String, String, String),
+            (FileInfo, Vec<Option<FileLocation>>),
+        > = Default::default();
+
+        for file in files.unwrap().into_iter() {
+            let mut short_id: [u8; 8] = [0; 8];
+            for (i, x) in file.modified_by.iter().enumerate() {
+                short_id[i] = *x;
+            }
+            let fin = FileInfo {
+                name: file.name.clone(),
+                r#type: file.r#type.try_into().unwrap(),
+                size: file.size,
+                permissions: file.permissions.try_into().unwrap(),
+                modified_s: file.modified_s,
+                modified_ns: file.modified_ns.try_into().unwrap(),
+                modified_by: u64::from_be_bytes(short_id),
+                deleted: file.deleted == 1,
+                invalid: file.invalid == 1,
+                no_permissions: file.no_permissions == 1,
+                version: None,
+                sequence: file.sequence,
+                block_size: file.block_size.try_into().unwrap(),
+                blocks: vec![],
+                symlink_target: file.symlink_target,
+            };
+
+            let flo = file.location.map(|loc| FileLocation {
+                location: loc,
+                storage_backend: file.storage_backend.unwrap(),
+            });
+
+            files_fuse
+                .entry((file.folder, file.device, file.name))
+                .or_insert((fin, vec![]))
+                .1
+                .push(flo);
+        }
+
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        files_fuse
+            .into_iter()
+            // Remove None from Vec
+            .map(|(_, v)| (v.0, v.1.into_iter().flatten().collect()))
+            .collect()
+    }
+
+    pub async fn file(
+        &self,
+        folder_name: &str,
+        device_id: DeviceId,
         file_name: &str,
     ) -> Option<FileInfo> {
         // TODO: test if it is faster to run 3 queries 1 for the file, 1 for the blocks 1 for the
@@ -698,7 +786,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .await
             .unwrap();
 
-        let device_id = self.config.local_device_id.to_string();
+        let device_id = device_id.to_string();
 
         let file = sqlx::query!(
             r#"

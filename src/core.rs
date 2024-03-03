@@ -11,7 +11,7 @@ use crate::grizol::StorageStrategy;
 
 use std::collections::HashSet;
 use std::convert::From;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // TODO: rethink this structure, e.g. if we should store CompleteMessages and encode them at the
 // time of reading.
@@ -48,7 +48,7 @@ pub enum UploadStatus {
 // cannot be modified. Maybe thorough https://crates.io/crates/getset or https://crates.io/crates/derive-getters
 /// Data that will not change troughout the life ot the program.
 #[derive(Debug, Clone)]
-pub struct BepConfig {
+pub struct GrizolConfig {
     pub local_device_id: DeviceId,
     pub name: String,
     pub trusted_peers: HashSet<DeviceId>,
@@ -58,53 +58,61 @@ pub struct BepConfig {
     pub storage_strategy: StorageStrategy,
     pub rclone_config: Option<String>,
     pub remote_base_dir: String,
+    pub mountpoint: Option<PathBuf>,
 }
 
-impl From<grizol::Config> for BepConfig {
-    fn from(grizol_config: grizol::Config) -> Self {
-        let name = if grizol_config.name.is_empty() {
+impl From<grizol::Config> for GrizolConfig {
+    fn from(grizol_proto_config: grizol::Config) -> Self {
+        let name = if grizol_proto_config.name.is_empty() {
             String::from("Grizol Server")
         } else {
-            grizol_config.name
+            grizol_proto_config.name
         };
 
-        let net_address = if grizol_config.address.is_empty() {
+        let net_address = if grizol_proto_config.address.is_empty() {
             String::from("0.0.0.0:23456")
         } else {
-            grizol_config.address
+            grizol_proto_config.address
         };
 
-        let base_dir = if grizol_config.base_dir.is_empty() {
+        let base_dir = if grizol_proto_config.base_dir.is_empty() {
             String::from("~/grizol")
         } else {
-            grizol_config.base_dir
+            grizol_proto_config.base_dir
         };
 
-        let db_url = if grizol_config.db_url.is_empty() {
+        let db_url = if grizol_proto_config.db_url.is_empty() {
             String::from("sqlite:~/.grizol.db")
         } else {
-            grizol_config.db_url
+            grizol_proto_config.db_url
         };
 
-        let storage_strategy = grizol::StorageStrategy::try_from(grizol_config.storage_strategy)
-            .unwrap_or(grizol::StorageStrategy::Remote);
+        let storage_strategy =
+            grizol::StorageStrategy::try_from(grizol_proto_config.storage_strategy)
+                .unwrap_or(grizol::StorageStrategy::Remote);
 
-        let rclone_config = if grizol_config.rclone_config.is_empty() {
+        let rclone_config = if grizol_proto_config.rclone_config.is_empty() {
             None
         } else {
-            Some(grizol_config.rclone_config)
+            Some(grizol_proto_config.rclone_config)
         };
 
-        let remote_base_dir = if grizol_config.remote_base_dir.is_empty() {
+        let remote_base_dir = if grizol_proto_config.remote_base_dir.is_empty() {
             String::from("~/grizol")
         } else {
-            grizol_config.remote_base_dir
+            grizol_proto_config.remote_base_dir
         };
 
-        BepConfig {
-            local_device_id: DeviceId::from(Path::new(grizol_config.cert.as_str())),
+        let mountpoint = if grizol_proto_config.mountpoint.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(grizol_proto_config.mountpoint))
+        };
+
+        GrizolConfig {
+            local_device_id: DeviceId::from(Path::new(grizol_proto_config.cert.as_str())),
             name,
-            trusted_peers: grizol_config
+            trusted_peers: grizol_proto_config
                 .trusted_peers
                 .iter()
                 .map(|x| DeviceId::try_from(x.as_str()).unwrap())
@@ -115,6 +123,7 @@ impl From<grizol::Config> for BepConfig {
             storage_strategy,
             rclone_config,
             remote_base_dir,
+            mountpoint,
         }
     }
 }

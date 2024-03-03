@@ -1,6 +1,6 @@
 use crate::core::bep_data_parser::{CompleteMessage, MAGIC_NUMBER};
 use crate::core::bep_state::{BepState, BlockInfoExt, StorageStatus};
-use crate::core::{BepConfig, EncodedMessages, UploadStatus};
+use crate::core::{EncodedMessages, GrizolConfig, UploadStatus};
 use crate::device_id::DeviceId;
 use crate::grizol::StorageStrategy;
 use crate::storage::StorageManager;
@@ -21,18 +21,16 @@ use tokio::sync::Mutex;
 
 // TODO: maybe change name to something like BepConnectionHandler
 pub struct BepProcessor<TS: TimeSource<Utc>> {
-    config: BepConfig,
-    state: Mutex<BepState<TS>>,
+    config: GrizolConfig,
+    state: Arc<Mutex<BepState<TS>>>,
     storage_manager: StorageManager,
 }
 
 impl<TS: TimeSource<Utc>> BepProcessor<TS> {
-    pub fn new(config: BepConfig, db_pool: SqlitePool, clock: Arc<Mutex<TS>>) -> Self {
-        let bep_state = BepState::new(config.clone(), db_pool, clock);
-
+    pub fn new(config: GrizolConfig, state: Arc<Mutex<BepState<TS>>>) -> Self {
         BepProcessor {
             storage_manager: StorageManager::new(config.clone()),
-            state: Mutex::new(bep_state),
+            state,
             config,
         }
     }
@@ -302,10 +300,13 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                 let weak_hash = compute_weak_hash(&response.data);
                 // TODO: check the weak hash against the hashes in other devices.
                 let file_size: u64 = state
-                    .file_from_local_index(&request.folder, &request.name)
+                    .file(&request.folder, self.config.local_device_id, &request.name)
                     .await
                     .unwrap_or_else(|| {
-                        panic!("Requesting a file not in the index: {}", &request.name)
+                        panic!(
+                            "Requesting a file not in the local index: {}",
+                            &request.name
+                        )
                     })
                     .size
                     .try_into()

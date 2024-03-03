@@ -4,6 +4,7 @@ extern crate log;
 mod connectivity;
 mod core;
 mod device_id;
+mod fuse;
 mod storage;
 
 mod syncthing {
@@ -16,8 +17,10 @@ mod grizol {
 use crate::connectivity::server_config;
 use crate::core::bep_data_parser::BepDataParser;
 use crate::core::bep_processor::BepProcessor;
-use crate::core::{BepConfig, EncodedMessages};
+use crate::core::bep_state::BepState;
+use crate::core::{EncodedMessages, GrizolConfig};
 use crate::device_id::DeviceId;
+use crate::fuse::GrizolFS;
 use chrono_timesource::UtcTimeSource;
 use clap::Parser;
 use prost_reflect::{DescriptorPool, DynamicMessage};
@@ -84,9 +87,9 @@ async fn main() -> io::Result<()> {
     let client_device_id: Arc<Mutex<Option<DeviceId>>> = Arc::new(Mutex::new(None));
     let server_config = server_config(proto_config.clone(), client_device_id.clone());
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
-    let bep_config = BepConfig::from(proto_config);
+    let grizol_config = GrizolConfig::from(proto_config);
 
-    let addr: net::SocketAddr = bep_config.net_address.parse().unwrap();
+    let addr: net::SocketAddr = grizol_config.net_address.parse().unwrap();
     let listener = TcpListener::bind(&addr).await?;
 
     // Using max_connections 1 in order not to have locking issues when running transactions.
@@ -104,16 +107,30 @@ async fn main() -> io::Result<()> {
                 Ok(())
             })
         })
-        .connect(&bep_config.db_url)
+        .connect(&grizol_config.db_url)
         .await
         .expect("Not possible to connect to the sqlite database.");
 
     let clock = Arc::new(tokio::sync::Mutex::new(UtcTimeSource {}));
-    let bep_processor = Arc::new(BepProcessor::new(bep_config, db_pool, clock));
+
+    let bep_state = Arc::new(tokio::sync::Mutex::new(BepState::new(
+        grizol_config.clone(),
+        db_pool,
+        clock,
+    )));
+
+    let bep_processor = Arc::new(BepProcessor::new(grizol_config.clone(), bep_state.clone()));
 
     // We use this to ensure that the device id provided by the connection is assigned only by a
     // sigle client at a time.
     let device_id_assigner: Arc<tokio::sync::Mutex<bool>> = Arc::new(tokio::sync::Mutex::new(true));
+
+    let _bg = if let Some(m) = grizol_config.mountpoint.as_ref() {
+        let fs = GrizolFS::new(grizol_config.clone(), bep_state.clone());
+        Some(fuse::mount(m, fs))
+    } else {
+        None
+    };
 
     loop {
         debug!("Wating for a new connection on {}", &addr);
@@ -131,6 +148,8 @@ async fn main() -> io::Result<()> {
             }
         });
     }
+
+    Ok(())
 }
 
 async fn handle_incoming_data(
