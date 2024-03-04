@@ -56,6 +56,34 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         reply.attr(&Duration::from_secs(100), &HELLO_DIR_ATTR);
     }
 
+    fn lookup(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &std::ffi::OsStr,
+        reply: fuser::ReplyEntry,
+    ) {
+        // TODO: query this from the database
+        let files = self.rt.block_on(async {
+            let state = self.state.lock().await;
+            state
+                .files_fuse("orig_dir", self.config.local_device_id)
+                .await
+        });
+        // TODO: improve this to allow getting attributes for a file
+        let file = files.iter().find(|&f| f.0.name == name.to_str().unwrap());
+
+        if file.is_none() {
+            reply.error(ENOENT);
+            return;
+        }
+        let file = file.unwrap();
+
+        let attr = attr_from_file(&file.0);
+
+        reply.entry(&Duration::from_secs(3600), &attr, 1);
+    }
+
     fn readdir(
         &mut self,
         _req: &Request<'_>,
@@ -64,8 +92,6 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         offset: i64,
         mut reply: fuser::ReplyDirectory,
     ) {
-        let offset = offset as usize;
-
         // TODO: store the result, fh set with opendir should help with this
         let files = self.rt.block_on(async {
             let state = self.state.lock().await;
@@ -79,15 +105,24 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         let base_dir: String = if ino == FUSE_ROOT_ID {
             "".to_string()
         } else {
-            todo!();
+            let res = files
+                .iter()
+                .find(|&f| f.0.sequence == ino as i64)
+                .map(|f| f.0.name.to_owned());
+            if res.is_none() {
+                reply.error(ENOENT);
+                return;
+            }
+            res.unwrap()
         };
 
+        let offset = offset as usize;
+
+        // TODO: should probably use filter_map here
         let files: Vec<(FileInfo, Vec<FileLocation>)> = files
             .into_iter()
             .filter(|(file, _)| is_file_in_current_dir(&base_dir, &file))
             .collect();
-
-        debug!("offset: {:?}, files.len: {:?}", offset, files.len());
 
         if offset == files.len() {
             reply.ok();
@@ -97,14 +132,17 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         for i in offset..files.len() {
             let file = &files[i].0;
 
-            debug!("Processing: {:?}", file.name);
+            let file_name = Path::new(&file.name)
+                .strip_prefix(Path::new(&base_dir))
+                .unwrap()
+                .as_os_str();
+
             let is_buffer_full = reply.add(
                 file.sequence as u64,
                 (i + 1) as i64,
-                // TODO: use the correct file type
-                FileType::RegularFile
-                file.name.clone(),
-                // format!("file-{}", file.sequence),
+                file_type(file.r#type),
+                // TODO: remove base_dir from the name
+                file_name,
             );
 
             if is_buffer_full {
@@ -144,10 +182,42 @@ fn is_file_in_current_dir(base_dir: &str, file: &FileInfo) -> bool {
     }
     let file_name = file_name.unwrap();
 
-    let res = stripped_path == Path::new(file_name);
-    debug!(
-        "stripped_path: {:?} - file_name: {:?} - res: {:?}",
-        stripped_path, file_name, res
-    );
+    stripped_path == Path::new(file_name)
+}
+
+fn attr_from_file(file: &FileInfo) -> FileAttr {
+    let modified_ts = UNIX_EPOCH
+        .checked_add(Duration::from_secs(file.modified_s as u64))
+        .and_then(|ts| ts.checked_add(Duration::from_nanos(file.modified_ns as u64)))
+        .unwrap();
+    let res = FileAttr {
+        ino: file.sequence as u64,
+        size: file.size as u64,
+        blocks: 0,
+        atime: modified_ts,
+        mtime: modified_ts,
+        ctime: modified_ts,
+        crtime: modified_ts,
+        kind: file_type(file.r#type),
+        perm: file.permissions as u16,
+        nlink: 0,
+        // TODO: get the actual UID for the current user
+        uid: 1001,
+        // TODO: get the actual GID for the current user
+        gid: 997,
+        rdev: 0,
+        flags: 0,
+        blksize: file.block_size as u32,
+    };
+    debug!("attr: {:?}", res);
     res
+}
+
+fn file_type(file_type_code: i32) -> FileType {
+    match file_type_code {
+        0 => FileType::RegularFile,
+        1 => FileType::Directory,
+        2 | 3 | 4 => FileType::Symlink,
+        _ => todo!(),
+    }
 }

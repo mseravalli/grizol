@@ -2,7 +2,7 @@
 
 # Config for quick and dirty 
 export RUSTFLAGS=-Awarnings
-export RUST_LOG=info,grizol=debug
+export RUST_LOG=info,grizol=debug,fuser=debug
 
 # # Config for better quality
 # export RUSTFLAGS=""
