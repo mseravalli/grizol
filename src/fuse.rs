@@ -1,11 +1,12 @@
-use crate::core::bep_state::BepState;
+use crate::core::bep_state::{BepState, FileLocation};
 use crate::core::GrizolConfig;
+use crate::syncthing::FileInfo;
 use chrono::prelude::*;
 use chrono::prelude::*;
 use chrono_timesource::TimeSource;
 use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyOpen, Request,
-    Session,
+    Session, FUSE_ROOT_ID,
 };
 use libc::{EACCES, EINVAL, EISDIR, ENOBUFS, ENOENT, ENOTDIR};
 use std::path::{Path, PathBuf};
@@ -63,7 +64,9 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         offset: i64,
         mut reply: fuser::ReplyDirectory,
     ) {
-        // TODO: store the result, fh should help with this
+        let offset = offset as usize;
+
+        // TODO: store the result, fh set with opendir should help with this
         let files = self.rt.block_on(async {
             let state = self.state.lock().await;
 
@@ -73,9 +76,18 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
                 .await
         });
 
-        debug!("offset: {:?}, files.len: {:?}", offset, files.len());
+        let base_dir: String = if ino == FUSE_ROOT_ID {
+            "".to_string()
+        } else {
+            todo!();
+        };
 
-        let offset = offset as usize;
+        let files: Vec<(FileInfo, Vec<FileLocation>)> = files
+            .into_iter()
+            .filter(|(file, _)| is_file_in_current_dir(&base_dir, &file))
+            .collect();
+
+        debug!("offset: {:?}, files.len: {:?}", offset, files.len());
 
         if offset == files.len() {
             reply.ok();
@@ -85,15 +97,12 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         for i in offset..files.len() {
             let file = &files[i].0;
 
-            if file.name.starts_with("dir") {
-                continue;
-            }
-
             debug!("Processing: {:?}", file.name);
             let is_buffer_full = reply.add(
                 file.sequence as u64,
                 (i + 1) as i64,
-                FileType::RegularFile,
+                // TODO: use the correct file type
+                FileType::RegularFile
                 file.name.clone(),
                 // format!("file-{}", file.sequence),
             );
@@ -104,20 +113,8 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
                 return;
             }
         }
-        reply.ok();
 
-        // let last_item_idx = 0;
-        // if offset == 0 {
-        //     let is_buffer_full = reply.add(2, last_item_idx + 1, FileType::RegularFile, "file1");
-        //     if is_buffer_full {
-        //         debug!("replied with full buffer");
-        //         reply.error(ENOBUFS);
-        //     } else {
-        //         reply.ok();
-        //     }
-        // } else {
-        //     reply.ok();
-        // }
+        reply.ok();
     }
 }
 
@@ -132,4 +129,25 @@ pub fn mount<TS: TimeSource<Utc> + 'static>(
     )
     .unwrap();
     session.spawn().unwrap()
+}
+
+fn is_file_in_current_dir(base_dir: &str, file: &FileInfo) -> bool {
+    let stripped_path = Path::new(&file.name).strip_prefix(&base_dir);
+    if stripped_path.is_err() {
+        return false;
+    }
+    let stripped_path = stripped_path.unwrap();
+
+    let file_name = stripped_path.file_name();
+    if file_name.is_none() {
+        return false;
+    }
+    let file_name = file_name.unwrap();
+
+    let res = stripped_path == Path::new(file_name);
+    debug!(
+        "stripped_path: {:?} - file_name: {:?} - res: {:?}",
+        stripped_path, file_name, res
+    );
+    res
 }
