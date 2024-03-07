@@ -15,7 +15,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
-const HELLO_DIR_ATTR: FileAttr = FileAttr {
+const ROOT_DIR_ATTR: FileAttr = FileAttr {
     ino: 1,
     size: 0,
     blocks: 0,
@@ -53,7 +53,30 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
 
 impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
     fn getattr(&mut self, req: &Request, ino: u64, reply: ReplyAttr) {
-        reply.attr(&Duration::from_secs(100), &HELLO_DIR_ATTR);
+        if ino == FUSE_ROOT_ID {
+            reply.attr(&Duration::from_secs(3600), &ROOT_DIR_ATTR);
+            return;
+        }
+
+        // TODO: cache the result, fh set with opendir should help with this
+        let files = self.rt.block_on(async {
+            let state = self.state.lock().await;
+
+            // FIXME: pass dir, 1 fuse per folder??
+            state
+                .files_fuse("orig_dir", self.config.local_device_id)
+                .await
+        });
+
+        let file = if let Some(f) = files.iter().find(|&f| f.0.sequence == ino as i64) {
+            f
+        } else {
+            reply.error(ENOENT);
+            return;
+        };
+
+        let attr = attr_from_file(&file.0);
+        reply.attr(&Duration::from_secs(3600), &attr);
     }
 
     fn lookup(
@@ -97,7 +120,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         offset: i64,
         mut reply: fuser::ReplyDirectory,
     ) {
-        // TODO: store the result, fh set with opendir should help with this
+        // TODO: cache the result, fh set with opendir should help with this
         let files = self.rt.block_on(async {
             let state = self.state.lock().await;
 
@@ -106,6 +129,14 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
                 .files_fuse("orig_dir", self.config.local_device_id)
                 .await
         });
+
+        trace!(
+            "files {:?}",
+            files
+                .iter()
+                .map(|f| f.0.name.clone())
+                .collect::<Vec<String>>()
+        );
 
         let base_dir: String = if ino == FUSE_ROOT_ID {
             "".to_string()
@@ -175,7 +206,7 @@ pub fn mount<TS: TimeSource<Utc> + 'static>(
 }
 
 fn parent_dir(files: &Vec<(FileInfo, Vec<FileLocation>)>, parent_ino: u64) -> String {
-    if parent_ino == 1 {
+    if parent_ino == FUSE_ROOT_ID {
         return "".to_owned();
     }
     files
