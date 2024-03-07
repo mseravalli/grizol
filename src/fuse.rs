@@ -59,7 +59,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
     fn lookup(
         &mut self,
         _req: &Request<'_>,
-        parent: u64,
+        parent_ino: u64,
         name: &std::ffi::OsStr,
         reply: fuser::ReplyEntry,
     ) {
@@ -70,8 +70,13 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
                 .files_fuse("orig_dir", self.config.local_device_id)
                 .await
         });
-        // TODO: improve this to allow getting attributes for a file
-        let file = files.iter().find(|&f| f.0.name == name.to_str().unwrap());
+
+        let parent_dir = parent_dir(&files, parent_ino);
+
+        let file = files
+            .iter()
+            .filter(|f| f.0.name.contains(name.to_str().unwrap()))
+            .find(|&f| is_file_in_current_dir(&parent_dir, &f.0));
 
         if file.is_none() {
             reply.error(ENOENT);
@@ -167,6 +172,18 @@ pub fn mount<TS: TimeSource<Utc> + 'static>(
     )
     .unwrap();
     session.spawn().unwrap()
+}
+
+fn parent_dir(files: &Vec<(FileInfo, Vec<FileLocation>)>, parent_ino: u64) -> String {
+    if parent_ino == 1 {
+        return "".to_owned();
+    }
+    files
+        .iter()
+        .find(|&x| x.0.sequence == parent_ino as i64)
+        .map(|x| &x.0.name)
+        .unwrap()
+        .to_owned()
 }
 
 fn is_file_in_current_dir(base_dir: &str, file: &FileInfo) -> bool {
