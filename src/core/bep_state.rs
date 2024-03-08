@@ -1,4 +1,4 @@
-use crate::core::{GrizolConfig, UploadStatus};
+use crate::core::UploadStatus;
 use crate::device_id::DeviceId;
 use crate::syncthing;
 use chrono::prelude::*;
@@ -31,7 +31,11 @@ pub enum StorageStatus {
 
 #[derive(Clone, Debug)]
 pub struct FileLocation {
+    // TODO: remove allow(dead_code) once we start using this field in the fuse
+    #[allow(dead_code)]
     location: String,
+    // TODO: remove allow(dead_code) once we start using this field in the fuse
+    #[allow(dead_code)]
     storage_backend: String,
 }
 
@@ -44,7 +48,6 @@ impl From<StorageStatus> for i32 {
 #[derive(Debug)]
 pub struct BepState<TS: TimeSource<Utc>> {
     clock: Arc<Mutex<TS>>,
-    config: GrizolConfig,
     db_pool: SqlitePool,
     sequence: i64,
     request_id: i32,
@@ -52,10 +55,9 @@ pub struct BepState<TS: TimeSource<Utc>> {
 }
 
 impl<TS: TimeSource<Utc>> BepState<TS> {
-    pub fn new(config: GrizolConfig, db_pool: SqlitePool, clock: Arc<Mutex<TS>>) -> Self {
+    pub fn new(db_pool: SqlitePool, clock: Arc<Mutex<TS>>) -> Self {
         BepState {
             clock,
-            config,
             db_pool,
             sequence: 0,
             request_id: 0,
@@ -723,6 +725,8 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         )
         .fetch_all(&self.db_pool).await;
 
+        // This is type is used only within this method
+        #[allow(clippy::type_complexity)]
         let mut files_fuse: HashMap<
             (String, String, String),
             (FileInfo, Vec<Option<FileLocation>>),
@@ -768,7 +772,9 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .await
             .unwrap();
 
-        files_fuse.into_values().map(|v| (v.0, v.1.into_iter().flatten().collect()))
+        files_fuse
+            .into_values()
+            .map(|v| (v.0, v.1.into_iter().flatten().collect()))
             .collect()
     }
 

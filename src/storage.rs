@@ -405,9 +405,11 @@ mod test {
 
     #[tokio::test]
     async fn store_block_new_file_succeeds() {
-        let mut config = grizol::Config::default();
-        config.cert = "tests/util/cert.pem".to_string();
-        config.key = "tests/util/key.pem".to_string();
+        let config = grizol::Config {
+            cert: "tests/util/cert.pem".to_string(),
+            key: "tests/util/key.pem".to_string(),
+            ..Default::default()
+        };
         let bep_config = GrizolConfig::from(config);
         let storage_manager = StorageManager::new(bep_config);
 

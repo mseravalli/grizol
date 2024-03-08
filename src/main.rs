@@ -113,11 +113,7 @@ async fn main() -> io::Result<()> {
 
     let clock = Arc::new(tokio::sync::Mutex::new(UtcTimeSource {}));
 
-    let bep_state = Arc::new(tokio::sync::Mutex::new(BepState::new(
-        grizol_config.clone(),
-        db_pool,
-        clock,
-    )));
+    let bep_state = Arc::new(tokio::sync::Mutex::new(BepState::new(db_pool, clock)));
 
     let bep_processor = Arc::new(BepProcessor::new(grizol_config.clone(), bep_state.clone()));
 
@@ -148,8 +144,6 @@ async fn main() -> io::Result<()> {
             }
         });
     }
-
-    Ok(())
 }
 
 async fn handle_incoming_data(

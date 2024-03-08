@@ -5,10 +5,11 @@ use chrono::prelude::*;
 
 use chrono_timesource::TimeSource;
 use fuser::{
-    BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, Request, FUSE_ROOT_ID,
+    BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, Request,
+    FUSE_ROOT_ID,
 };
 use libc::{ENOBUFS, ENOENT};
-use std::path::{Path};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 use tokio::runtime::Runtime;
@@ -164,8 +165,8 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             return;
         }
 
-        for i in offset..files.len() {
-            let file = &files[i].0;
+        for (i, record) in files.iter().enumerate().skip(offset) {
+            let file = &record.0;
 
             let file_name = Path::new(&file.name)
                 .strip_prefix(Path::new(&base_dir))
@@ -204,7 +205,7 @@ pub fn mount<TS: TimeSource<Utc> + 'static>(
     session.spawn().unwrap()
 }
 
-fn parent_dir(files: &Vec<(FileInfo, Vec<FileLocation>)>, parent_ino: u64) -> String {
+fn parent_dir(files: &[(FileInfo, Vec<FileLocation>)], parent_ino: u64) -> String {
     if parent_ino == FUSE_ROOT_ID {
         return "".to_owned();
     }
