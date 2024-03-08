@@ -130,7 +130,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
                 .await
         });
 
-        trace!(
+        debug!(
             "files {:?}",
             files
                 .iter()

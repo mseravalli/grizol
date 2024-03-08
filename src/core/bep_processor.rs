@@ -127,6 +127,10 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     .await;
 
                 // Update the local index of the current device
+                let other_device_local_index = state
+                    .index(&folder, &client_device_id)
+                    .await
+                    .expect("The local index must exist");
                 let local_index = state
                     .index(&folder, &self.config.local_device_id)
                     .await
@@ -528,6 +532,23 @@ fn diff_indices(
     if added_index.folder != folder && existing_index.folder != folder {
         return Err("The indices cover different folders".to_string());
     }
+
+    debug!(
+        "Added index: {:?}",
+        &added_index
+            .files
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<&str>>()
+    );
+    debug!(
+        "Existing index: {:?}",
+        &existing_index
+            .files
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<&str>>()
+    );
 
     let existing_files: HashMap<&String, &FileInfo> =
         existing_index.files.iter().map(|f| (&f.name, f)).collect();

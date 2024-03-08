@@ -439,7 +439,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             r#"
             SELECT f.*, bi.*
             FROM bep_file_info f
-                JOIN bep_block_info bi ON f.name = bi.file_name AND f.folder = bi.file_folder AND f.device = bi.file_device
+                LEFT JOIN bep_block_info bi ON f.name = bi.file_name AND f.folder = bi.file_folder AND f.device = bi.file_device
             WHERE f.folder = ? AND f.device = ?
             ;"#,
             folder,
@@ -449,7 +449,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
         let file_versions = sqlx::query!(
             r#"
-            SELECT f.name,v.id, v.value
+            SELECT f.name, v.id, v.value
             FROM bep_file_info f
                 JOIN bep_file_version v ON f.name = v.file_name AND f.folder = v.file_folder AND f.device = v.file_device
             WHERE f.folder = ? and f.device = ?
@@ -463,15 +463,16 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
         for file in file_blocks.await.unwrap() {
             if existing_files.contains_key(&file.name) {
-                let bi = BlockInfo {
-                    offset: file.offset,
-                    size: file.bi_size.try_into().unwrap(),
-                    hash: file.hash,
-                    weak_hash: file.weak_hash.unwrap_or(0).try_into().unwrap(),
-                };
-
-                if let Some(f) = existing_files.get_mut(&file.name) {
-                    f.blocks.push(bi)
+                if file.offset.is_some() {
+                    let bi = BlockInfo {
+                        offset: file.offset.unwrap(),
+                        size: file.bi_size.unwrap().try_into().unwrap(),
+                        hash: file.hash.unwrap(),
+                        weak_hash: file.weak_hash.unwrap_or(0).try_into().unwrap(),
+                    };
+                    if let Some(f) = existing_files.get_mut(&file.name) {
+                        f.blocks.push(bi)
+                    }
                 }
             } else {
                 let mut short_id: [u8; 8] = [0; 8];
@@ -495,14 +496,16 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     blocks: vec![],
                     symlink_target: file.symlink_target,
                 };
-                let bi = BlockInfo {
-                    offset: file.offset,
-                    size: file.bi_size.try_into().unwrap(),
-                    hash: file.hash,
-                    weak_hash: file.weak_hash.unwrap_or(0).try_into().unwrap(),
-                };
+                if file.offset.is_some() {
+                    let bi = BlockInfo {
+                        offset: file.offset.unwrap(),
+                        size: file.bi_size.unwrap().try_into().unwrap(),
+                        hash: file.hash.unwrap(),
+                        weak_hash: file.weak_hash.unwrap_or(0).try_into().unwrap(),
+                    };
 
-                fi.blocks.push(bi);
+                    fi.blocks.push(bi);
+                }
                 existing_files.insert(fi.name.clone(), fi);
             }
         }
@@ -1154,13 +1157,13 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             // Rename according to
             // https://docs.syncthing.net/users/syncing.html#conflicting-changes
             if move_file {
-                debug!("Moving files");
+                debug!("Moving file: {}", file.name);
                 let new_path = {
                     let clock = self.clock.lock().await;
                     new_file_path(&file.name, &device_id, clock.now().unwrap())
                 };
                 // We have a cascading updates.
-                let _insert_res = sqlx::query!(
+                let _update_res = sqlx::query!(
                     "
                     PRAGMA foreign_keys = ON;
                     UPDATE OR ROLLBACK bep_file_info
@@ -1178,9 +1181,9 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
                 file_dests.insert(file.name.clone(), new_path);
             } else {
-                debug!("Deleting files");
+                debug!("Deleting file: {}", file.name);
                 // We have a cascading removal.
-                let _insert_res = sqlx::query!(
+                let _delete_res = sqlx::query!(
                     "
                     PRAGMA foreign_keys = ON;
                     DELETE FROM bep_file_info
