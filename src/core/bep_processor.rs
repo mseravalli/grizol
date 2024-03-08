@@ -9,7 +9,7 @@ use chrono::prelude::*;
 use chrono_timesource::TimeSource;
 use prost::Message;
 use sha2::{Digest, Sha256};
-use sqlx::sqlite::SqlitePool;
+
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -127,10 +127,6 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     .await;
 
                 // Update the local index of the current device
-                let other_device_local_index = state
-                    .index(&folder, &client_device_id)
-                    .await
-                    .expect("The local index must exist");
                 let local_index = state
                     .index(&folder, &self.config.local_device_id)
                     .await

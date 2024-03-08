@@ -2,14 +2,13 @@ use crate::core::bep_state::{BepState, FileLocation};
 use crate::core::GrizolConfig;
 use crate::syncthing::FileInfo;
 use chrono::prelude::*;
-use chrono::prelude::*;
+
 use chrono_timesource::TimeSource;
 use fuser::{
-    BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyOpen, Request,
-    Session, FUSE_ROOT_ID,
+    BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, Request, FUSE_ROOT_ID,
 };
-use libc::{EACCES, EINVAL, EISDIR, ENOBUFS, ENOENT, ENOTDIR};
-use std::path::{Path, PathBuf};
+use libc::{ENOBUFS, ENOENT};
+use std::path::{Path};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 use tokio::runtime::Runtime;
@@ -52,7 +51,7 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
 }
 
 impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
-    fn getattr(&mut self, req: &Request, ino: u64, reply: ReplyAttr) {
+    fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
         if ino == FUSE_ROOT_ID {
             reply.attr(&Duration::from_secs(3600), &ROOT_DIR_ATTR);
             return;
@@ -116,7 +115,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         &mut self,
         _req: &Request<'_>,
         ino: u64,
-        fh: u64,
+        _fh: u64,
         offset: i64,
         mut reply: fuser::ReplyDirectory,
     ) {
@@ -157,7 +156,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         // TODO: should probably use filter_map here
         let files: Vec<(FileInfo, Vec<FileLocation>)> = files
             .into_iter()
-            .filter(|(file, _)| is_file_in_current_dir(&base_dir, &file))
+            .filter(|(file, _)| is_file_in_current_dir(&base_dir, file))
             .collect();
 
         if offset == files.len() {
@@ -198,7 +197,7 @@ pub fn mount<TS: TimeSource<Utc> + 'static>(
 ) -> BackgroundSession {
     let session = fuser::Session::new(
         fs,
-        &mountpoint,
+        mountpoint,
         &[MountOption::AllowRoot, MountOption::AutoUnmount],
     )
     .unwrap();
@@ -218,7 +217,7 @@ fn parent_dir(files: &Vec<(FileInfo, Vec<FileLocation>)>, parent_ino: u64) -> St
 }
 
 fn is_file_in_current_dir(base_dir: &str, file: &FileInfo) -> bool {
-    let stripped_path = Path::new(&file.name).strip_prefix(&base_dir);
+    let stripped_path = Path::new(&file.name).strip_prefix(base_dir);
     if stripped_path.is_err() {
         return false;
     }
@@ -265,7 +264,7 @@ fn file_type(file_type_code: i32) -> FileType {
     match file_type_code {
         0 => FileType::RegularFile,
         1 => FileType::Directory,
-        2 | 3 | 4 => FileType::Symlink,
+        2..=4 => FileType::Symlink,
         _ => todo!(),
     }
 }

@@ -768,10 +768,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .await
             .unwrap();
 
-        files_fuse
-            .into_iter()
-            // Remove None from Vec
-            .map(|(_, v)| (v.0, v.1.into_iter().flatten().collect()))
+        files_fuse.into_values().map(|v| (v.0, v.1.into_iter().flatten().collect()))
             .collect()
     }
 
