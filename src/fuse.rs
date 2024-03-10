@@ -15,23 +15,8 @@ use std::time::{Duration, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
-const ROOT_DIR_ATTR: FileAttr = FileAttr {
-    ino: 1,
-    size: 0,
-    blocks: 0,
-    atime: UNIX_EPOCH, // 1970-01-01 00:00:00
-    mtime: UNIX_EPOCH,
-    ctime: UNIX_EPOCH,
-    crtime: UNIX_EPOCH,
-    kind: FileType::Directory,
-    perm: 0o755,
-    nlink: 2,
-    uid: 501,
-    gid: 20,
-    rdev: 0,
-    flags: 0,
-    blksize: 512,
-};
+const TOP_DIRS_START: u64 = 10;
+const ENTRIES_START: u64 = 1000;
 
 pub struct GrizolFS<TS: TimeSource<Utc>> {
     state: Arc<Mutex<BepState<TS>>>,
@@ -49,12 +34,59 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
 
         GrizolFS { config, state, rt }
     }
+
+    fn root_dir_attr(&self) -> FileAttr {
+        FileAttr {
+            ino: FUSE_ROOT_ID,
+            size: 0,
+            blocks: 0,
+            atime: UNIX_EPOCH, // 1970-01-01 00:00:00
+            mtime: UNIX_EPOCH,
+            ctime: UNIX_EPOCH,
+            crtime: UNIX_EPOCH,
+            kind: FileType::Directory,
+            perm: 0o755,
+            nlink: 2,
+            // TODO: use queying user
+            uid: self.config.uid,
+            gid: self.config.gid,
+            rdev: 0,
+            flags: 0,
+            blksize: 512,
+        }
+    }
+
+    fn attr_from_file(&self, file: &FileInfo) -> FileAttr {
+        let modified_ts = UNIX_EPOCH
+            .checked_add(Duration::from_secs(file.modified_s as u64))
+            .and_then(|ts| ts.checked_add(Duration::from_nanos(file.modified_ns as u64)))
+            .unwrap();
+        let res = FileAttr {
+            ino: file.sequence as u64,
+            size: file.size as u64,
+            blocks: 0,
+            atime: modified_ts,
+            mtime: modified_ts,
+            ctime: modified_ts,
+            crtime: modified_ts,
+            kind: file_type(file.r#type),
+            perm: file.permissions as u16,
+            nlink: 0,
+            uid: self.config.uid,
+            gid: self.config.gid,
+            rdev: 0,
+            flags: 0,
+            blksize: file.block_size as u32,
+        };
+        debug!("attr: {:?}", res);
+        res
+    }
 }
 
 impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
         if ino == FUSE_ROOT_ID {
-            reply.attr(&Duration::from_secs(3600), &ROOT_DIR_ATTR);
+            reply.attr(&Duration::from_secs(3600), &self.root_dir_attr());
             return;
         }
 
@@ -75,7 +107,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             return;
         };
 
-        let attr = attr_from_file(&file.0);
+        let attr = self.attr_from_file(&file.0);
         reply.attr(&Duration::from_secs(3600), &attr);
     }
 
@@ -107,7 +139,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         }
         let file = file.unwrap();
 
-        let attr = attr_from_file(&file.0);
+        let attr = self.attr_from_file(&file.0);
 
         reply.entry(&Duration::from_secs(3600), &attr, 1);
     }
@@ -231,34 +263,6 @@ fn is_file_in_current_dir(base_dir: &str, file: &FileInfo) -> bool {
     let file_name = file_name.unwrap();
 
     stripped_path == Path::new(file_name)
-}
-
-fn attr_from_file(file: &FileInfo) -> FileAttr {
-    let modified_ts = UNIX_EPOCH
-        .checked_add(Duration::from_secs(file.modified_s as u64))
-        .and_then(|ts| ts.checked_add(Duration::from_nanos(file.modified_ns as u64)))
-        .unwrap();
-    let res = FileAttr {
-        ino: file.sequence as u64,
-        size: file.size as u64,
-        blocks: 0,
-        atime: modified_ts,
-        mtime: modified_ts,
-        ctime: modified_ts,
-        crtime: modified_ts,
-        kind: file_type(file.r#type),
-        perm: file.permissions as u16,
-        nlink: 0,
-        // TODO: get the actual UID for the current user
-        uid: 1001,
-        // TODO: get the actual GID for the current user
-        gid: 997,
-        rdev: 0,
-        flags: 0,
-        blksize: file.block_size as u32,
-    };
-    debug!("attr: {:?}", res);
-    res
 }
 
 fn file_type(file_type_code: i32) -> FileType {

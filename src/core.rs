@@ -9,6 +9,7 @@ use crate::device_id::DeviceId;
 use crate::grizol;
 use crate::grizol::StorageStrategy;
 
+use libc;
 use std::collections::HashSet;
 use std::convert::From;
 use std::path::{Path, PathBuf};
@@ -59,6 +60,8 @@ pub struct GrizolConfig {
     pub rclone_config: Option<String>,
     pub remote_base_dir: String,
     pub mountpoint: Option<PathBuf>,
+    pub uid: u32,
+    pub gid: u32,
 }
 
 impl From<grizol::Config> for GrizolConfig {
@@ -109,6 +112,9 @@ impl From<grizol::Config> for GrizolConfig {
             Some(PathBuf::from(grizol_proto_config.mountpoint))
         };
 
+        let uid = unsafe { libc::geteuid() };
+        let gid = unsafe { libc::getegid() };
+
         GrizolConfig {
             local_device_id: DeviceId::from(Path::new(grizol_proto_config.cert.as_str())),
             name,
@@ -124,6 +130,8 @@ impl From<grizol::Config> for GrizolConfig {
             rclone_config,
             remote_base_dir,
             mountpoint,
+            uid,
+            gid,
         }
     }
 }
