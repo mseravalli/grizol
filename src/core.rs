@@ -8,7 +8,7 @@ pub mod bep_state;
 use crate::device_id::DeviceId;
 use crate::grizol;
 use crate::grizol::StorageStrategy;
-use crate::syncthing::FileInfo;
+use crate::syncthing::{FileInfo, Folder};
 use libc;
 use std::collections::HashSet;
 use std::convert::From;
@@ -41,9 +41,28 @@ impl EncodedMessages {
 
 // This struct allows us to include additional implementation specific information.
 #[derive(Debug, Clone)]
+pub struct GrizolFolder {
+    pub folder: Folder,
+    pub id: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct FileLocation {
+    // TODO: remove allow(dead_code) once we start using this field in the fuse
+    #[allow(dead_code)]
+    location: String,
+    // TODO: remove allow(dead_code) once we start using this field in the fuse
+    #[allow(dead_code)]
+    storage_backend: String,
+}
+
+// This struct allows us to include additional implementation specific information.
+#[derive(Debug, Clone)]
 pub struct GrizolFileInfo {
     pub file_info: FileInfo,
     pub id: i64,
+    pub file_locations: Vec<FileLocation>,
+    pub folder: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

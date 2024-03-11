@@ -1,6 +1,6 @@
-use crate::core::{GrizolFileInfo, UploadStatus};
+use crate::core::{GrizolFileInfo, GrizolFolder, UploadStatus};
 use crate::device_id::DeviceId;
-use crate::syncthing;
+use crate::syncthing::{self, Folder};
 use chrono::prelude::*;
 use chrono_timesource::TimeSource;
 use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
@@ -696,16 +696,62 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         blocks
     }
 
+    /// Returns top level folders storing all the entries.
+    /// [Folder] does not derive Hash, therefore it's not possible to directly use a [HashMap],
+    /// however the returned [Vec] guarantees that there are no duplicate [GrizolFolder]s.
+    // TODO: what's the best way to filter?? in the SQL? within this fuction, at the client?
+    pub async fn top_folders_fuse(&self, device_id: DeviceId) -> Vec<GrizolFolder> {
+        let device_id = device_id.to_string();
+
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        let folders = sqlx::query!(
+            r#"
+            SELECT DISTINCT(f.rowid) AS f_id, f.*
+            FROM bep_folders f JOIN bep_devices d ON f.id = d.folder
+            WHERE d.id = ?
+            ;"#,
+            device_id,
+        )
+        .fetch_all(&self.db_pool)
+        .await;
+
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        folders
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.f_id.is_some())
+            .map(|f| {
+                let folder = Folder {
+                    id: f.id,
+                    label: f.label,
+                    read_only: f.read_only == 1,
+                    ignore_permissions: f.ignore_permissions == 1,
+                    ignore_delete: f.ignore_delete == 1,
+                    disable_temp_indexes: f.disable_temp_indexes == 1,
+                    paused: f.paused == 1,
+                    devices: vec![],
+                };
+                GrizolFolder {
+                    folder,
+                    id: f.f_id.unwrap(),
+                }
+            })
+            .collect()
+    }
+
     /// Returns information that can be used for fuse.
     /// [FileInfo] does not derive Hash, therefore it's not possible to directly use a [HashMap],
-    /// however the returned [Vec] guarantees that there are no duplicate [FileInfo]s.
+    /// however the returned [Vec] guarantees that there are no duplicate [GrizolFileInfo]s.
     // TODO: what's the best way to filter?? in the SQL? within this fuction, at the client?
-    pub async fn files_fuse(
-        &self,
-        folder_name: &str,
-        device_id: DeviceId,
-    ) -> Vec<(GrizolFileInfo, Vec<FileLocation>)> {
-        let folder_name = folder_name.to_string();
+    pub async fn files_fuse(&self, device_id: DeviceId) -> Vec<(GrizolFileInfo)> {
         let device_id = device_id.to_string();
 
         sqlx::query!("BEGIN TRANSACTION;")
@@ -718,19 +764,20 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             SELECT fin.rowid as r_id, *
             FROM bep_file_location flo RIGHT JOIN bep_file_info fin ON
               flo.loc_folder = fin.folder AND flo.loc_device = fin.device AND flo.loc_name = fin.name
-            WHERE fin.folder = ? AND fin.device = ?
+            WHERE fin.device = ?
             ;"#,
-            folder_name,
             device_id,
         )
         .fetch_all(&self.db_pool).await;
 
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
         // This is type is used only within this method
         #[allow(clippy::type_complexity)]
-        let mut files_fuse: HashMap<
-            (String, String, String),
-            (GrizolFileInfo, Vec<Option<FileLocation>>),
-        > = Default::default();
+        let mut files_fuse: HashMap<(String, String, String), GrizolFileInfo> = Default::default();
 
         for file in files.unwrap().into_iter() {
             let mut short_id: [u8; 8] = [0; 8];
@@ -763,24 +810,18 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             let g_fin = GrizolFileInfo {
                 file_info: fin,
                 id: file.r_id,
+                folder: file.folder.clone(),
+                // TODO: add file locations
+                file_locations: vec![],
             };
 
+            // TODO: add file locations
             files_fuse
                 .entry((file.folder, file.device, file.name))
-                .or_insert((g_fin, vec![]))
-                .1
-                .push(flo);
+                .or_insert(g_fin);
         }
 
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
-
-        files_fuse
-            .into_values()
-            .map(|v| (v.0, v.1.into_iter().flatten().collect()))
-            .collect()
+        files_fuse.into_values().collect()
     }
 
     pub async fn file(
