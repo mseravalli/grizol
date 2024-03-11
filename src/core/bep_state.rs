@@ -1,4 +1,4 @@
-use crate::core::UploadStatus;
+use crate::core::{GrizolFileInfo, UploadStatus};
 use crate::device_id::DeviceId;
 use crate::syncthing;
 use chrono::prelude::*;
@@ -704,7 +704,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         &self,
         folder_name: &str,
         device_id: DeviceId,
-    ) -> Vec<(FileInfo, Vec<FileLocation>)> {
+    ) -> Vec<(GrizolFileInfo, Vec<FileLocation>)> {
         let folder_name = folder_name.to_string();
         let device_id = device_id.to_string();
 
@@ -715,7 +715,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
         let files = sqlx::query!(
             r#"
-            SELECT *
+            SELECT fin.rowid as r_id, *
             FROM bep_file_location flo RIGHT JOIN bep_file_info fin ON
               flo.loc_folder = fin.folder AND flo.loc_device = fin.device AND flo.loc_name = fin.name
             WHERE fin.folder = ? AND fin.device = ?
@@ -729,7 +729,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         #[allow(clippy::type_complexity)]
         let mut files_fuse: HashMap<
             (String, String, String),
-            (FileInfo, Vec<Option<FileLocation>>),
+            (GrizolFileInfo, Vec<Option<FileLocation>>),
         > = Default::default();
 
         for file in files.unwrap().into_iter() {
@@ -760,9 +760,14 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 storage_backend: file.storage_backend.unwrap(),
             });
 
+            let g_fin = GrizolFileInfo {
+                file_info: fin,
+                id: file.r_id,
+            };
+
             files_fuse
                 .entry((file.folder, file.device, file.name))
-                .or_insert((fin, vec![]))
+                .or_insert((g_fin, vec![]))
                 .1
                 .push(flo);
         }

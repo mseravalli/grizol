@@ -1,6 +1,5 @@
 use crate::core::bep_state::{BepState, FileLocation};
-use crate::core::GrizolConfig;
-use crate::syncthing::FileInfo;
+use crate::core::{GrizolConfig, GrizolFileInfo};
 use chrono::prelude::*;
 
 use chrono_timesource::TimeSource;
@@ -15,8 +14,15 @@ use std::time::{Duration, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
-const TOP_DIRS_START: u64 = 10;
+// const TOP_DIRS_START: u64 = 10;
+// fn top_dir_id(d_id: i64) -> u64 {
+//     d_id as u64 + TOP_DIRS_START
+// }
+
 const ENTRIES_START: u64 = 1000;
+fn entry_id(e_id: i64) -> u64 {
+    e_id as u64 + ENTRIES_START
+}
 
 pub struct GrizolFS<TS: TimeSource<Utc>> {
     state: Arc<Mutex<BepState<TS>>>,
@@ -46,8 +52,7 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
             crtime: UNIX_EPOCH,
             kind: FileType::Directory,
             perm: 0o755,
-            nlink: 2,
-            // TODO: use queying user
+            nlink: 0,
             uid: self.config.uid,
             gid: self.config.gid,
             rdev: 0,
@@ -56,13 +61,14 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
         }
     }
 
-    fn attr_from_file(&self, file: &FileInfo) -> FileAttr {
+    fn attr_from_file(&self, g_file: &GrizolFileInfo) -> FileAttr {
+        let file = &g_file.file_info;
         let modified_ts = UNIX_EPOCH
             .checked_add(Duration::from_secs(file.modified_s as u64))
             .and_then(|ts| ts.checked_add(Duration::from_nanos(file.modified_ns as u64)))
             .unwrap();
         let res = FileAttr {
-            ino: file.sequence as u64,
+            ino: entry_id(g_file.id),
             size: file.size as u64,
             blocks: 0,
             atime: modified_ts,
@@ -100,7 +106,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
                 .await
         });
 
-        let file = if let Some(f) = files.iter().find(|&f| f.0.sequence == ino as i64) {
+        let file = if let Some(f) = files.iter().find(|&f| entry_id(f.0.id) == ino) {
             f
         } else {
             reply.error(ENOENT);
@@ -130,7 +136,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
 
         let file = files
             .iter()
-            .filter(|f| f.0.name.contains(name.to_str().unwrap()))
+            .filter(|f| f.0.file_info.name.contains(name.to_str().unwrap()))
             .find(|&f| is_file_in_current_dir(&parent_dir, &f.0));
 
         if file.is_none() {
@@ -166,7 +172,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             "files {:?}",
             files
                 .iter()
-                .map(|f| f.0.name.clone())
+                .map(|f| f.0.file_info.name.clone())
                 .collect::<Vec<String>>()
         );
 
@@ -175,8 +181,8 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         } else {
             let res = files
                 .iter()
-                .find(|&f| f.0.sequence == ino as i64)
-                .map(|f| f.0.name.to_owned());
+                .find(|&f| entry_id(f.0.id) == ino)
+                .map(|f| f.0.file_info.name.to_owned());
             if res.is_none() {
                 reply.error(ENOENT);
                 return;
@@ -187,9 +193,9 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         let offset = offset as usize;
 
         // TODO: should probably use filter_map here
-        let files: Vec<(FileInfo, Vec<FileLocation>)> = files
+        let files: Vec<(GrizolFileInfo, Vec<FileLocation>)> = files
             .into_iter()
-            .filter(|(file, _)| is_file_in_current_dir(&base_dir, file))
+            .filter(|(file, _)| is_file_in_current_dir(&base_dir, &file))
             .collect();
 
         if offset == files.len() {
@@ -200,15 +206,15 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         for (i, record) in files.iter().enumerate().skip(offset) {
             let file = &record.0;
 
-            let file_name = Path::new(&file.name)
+            let file_name = Path::new(&file.file_info.name)
                 .strip_prefix(Path::new(&base_dir))
                 .unwrap()
                 .as_os_str();
 
             let is_buffer_full = reply.add(
-                file.sequence as u64,
+                entry_id(file.id),
                 (i + 1) as i64,
-                file_type(file.r#type),
+                file_type(file.file_info.r#type),
                 // TODO: remove base_dir from the name
                 file_name,
             );
@@ -237,20 +243,20 @@ pub fn mount<TS: TimeSource<Utc> + 'static>(
     session.spawn().unwrap()
 }
 
-fn parent_dir(files: &[(FileInfo, Vec<FileLocation>)], parent_ino: u64) -> String {
+fn parent_dir(files: &[(GrizolFileInfo, Vec<FileLocation>)], parent_ino: u64) -> String {
     if parent_ino == FUSE_ROOT_ID {
         return "".to_owned();
     }
     files
         .iter()
-        .find(|&x| x.0.sequence == parent_ino as i64)
-        .map(|x| &x.0.name)
+        .find(|&x| entry_id(x.0.id) == parent_ino)
+        .map(|x| &x.0.file_info.name)
         .unwrap()
         .to_owned()
 }
 
-fn is_file_in_current_dir(base_dir: &str, file: &FileInfo) -> bool {
-    let stripped_path = Path::new(&file.name).strip_prefix(base_dir);
+fn is_file_in_current_dir(base_dir: &str, file: &GrizolFileInfo) -> bool {
+    let stripped_path = Path::new(&file.file_info.name).strip_prefix(base_dir);
     if stripped_path.is_err() {
         return false;
     }

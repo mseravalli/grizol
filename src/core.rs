@@ -8,7 +8,7 @@ pub mod bep_state;
 use crate::device_id::DeviceId;
 use crate::grizol;
 use crate::grizol::StorageStrategy;
-
+use crate::syncthing::FileInfo;
 use libc;
 use std::collections::HashSet;
 use std::convert::From;
@@ -37,6 +37,13 @@ impl EncodedMessages {
     pub fn data(&self) -> &[u8] {
         &self.data[..]
     }
+}
+
+// This struct allows us to include additional implementation specific information.
+#[derive(Debug, Clone)]
+pub struct GrizolFileInfo {
+    pub file_info: FileInfo,
+    pub id: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
