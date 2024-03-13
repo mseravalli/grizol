@@ -125,7 +125,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             return;
         }
 
-        // TODO: cache the result, fh set with opendir should help with this
+        // TODO: cache the result
         let (folders, files) = self.rt.block_on(async {
             let state = self.state.lock().await;
 
@@ -135,26 +135,22 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         });
 
         let attr = if ino < ENTRIES_START {
-            let folder = if let Some(f) = folders.iter().find(|&f| top_dir_id(f.id) == ino) {
-                f
-            } else {
-                debug!("not found");
-                reply.error(ENOENT);
-                return;
-            };
-            self.attr_from_folder(&folder)
+            folders
+                .iter()
+                .find(|&f| top_dir_id(f.id) == ino)
+                .map(|f| self.attr_from_folder(&f))
         } else {
-            let file = if let Some(f) = files.iter().find(|&f| entry_id(f.id) == ino) {
-                f
-            } else {
-                debug!("not found");
-                reply.error(ENOENT);
-                return;
-            };
-            self.attr_from_file(&file)
+            files
+                .iter()
+                .find(|&f| entry_id(f.id) == ino)
+                .map(|f| self.attr_from_file(&f))
         };
 
-        reply.attr(&Duration::from_secs(3600), &attr);
+        if let Some(a) = attr {
+            reply.attr(&Duration::from_secs(3600), &a);
+        } else {
+            reply.error(ENOENT);
+        }
     }
 
     fn lookup(
@@ -164,6 +160,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         name: &std::ffi::OsStr,
         reply: fuser::ReplyEntry,
     ) {
+        // TODO: cache the result
         let (folders, files) = self.rt.block_on(async {
             let state = self.state.lock().await;
 
@@ -172,53 +169,26 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             (folders, files)
         });
 
-        if parent_ino == FUSE_ROOT_ID {
-            let folder = folders
-                .iter()
-                .find(|f| f.folder.id.contains(name.to_str().unwrap()));
-
-            let folder = if let Some(f) = folder {
-                f
-            } else {
-                reply.error(ENOENT);
-                return;
-            };
-
-            let attr = self.attr_from_folder(&folder);
-
-            reply.entry(&Duration::from_secs(3600), &attr, 1);
-
-            return;
-        }
-
-        let top_folder = if parent_ino < ENTRIES_START {
+        let attr = if parent_ino == FUSE_ROOT_ID {
             folders
                 .iter()
-                .find(|f| top_dir_id(f.id) == parent_ino)
-                .map(|f| f.folder.id.to_owned())
+                .find(|f| f.folder.id.contains(name.to_str().unwrap()))
+                .map(|f| self.attr_from_folder(&f))
         } else {
+            let parent_dir = parent_dir(&files, parent_ino);
+
             files
                 .iter()
-                .find(|&f| entry_id(f.id) == parent_ino)
-                .map(|f| f.folder.to_owned())
+                .filter(|f| f.file_info.name.contains(name.to_str().unwrap()))
+                .find(|&f| is_file_in_current_dir(&parent_dir, &f))
+                .map(|f| self.attr_from_file(&f))
         };
 
-        let parent_dir = parent_dir(&files, parent_ino);
-
-        let file = files
-            .iter()
-            .filter(|f| f.file_info.name.contains(name.to_str().unwrap()))
-            .find(|&f| is_file_in_current_dir(&parent_dir, &f));
-        let file = if let Some(f) = file {
-            f
+        if let Some(a) = attr {
+            reply.entry(&Duration::from_secs(3600), &a, 1);
         } else {
             reply.error(ENOENT);
-            return;
-        };
-
-        let attr = self.attr_from_file(&file);
-
-        reply.entry(&Duration::from_secs(3600), &attr, 1);
+        }
     }
 
     fn readdir(
@@ -252,7 +222,6 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
                     top_dir_id(el.id),
                     (i + 1) as i64,
                     FileType::Directory,
-                    // TODO: remove base_dir from the name
                     file_name,
                 );
 
@@ -275,39 +244,16 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             (folders, files)
         });
 
-        let top_folder = if ino < ENTRIES_START {
-            folders
-                .iter()
-                .find(|f| top_dir_id(f.id) == ino)
-                .map(|f| f.folder.id.to_owned())
-        } else {
-            files
-                .iter()
-                .find(|&f| entry_id(f.id) == ino)
-                .map(|f| f.folder.to_owned())
-        };
-        let top_folder = if let Some(f) = top_folder {
-            f
-        } else {
-            reply.error(ENOENT);
-            return;
-        };
+        let top_folder = top_folder(ino, &folders, &files);
+        let base_dir = base_dir(ino, &files);
 
-        // TODO: cache the result, fh set with opendir should help with this
-        let base_dir: Option<String> = if ino < ENTRIES_START {
-            Some("".to_string())
-        } else {
-            files
-                .iter()
-                .find(|&f| entry_id(f.id) == ino)
-                .map(|f| f.file_info.name.to_owned())
-        };
-        let base_dir = if let Some(d) = base_dir {
-            d
-        } else {
+        if top_folder.as_ref().and(base_dir.as_ref()).is_none() {
             reply.error(ENOENT);
             return;
-        };
+        }
+
+        let top_folder = top_folder.unwrap();
+        let base_dir = base_dir.unwrap();
 
         // TODO: should probably use filter_map here
         let files: Vec<GrizolFileInfo> = files
@@ -360,6 +306,20 @@ pub fn mount<TS: TimeSource<Utc> + 'static>(
     session.spawn().unwrap()
 }
 
+fn top_folder(ino: u64, folders: &[GrizolFolder], files: &[GrizolFileInfo]) -> Option<String> {
+    if ino < ENTRIES_START {
+        folders
+            .iter()
+            .find(|f| top_dir_id(f.id) == ino)
+            .map(|f| f.folder.id.to_owned())
+    } else {
+        files
+            .iter()
+            .find(|&f| entry_id(f.id) == ino)
+            .map(|f| f.folder.to_owned())
+    }
+}
+
 fn parent_dir(files: &[GrizolFileInfo], parent_ino: u64) -> String {
     if parent_ino < ENTRIES_START {
         return "".to_owned();
@@ -370,6 +330,17 @@ fn parent_dir(files: &[GrizolFileInfo], parent_ino: u64) -> String {
         .map(|x| &x.file_info.name)
         .unwrap()
         .to_owned()
+}
+
+fn base_dir(ino: u64, files: &[GrizolFileInfo]) -> Option<String> {
+    if ino < ENTRIES_START {
+        Some("".to_string())
+    } else {
+        files
+            .iter()
+            .find(|&f| entry_id(f.id) == ino)
+            .map(|f| f.file_info.name.to_owned())
+    }
 }
 
 fn is_file_in_current_dir(base_dir: &str, file: &GrizolFileInfo) -> bool {
