@@ -10,9 +10,11 @@ use fuser::{
 use libc::{ENOBUFS, ENOENT};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
+
+const REFRESH_RATE: Duration = Duration::from_secs(2);
 
 // We allow 2^32 - 10 operations to be performed on the top dirs.
 const ENTRIES_START: u64 = 1 << 32;
@@ -34,6 +36,9 @@ pub struct GrizolFS<TS: TimeSource<Utc>> {
     config: GrizolConfig,
     // TODO: see if one of the other solutions is better in this case: https://tokio.rs/tokio/topics/bridging
     rt: Runtime,
+    last_folders_files: Instant,
+    folders: Vec<GrizolFolder>,
+    files: Vec<GrizolFileInfo>,
 }
 
 impl<TS: TimeSource<Utc>> GrizolFS<TS> {
@@ -43,7 +48,39 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
             .build()
             .unwrap();
 
-        GrizolFS { config, state, rt }
+        GrizolFS {
+            config,
+            state,
+            rt,
+            // We set the instant to a point in time in the past to guarantee that the first time
+            // this will be called it will be refreshed. Maybe there is a better way.
+            last_folders_files: Instant::now()
+                .checked_sub(REFRESH_RATE.mul_f64(2.0))
+                .unwrap(),
+            folders: Default::default(),
+            files: Default::default(),
+        }
+    }
+
+    fn refresh_expired_folders_files(&mut self) {
+        if self.last_folders_files.elapsed() >= REFRESH_RATE {
+            let (folders, files) = self.rt.block_on(async {
+                let state = self.state.lock().await;
+
+                let folders = state.top_folders_fuse(self.config.local_device_id).await;
+                let files = state.files_fuse(self.config.local_device_id).await;
+                (folders, files)
+            });
+
+            self.folders = folders;
+            self.files = files;
+        }
+    }
+
+    // This MUST be used in combination with refresh_expired_folders_files, the methods at the
+    // moment are separated because there are issues with the borrow checker and I haven't found a better way to deal with this for now (https://stackoverflow.com/questions/78157006/rust-return-immutable-borrow-after-modifying) .
+    fn folders_files(&self) -> (&[GrizolFolder], &[GrizolFileInfo]) {
+        (&self.folders, &self.files)
     }
 
     fn root_dir_attr(&self) -> FileAttr {
@@ -121,18 +158,12 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
 impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
         if ino == FUSE_ROOT_ID {
-            reply.attr(&Duration::from_secs(3600), &self.root_dir_attr());
+            reply.attr(&REFRESH_RATE, &self.root_dir_attr());
             return;
         }
 
-        // TODO: cache the result
-        let (folders, files) = self.rt.block_on(async {
-            let state = self.state.lock().await;
-
-            let folders = state.top_folders_fuse(self.config.local_device_id).await;
-            let files = state.files_fuse(self.config.local_device_id).await;
-            (folders, files)
-        });
+        self.refresh_expired_folders_files();
+        let (folders, files) = self.folders_files();
 
         let attr = if ino < ENTRIES_START {
             folders
@@ -147,7 +178,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         };
 
         if let Some(a) = attr {
-            reply.attr(&Duration::from_secs(3600), &a);
+            reply.attr(&REFRESH_RATE, &a);
         } else {
             reply.error(ENOENT);
         }
@@ -160,14 +191,8 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         name: &std::ffi::OsStr,
         reply: fuser::ReplyEntry,
     ) {
-        // TODO: cache the result
-        let (folders, files) = self.rt.block_on(async {
-            let state = self.state.lock().await;
-
-            let folders = state.top_folders_fuse(self.config.local_device_id).await;
-            let files = state.files_fuse(self.config.local_device_id).await;
-            (folders, files)
-        });
+        self.refresh_expired_folders_files();
+        let (folders, files) = self.folders_files();
 
         let attr = if parent_ino == FUSE_ROOT_ID {
             folders
@@ -185,7 +210,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         };
 
         if let Some(a) = attr {
-            reply.entry(&Duration::from_secs(3600), &a, 1);
+            reply.entry(&REFRESH_RATE, &a, 1);
         } else {
             reply.error(ENOENT);
         }
@@ -236,13 +261,8 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             return;
         }
 
-        let (folders, files) = self.rt.block_on(async {
-            let state = self.state.lock().await;
-
-            let folders = state.top_folders_fuse(self.config.local_device_id).await;
-            let files = state.files_fuse(self.config.local_device_id).await;
-            (folders, files)
-        });
+        self.refresh_expired_folders_files();
+        let (folders, files) = self.folders_files();
 
         let top_folder = top_folder(ino, &folders, &files);
         let base_dir = base_dir(ino, &files);
@@ -256,7 +276,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         let base_dir = base_dir.unwrap();
 
         // TODO: should probably use filter_map here
-        let files: Vec<GrizolFileInfo> = files
+        let files: Vec<&GrizolFileInfo> = files
             .into_iter()
             .filter(|file| file.folder == top_folder && is_file_in_current_dir(&base_dir, &file))
             .collect();
@@ -278,7 +298,6 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
                 entry_id(file.id),
                 (i + 1) as i64,
                 file_type(file.file_info.r#type),
-                // TODO: remove base_dir from the name
                 file_name,
             );
 
