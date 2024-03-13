@@ -126,21 +126,34 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         }
 
         // TODO: cache the result, fh set with opendir should help with this
-        let files = self.rt.block_on(async {
+        let (folders, files) = self.rt.block_on(async {
             let state = self.state.lock().await;
 
-            // FIXME: pass dir, 1 fuse per folder??
-            state.files_fuse(self.config.local_device_id).await
+            let folders = state.top_folders_fuse(self.config.local_device_id).await;
+            let files = state.files_fuse(self.config.local_device_id).await;
+            (folders, files)
         });
 
-        let file = if let Some(f) = files.iter().find(|&f| entry_id(f.id) == ino) {
-            f
+        let attr = if ino < ENTRIES_START {
+            let folder = if let Some(f) = folders.iter().find(|&f| top_dir_id(f.id) == ino) {
+                f
+            } else {
+                debug!("not found");
+                reply.error(ENOENT);
+                return;
+            };
+            self.attr_from_folder(&folder)
         } else {
-            reply.error(ENOENT);
-            return;
+            let file = if let Some(f) = files.iter().find(|&f| entry_id(f.id) == ino) {
+                f
+            } else {
+                debug!("not found");
+                reply.error(ENOENT);
+                return;
+            };
+            self.attr_from_file(&file)
         };
 
-        let attr = self.attr_from_file(&file);
         reply.attr(&Duration::from_secs(3600), &attr);
     }
 
@@ -151,12 +164,15 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         name: &std::ffi::OsStr,
         reply: fuser::ReplyEntry,
     ) {
-        if parent_ino == FUSE_ROOT_ID {
-            let folders = self.rt.block_on(async {
-                let state = self.state.lock().await;
+        let (folders, files) = self.rt.block_on(async {
+            let state = self.state.lock().await;
 
-                state.top_folders_fuse(self.config.local_device_id).await
-            });
+            let folders = state.top_folders_fuse(self.config.local_device_id).await;
+            let files = state.files_fuse(self.config.local_device_id).await;
+            (folders, files)
+        });
+
+        if parent_ino == FUSE_ROOT_ID {
             let folder = folders
                 .iter()
                 .find(|f| f.folder.id.contains(name.to_str().unwrap()));
@@ -173,31 +189,36 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             reply.entry(&Duration::from_secs(3600), &attr, 1);
 
             return;
-        } else {
-            todo!();
         }
-        // // TODO: query this from the database
-        // let files = self.rt.block_on(async {
-        //     let state = self.state.lock().await;
-        //     state.files_fuse(self.config.local_device_id).await
-        // });
 
-        // let parent_dir = parent_dir(&files, parent_ino);
+        let top_folder = if parent_ino < ENTRIES_START {
+            folders
+                .iter()
+                .find(|f| top_dir_id(f.id) == parent_ino)
+                .map(|f| f.folder.id.to_owned())
+        } else {
+            files
+                .iter()
+                .find(|&f| entry_id(f.id) == parent_ino)
+                .map(|f| f.folder.to_owned())
+        };
 
-        // let file = files
-        //     .iter()
-        //     .filter(|f| f.0.file_info.name.contains(name.to_str().unwrap()))
-        //     .find(|&f| is_file_in_current_dir(&parent_dir, &f.0));
+        let parent_dir = parent_dir(&files, parent_ino);
 
-        // if file.is_none() {
-        //     reply.error(ENOENT);
-        //     return;
-        // }
-        // let file = file.unwrap();
+        let file = files
+            .iter()
+            .filter(|f| f.file_info.name.contains(name.to_str().unwrap()))
+            .find(|&f| is_file_in_current_dir(&parent_dir, &f));
+        let file = if let Some(f) = file {
+            f
+        } else {
+            reply.error(ENOENT);
+            return;
+        };
 
-        // let attr = self.attr_from_file(&file.0);
+        let attr = self.attr_from_file(&file);
 
-        // reply.entry(&Duration::from_secs(3600), &attr, 1);
+        reply.entry(&Duration::from_secs(3600), &attr, 1);
     }
 
     fn readdir(
@@ -340,7 +361,7 @@ pub fn mount<TS: TimeSource<Utc> + 'static>(
 }
 
 fn parent_dir(files: &[GrizolFileInfo], parent_ino: u64) -> String {
-    if parent_ino == FUSE_ROOT_ID {
+    if parent_ino < ENTRIES_START {
         return "".to_owned();
     }
     files
