@@ -38,8 +38,6 @@ fn storage_backends_from_conf(rclone_config: &Option<String>) -> Vec<String> {
         .collect();
     info!("Storage backends: {:?}", res);
     res
-
-    // todo!()
 }
 
 impl StorageManager {
