@@ -1,6 +1,6 @@
-use crate::core::{BepConfig, UploadStatus};
+use crate::core::{GrizolFileInfo, GrizolFolder, UploadStatus};
 use crate::device_id::DeviceId;
-use crate::syncthing;
+use crate::syncthing::{self, Folder};
 use chrono::prelude::*;
 use chrono_timesource::TimeSource;
 use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
@@ -38,7 +38,6 @@ impl From<StorageStatus> for i32 {
 #[derive(Debug)]
 pub struct BepState<TS: TimeSource<Utc>> {
     clock: Arc<Mutex<TS>>,
-    config: BepConfig,
     db_pool: SqlitePool,
     sequence: i64,
     request_id: i32,
@@ -46,10 +45,9 @@ pub struct BepState<TS: TimeSource<Utc>> {
 }
 
 impl<TS: TimeSource<Utc>> BepState<TS> {
-    pub fn new(config: BepConfig, db_pool: SqlitePool, clock: Arc<Mutex<TS>>) -> Self {
+    pub fn new(db_pool: SqlitePool, clock: Arc<Mutex<TS>>) -> Self {
         BepState {
             clock,
-            config,
             db_pool,
             sequence: 0,
             request_id: 0,
@@ -433,7 +431,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             r#"
             SELECT f.*, bi.*
             FROM bep_file_info f
-                JOIN bep_block_info bi ON f.name = bi.file_name AND f.folder = bi.file_folder AND f.device = bi.file_device
+                LEFT JOIN bep_block_info bi ON f.name = bi.file_name AND f.folder = bi.file_folder AND f.device = bi.file_device
             WHERE f.folder = ? AND f.device = ?
             ;"#,
             folder,
@@ -443,7 +441,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
         let file_versions = sqlx::query!(
             r#"
-            SELECT f.name,v.id, v.value
+            SELECT f.name, v.id, v.value
             FROM bep_file_info f
                 JOIN bep_file_version v ON f.name = v.file_name AND f.folder = v.file_folder AND f.device = v.file_device
             WHERE f.folder = ? and f.device = ?
@@ -457,15 +455,16 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
         for file in file_blocks.await.unwrap() {
             if existing_files.contains_key(&file.name) {
-                let bi = BlockInfo {
-                    offset: file.offset,
-                    size: file.bi_size.try_into().unwrap(),
-                    hash: file.hash,
-                    weak_hash: file.weak_hash.unwrap_or(0).try_into().unwrap(),
-                };
-
-                if let Some(f) = existing_files.get_mut(&file.name) {
-                    f.blocks.push(bi)
+                if file.offset.is_some() {
+                    let bi = BlockInfo {
+                        offset: file.offset.unwrap(),
+                        size: file.bi_size.unwrap().try_into().unwrap(),
+                        hash: file.hash.unwrap(),
+                        weak_hash: file.weak_hash.unwrap_or(0).try_into().unwrap(),
+                    };
+                    if let Some(f) = existing_files.get_mut(&file.name) {
+                        f.blocks.push(bi)
+                    }
                 }
             } else {
                 let mut short_id: [u8; 8] = [0; 8];
@@ -489,14 +488,16 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     blocks: vec![],
                     symlink_target: file.symlink_target,
                 };
-                let bi = BlockInfo {
-                    offset: file.offset,
-                    size: file.bi_size.try_into().unwrap(),
-                    hash: file.hash,
-                    weak_hash: file.weak_hash.unwrap_or(0).try_into().unwrap(),
-                };
+                if file.offset.is_some() {
+                    let bi = BlockInfo {
+                        offset: file.offset.unwrap(),
+                        size: file.bi_size.unwrap().try_into().unwrap(),
+                        hash: file.hash.unwrap(),
+                        weak_hash: file.weak_hash.unwrap_or(0).try_into().unwrap(),
+                    };
 
-                fi.blocks.push(bi);
+                    fi.blocks.push(bi);
+                }
                 existing_files.insert(fi.name.clone(), fi);
             }
         }
@@ -685,9 +686,132 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         blocks
     }
 
-    pub async fn file_from_local_index(
+    /// Returns top level folders storing all the entries.
+    /// [Folder] does not derive Hash, therefore it's not possible to directly use a [HashMap],
+    /// however the returned [Vec] guarantees that there are no duplicate [GrizolFolder]s.
+    // TODO: what's the best way to filter?? in the SQL? within this fuction, at the client?
+    pub async fn top_folders_fuse(&self, device_id: DeviceId) -> Vec<GrizolFolder> {
+        let device_id = device_id.to_string();
+
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        let folders = sqlx::query!(
+            r#"
+            SELECT DISTINCT(f.rowid) AS f_id, f.*
+            FROM bep_folders f JOIN bep_devices d ON f.id = d.folder
+            WHERE d.id = ?
+            ;"#,
+            device_id,
+        )
+        .fetch_all(&self.db_pool)
+        .await;
+
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        folders
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.f_id.is_some())
+            .map(|f| {
+                let folder = Folder {
+                    id: f.id,
+                    label: f.label,
+                    read_only: f.read_only == 1,
+                    ignore_permissions: f.ignore_permissions == 1,
+                    ignore_delete: f.ignore_delete == 1,
+                    disable_temp_indexes: f.disable_temp_indexes == 1,
+                    paused: f.paused == 1,
+                    devices: vec![],
+                };
+                GrizolFolder {
+                    folder,
+                    id: f.f_id.unwrap(),
+                }
+            })
+            .collect()
+    }
+
+    /// Returns information that can be used for fuse.
+    /// [FileInfo] does not derive Hash, therefore it's not possible to directly use a [HashMap],
+    /// however the returned [Vec] guarantees that there are no duplicate [GrizolFileInfo]s.
+    // TODO: what's the best way to filter?? in the SQL? within this fuction, at the client?
+    pub async fn files_fuse(&self, device_id: DeviceId) -> Vec<GrizolFileInfo> {
+        let device_id = device_id.to_string();
+
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        let files = sqlx::query!(
+            r#"
+            SELECT fin.rowid as r_id, *
+            FROM bep_file_location flo RIGHT JOIN bep_file_info fin ON
+              flo.loc_folder = fin.folder AND flo.loc_device = fin.device AND flo.loc_name = fin.name
+            WHERE fin.device = ?
+            ;"#,
+            device_id,
+        )
+        .fetch_all(&self.db_pool).await;
+
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        // This type is used only within this method
+        let mut files_fuse: HashMap<(String, String, String), GrizolFileInfo> = Default::default();
+
+        for file in files.unwrap().into_iter() {
+            let mut short_id: [u8; 8] = [0; 8];
+            for (i, x) in file.modified_by.iter().enumerate() {
+                short_id[i] = *x;
+            }
+            let fin = FileInfo {
+                name: file.name.clone(),
+                r#type: file.r#type.try_into().unwrap(),
+                size: file.size,
+                permissions: file.permissions.try_into().unwrap(),
+                modified_s: file.modified_s,
+                modified_ns: file.modified_ns.try_into().unwrap(),
+                modified_by: u64::from_be_bytes(short_id),
+                deleted: file.deleted == 1,
+                invalid: file.invalid == 1,
+                no_permissions: file.no_permissions == 1,
+                version: None,
+                sequence: file.sequence,
+                block_size: file.block_size.try_into().unwrap(),
+                blocks: vec![],
+                symlink_target: file.symlink_target,
+            };
+
+            let g_fin = GrizolFileInfo {
+                file_info: fin,
+                id: file.r_id,
+                folder: file.folder.clone(),
+                // TODO: add file locations
+                file_locations: vec![],
+            };
+
+            // TODO: add file locations
+            files_fuse
+                .entry((file.folder, file.device, file.name))
+                .or_insert(g_fin);
+        }
+
+        files_fuse.into_values().collect()
+    }
+
+    pub async fn file(
         &self,
         folder_name: &str,
+        device_id: DeviceId,
         file_name: &str,
     ) -> Option<FileInfo> {
         // TODO: test if it is faster to run 3 queries 1 for the file, 1 for the blocks 1 for the
@@ -698,7 +822,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .await
             .unwrap();
 
-        let device_id = self.config.local_device_id.to_string();
+        let device_id = device_id.to_string();
 
         let file = sqlx::query!(
             r#"
@@ -1066,13 +1190,13 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             // Rename according to
             // https://docs.syncthing.net/users/syncing.html#conflicting-changes
             if move_file {
-                debug!("Moving files");
+                debug!("Moving file: {}", file.name);
                 let new_path = {
                     let clock = self.clock.lock().await;
                     new_file_path(&file.name, &device_id, clock.now().unwrap())
                 };
                 // We have a cascading updates.
-                let _insert_res = sqlx::query!(
+                let _update_res = sqlx::query!(
                     "
                     PRAGMA foreign_keys = ON;
                     UPDATE OR ROLLBACK bep_file_info
@@ -1090,9 +1214,9 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
                 file_dests.insert(file.name.clone(), new_path);
             } else {
-                debug!("Deleting files");
+                debug!("Deleting file: {}", file.name);
                 // We have a cascading removal.
-                let _insert_res = sqlx::query!(
+                let _delete_res = sqlx::query!(
                     "
                     PRAGMA foreign_keys = ON;
                     DELETE FROM bep_file_info

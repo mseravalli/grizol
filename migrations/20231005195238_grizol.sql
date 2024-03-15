@@ -81,7 +81,8 @@ CREATE TABLE IF NOT EXISTS bep_file_info
 
     PRIMARY KEY(folder, device, name) ,
     FOREIGN KEY(folder, device) REFERENCES bep_index(folder, device),
-    FOREIGN KEY(type)   REFERENCES bep_file_info_type(type)
+    FOREIGN KEY(type)   REFERENCES bep_file_info_type(type),
+    UNIQUE(sequence)
 );
 
 CREATE TABLE IF NOT EXISTS bep_file_location
