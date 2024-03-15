@@ -9,7 +9,6 @@ use crate::device_id::DeviceId;
 use crate::grizol;
 use crate::grizol::StorageStrategy;
 use crate::syncthing::{FileInfo, Folder};
-use libc;
 use std::collections::HashSet;
 use std::convert::From;
 use std::path::{Path, PathBuf};

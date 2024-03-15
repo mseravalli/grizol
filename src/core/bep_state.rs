@@ -29,16 +29,6 @@ pub enum StorageStatus {
     _StoredRemotely = 2,
 }
 
-#[derive(Clone, Debug)]
-pub struct FileLocation {
-    // TODO: remove allow(dead_code) once we start using this field in the fuse
-    #[allow(dead_code)]
-    location: String,
-    // TODO: remove allow(dead_code) once we start using this field in the fuse
-    #[allow(dead_code)]
-    storage_backend: String,
-}
-
 impl From<StorageStatus> for i32 {
     fn from(val: StorageStatus) -> Self {
         val as i32
@@ -751,7 +741,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
     /// [FileInfo] does not derive Hash, therefore it's not possible to directly use a [HashMap],
     /// however the returned [Vec] guarantees that there are no duplicate [GrizolFileInfo]s.
     // TODO: what's the best way to filter?? in the SQL? within this fuction, at the client?
-    pub async fn files_fuse(&self, device_id: DeviceId) -> Vec<(GrizolFileInfo)> {
+    pub async fn files_fuse(&self, device_id: DeviceId) -> Vec<GrizolFileInfo> {
         let device_id = device_id.to_string();
 
         sqlx::query!("BEGIN TRANSACTION;")
@@ -775,8 +765,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .await
             .unwrap();
 
-        // This is type is used only within this method
-        #[allow(clippy::type_complexity)]
+        // This type is used only within this method
         let mut files_fuse: HashMap<(String, String, String), GrizolFileInfo> = Default::default();
 
         for file in files.unwrap().into_iter() {
@@ -801,11 +790,6 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 blocks: vec![],
                 symlink_target: file.symlink_target,
             };
-
-            let flo = file.location.map(|loc| FileLocation {
-                location: loc,
-                storage_backend: file.storage_backend.unwrap(),
-            });
 
             let g_fin = GrizolFileInfo {
                 file_info: fin,

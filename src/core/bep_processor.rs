@@ -9,7 +9,6 @@ use chrono::prelude::*;
 use chrono_timesource::TimeSource;
 use prost::Message;
 use sha2::{Digest, Sha256};
-
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -528,23 +527,6 @@ fn diff_indices(
     if added_index.folder != folder && existing_index.folder != folder {
         return Err("The indices cover different folders".to_string());
     }
-
-    debug!(
-        "Added index: {:?}",
-        &added_index
-            .files
-            .iter()
-            .map(|f| f.name.as_str())
-            .collect::<Vec<&str>>()
-    );
-    debug!(
-        "Existing index: {:?}",
-        &existing_index
-            .files
-            .iter()
-            .map(|f| f.name.as_str())
-            .collect::<Vec<&str>>()
-    );
 
     let existing_files: HashMap<&String, &FileInfo> =
         existing_index.files.iter().map(|f| (&f.name, f)).collect();

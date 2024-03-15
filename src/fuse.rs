@@ -1,7 +1,6 @@
-use crate::core::bep_state::{BepState, FileLocation};
+use crate::core::bep_state::BepState;
 use crate::core::{GrizolConfig, GrizolFileInfo, GrizolFolder};
 use chrono::prelude::*;
-
 use chrono_timesource::TimeSource;
 use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, Request,
@@ -10,7 +9,7 @@ use fuser::{
 use libc::{ENOBUFS, ENOENT};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
@@ -88,7 +87,7 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
             ino: FUSE_ROOT_ID,
             size: 0,
             blocks: 0,
-            atime: UNIX_EPOCH, // 1970-01-01 00:00:00
+            atime: UNIX_EPOCH,
             mtime: UNIX_EPOCH,
             ctime: UNIX_EPOCH,
             crtime: UNIX_EPOCH,
@@ -104,9 +103,8 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
     }
 
     fn attr_from_folder(&self, g_folder: &GrizolFolder) -> FileAttr {
-        let folder = &g_folder.folder;
         let modified_ts = UNIX_EPOCH;
-        let res = FileAttr {
+        FileAttr {
             ino: top_dir_id(g_folder.id),
             size: 0,
             blocks: 0,
@@ -122,9 +120,7 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
             rdev: 0,
             flags: 0,
             blksize: 1 << 10,
-        };
-        debug!("attr: {:?}", res);
-        res
+        }
     }
 
     fn attr_from_file(&self, g_file: &GrizolFileInfo) -> FileAttr {
@@ -169,12 +165,12 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             folders
                 .iter()
                 .find(|&f| top_dir_id(f.id) == ino)
-                .map(|f| self.attr_from_folder(&f))
+                .map(|f| self.attr_from_folder(f))
         } else {
             files
                 .iter()
                 .find(|&f| entry_id(f.id) == ino)
-                .map(|f| self.attr_from_file(&f))
+                .map(|f| self.attr_from_file(f))
         };
 
         if let Some(a) = attr {
@@ -198,15 +194,15 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             folders
                 .iter()
                 .find(|f| f.folder.id.contains(name.to_str().unwrap()))
-                .map(|f| self.attr_from_folder(&f))
+                .map(|f| self.attr_from_folder(f))
         } else {
-            let parent_dir = parent_dir(&files, parent_ino);
+            let parent_dir = parent_dir(files, parent_ino);
 
             files
                 .iter()
                 .filter(|f| f.file_info.name.contains(name.to_str().unwrap()))
-                .find(|&f| is_file_in_current_dir(&parent_dir, &f))
-                .map(|f| self.attr_from_file(&f))
+                .find(|&f| is_file_in_current_dir(&parent_dir, f))
+                .map(|f| self.attr_from_file(f))
         };
 
         if let Some(a) = attr {
@@ -264,8 +260,8 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         self.refresh_expired_folders_files();
         let (folders, files) = self.folders_files();
 
-        let top_folder = top_folder(ino, &folders, &files);
-        let base_dir = base_dir(ino, &files);
+        let top_folder = top_folder(ino, folders, files);
+        let base_dir = base_dir(ino, files);
 
         if top_folder.as_ref().and(base_dir.as_ref()).is_none() {
             reply.error(ENOENT);
@@ -277,8 +273,8 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
 
         // TODO: should probably use filter_map here
         let files: Vec<&GrizolFileInfo> = files
-            .into_iter()
-            .filter(|file| file.folder == top_folder && is_file_in_current_dir(&base_dir, &file))
+            .iter()
+            .filter(|file| file.folder == top_folder && is_file_in_current_dir(&base_dir, file))
             .collect();
 
         if offset == files.len() {
