@@ -222,13 +222,10 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
     ) {
         let offset = offset as usize;
 
+        self.refresh_expired_folders_files();
+        let (folders, files) = self.folders_files();
+
         if ino == FUSE_ROOT_ID {
-            let folders = self.rt.block_on(async {
-                let state = self.state.lock().await;
-
-                state.top_folders_fuse(self.config.local_device_id).await
-            });
-
             if offset == folders.len() {
                 reply.ok();
                 return;
@@ -257,9 +254,6 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             return;
         }
 
-        self.refresh_expired_folders_files();
-        let (folders, files) = self.folders_files();
-
         let top_folder = top_folder(ino, folders, files);
         let base_dir = base_dir(ino, files);
 
@@ -271,7 +265,6 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         let top_folder = top_folder.unwrap();
         let base_dir = base_dir.unwrap();
 
-        // TODO: should probably use filter_map here
         let files: Vec<&GrizolFileInfo> = files
             .iter()
             .filter(|file| file.folder == top_folder && is_file_in_current_dir(&base_dir, file))
