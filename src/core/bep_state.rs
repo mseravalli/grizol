@@ -39,7 +39,7 @@ impl From<StorageStatus> for i32 {
 pub struct BepState<TS: TimeSource<Utc>> {
     clock: Arc<Mutex<TS>>,
     db_pool: SqlitePool,
-    sequence: i64,
+    sequence: Option<i64>,
     request_id: i32,
     outgoing_requests: HashMap<i32, Request>,
 }
@@ -49,10 +49,37 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         BepState {
             clock,
             db_pool,
-            sequence: 0,
+            sequence: None,
             request_id: 0,
             outgoing_requests: Default::default(),
         }
+    }
+
+    async fn next_sequence_id(&mut self) -> i64 {
+        if self.sequence.is_none() {
+            let max_sequence = sqlx::query!(
+                r#"
+                SELECT MAX(sequence) as max_seq FROM bep_file_info;
+                "#,
+            )
+            .fetch_optional(&self.db_pool)
+            .await;
+            match max_sequence {
+                Ok(s) => {
+                    self.sequence = s.unwrap().max_seq.map(|x| x.into());
+                }
+                Err(_e) => {
+                    warn!("Could not get max sequence, will start from 0");
+                    self.sequence = Some(0);
+                }
+            }
+        }
+
+        if let Some(s) = self.sequence.as_mut() {
+            *s += 1;
+        }
+
+        self.sequence.unwrap()
     }
 
     pub async fn init_index(&self, folder: &str, device_id: &DeviceId) {
@@ -100,7 +127,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         for file in index.files.into_iter() {
             trace!("Updating index, inserting file {}", &file.name);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
-            self.sequence += 1;
+            let sequence = self.next_sequence_id().await;
             let _insert_res = sqlx::query!(
                 r#"
             INSERT INTO bep_file_info (
@@ -150,7 +177,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 file.deleted,
                 file.invalid,
                 file.no_permissions,
-                self.sequence,
+                sequence,
                 file.block_size,
                 file.symlink_target,
             )
@@ -1018,7 +1045,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         for file in file_info.iter() {
             trace!("Updating index, inserting file {}", &file.name);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
-            self.sequence += 1;
+            let sequence = self.next_sequence_id().await;
             let _insert_res = sqlx::query!(
                 r#"
             INSERT INTO bep_file_info (
@@ -1068,7 +1095,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 file.deleted,
                 file.invalid,
                 file.no_permissions,
-                self.sequence,
+                sequence,
                 file.block_size,
                 file.symlink_target,
             )
@@ -1233,7 +1260,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
             debug!("Updating index, inserting file {:?}", &file);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
-            self.sequence += 1;
+            let sequence = self.next_sequence_id().await;
             let _insert_res = sqlx::query!(
                 r#"
             INSERT INTO bep_file_info (
@@ -1283,7 +1310,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 file.deleted,
                 file.invalid,
                 file.no_permissions,
-                self.sequence,
+                sequence,
                 file.block_size,
                 file.symlink_target,
             )
