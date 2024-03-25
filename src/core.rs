@@ -110,7 +110,7 @@ impl From<grizol::Config> for GrizolConfig {
         };
 
         let db_url = if grizol_proto_config.db_url.is_empty() {
-            String::from("sqlite:~/.grizol.db")
+            String::from("sqlite:~/.grizol/grizol.db")
         } else {
             grizol_proto_config.db_url
         };
