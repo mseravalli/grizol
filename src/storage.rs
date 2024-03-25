@@ -226,6 +226,7 @@ impl StorageManager {
 
     pub async fn rm_local_file(&self, folder: &str, name: &str) -> Result<(), String> {
         let orig = format!("{}/{}/{}", self.config.local_base_dir, folder, name);
+        debug!("removing local file {}", &orig);
 
         tokio::fs::remove_file(Path::new(&orig))
             .await
