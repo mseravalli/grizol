@@ -36,5 +36,6 @@ message Config {
     string rclone_config             =  9;
     string remote_base_dir           = 10;
     string mountpoint                = 11;
-// next 12
+    string read_cache_dir            = 12;
+// next 13
 }

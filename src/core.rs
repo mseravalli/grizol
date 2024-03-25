@@ -84,6 +84,7 @@ pub struct GrizolConfig {
     pub storage_strategy: StorageStrategy,
     pub rclone_config: Option<String>,
     pub remote_base_dir: String,
+    pub read_cache_dir: String,
     pub mountpoint: Option<PathBuf>,
     pub uid: u32,
     pub gid: u32,
@@ -131,6 +132,12 @@ impl From<grizol::Config> for GrizolConfig {
             grizol_proto_config.remote_base_dir
         };
 
+        let read_cache_dir = if grizol_proto_config.read_cache_dir.is_empty() {
+            String::from("~/.grizol/read_cache")
+        } else {
+            grizol_proto_config.read_cache_dir
+        };
+
         let mountpoint = if grizol_proto_config.mountpoint.is_empty() {
             None
         } else {
@@ -154,6 +161,7 @@ impl From<grizol::Config> for GrizolConfig {
             storage_strategy,
             rclone_config,
             remote_base_dir,
+            read_cache_dir,
             mountpoint,
             uid,
             gid,

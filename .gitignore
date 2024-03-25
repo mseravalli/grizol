@@ -2,6 +2,7 @@
 /target
 **/*.db*
 tests/util/grizol
+tests/util/read_cache_dir
 tests/util/dest_dir
 tests/util/orig_dir
 tests/util/syncthing
