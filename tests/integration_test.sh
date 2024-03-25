@@ -78,7 +78,12 @@ run_diff() {
 
 @test "Test adding data" {
   while [[ -z $(rg 'Ready to synchronize "orig_dir"' /tmp/syncthing) ]]; do sleep 1; done
-  scripts/create_random_files.sh ${ORIG_DIR}/ 3
+
+  yes a | xargs echo -n 2>/dev/null | head -c 900 | fmt > ${ORIG_DIR}/a.txt
+  yes b | xargs echo -n 2>/dev/null | head -c 90000 | fmt > ${ORIG_DIR}/b.txt
+  mkdir ${ORIG_DIR}/c_dir
+  yes c | xargs echo -n 2>/dev/null | head -c 9000000 | fmt > ${ORIG_DIR}/c_dir/c.txt
+
   trigger_syncthing_rescan 2
   while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 3 ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
@@ -86,7 +91,11 @@ run_diff() {
 }
 
 @test "Test adding more data" {
-  scripts/create_random_files.sh ${ORIG_DIR}/ 3
+  yes d | xargs echo -n 2>/dev/null | head -c 900 | fmt > ${ORIG_DIR}/d.txt
+  yes e | xargs echo -n 2>/dev/null | head -c 90000 | fmt > ${ORIG_DIR}/e.txt
+  mkdir ${ORIG_DIR}/f_dir
+  yes f | xargs echo -n 2>/dev/null | head -c 9000000 | fmt > ${ORIG_DIR}/f_dir/f.txt
+
   trigger_syncthing_rescan
   while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 6 ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
@@ -94,8 +103,8 @@ run_diff() {
 }
 
 @test "Test modifying data: change file content" {
-  file_name=$(ls ${ORIG_DIR}/ | sort | head -n 1)
-  cat /dev/urandom | head -c 100 | base32  > "${ORIG_DIR}/${file_name}"
+  file_name=a.txt
+  yes a | head -c 100 | base32  > "${ORIG_DIR}/${file_name}"
   trigger_syncthing_rescan
   while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 7 ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
@@ -103,7 +112,7 @@ run_diff() {
 }
 
 @test "Test modifying data: remove file content" {
-  file_name=$(ls ${ORIG_DIR}/ | sort | head -n 1)
+  file_name=a.txt
   head -c 1 "${ORIG_DIR}/${file_name}" > "${ORIG_DIR}/${file_name}" 
   trigger_syncthing_rescan
   while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 8 ]]; do sleep 1; done
@@ -112,7 +121,7 @@ run_diff() {
 }
 
 @test "Test deleting data" {
-  file_name=$(ls ${ORIG_DIR}/ | sort | head -n 1)
+  file_name=a.txt
   rm "${ORIG_DIR}/${file_name}"
   trigger_syncthing_rescan
   while [[ $(rg 'File .* was deleted on device' /tmp/grizol | wc -l) -ne 1 ]]; do sleep 1; done
