@@ -56,7 +56,7 @@ pub struct FileLocation {
 }
 
 // This struct allows us to include additional implementation specific information.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GrizolFileInfo {
     pub file_info: FileInfo,
     pub id: i64,
