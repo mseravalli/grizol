@@ -117,7 +117,7 @@ impl StorageManager {
     }
 
     // TODO: Consider using a struct instread of (String, String)
-    pub async fn cp_to_remote(
+    pub async fn cp_local_to_remote(
         &self,
         folder: &str,
         name: &str,
@@ -126,8 +126,50 @@ impl StorageManager {
 
         let mut res = vec![];
         for storage_backend in self.storage_backends.iter() {
+            // TODO: get the bucket from the config
             let bucket = "seravalli-grizol";
             let dest = format!("{storage_backend}:{bucket}/{folder}/{name}");
+            let config_location = self
+                .config
+                .rclone_config
+                .as_ref()
+                .map(|x| format!("--config={}", x))
+                .unwrap_or("".to_string());
+            let command = &["rclone", &config_location, "copyto", &orig, &dest];
+            info!("Running: `{}`", command.join(" "));
+            Command::new(command[0])
+                .args(&command[1..])
+                .spawn()
+                .expect("command failed to start")
+                .wait()
+                .await
+                .expect("command failed to run");
+            res.push((storage_backend.to_string(), dest));
+        }
+        Ok(res)
+    }
+
+    // TODO: Consider using a struct instread of (String, String)
+    pub async fn cp(
+        &self,
+        orig_folder: &str,
+        orig_name: &str,
+        dest_folder: &str,
+        dest_name: &str,
+    ) -> Result<Vec<(String, String)>, String> {
+        // TODO: this needs to be taken from the config, it's just an ugly hack, we can settle on a
+        // default like the first storage backend from the config, they should all have the same
+        // information.
+        let orig_storage_backend = "gcs";
+        // TODO: this needs to be taken from the config, it's just an ugly hack
+        let bucket = "seravalli-grizol";
+        let orig = format!("{orig_storage_backend}:{bucket}/{orig_folder}/{orig_name}");
+
+        let mut res = vec![];
+        for storage_backend in self.storage_backends.iter() {
+            // TODO: get the bucket from the config
+            let bucket = "seravalli-grizol";
+            let dest = format!("{storage_backend}:{bucket}/{dest_folder}/{dest_name}");
             let config_location = self
                 .config
                 .rclone_config

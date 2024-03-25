@@ -1,12 +1,14 @@
 use crate::core::bep_state::BepState;
 use crate::core::{GrizolConfig, GrizolFileInfo, GrizolFolder};
+use crate::storage::StorageManager;
 use chrono::prelude::*;
 use chrono_timesource::TimeSource;
 use fuser::{
-    BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, Request,
+    BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyEmpty, Request,
     FUSE_ROOT_ID,
 };
 use libc::{ENOBUFS, ENOENT};
+use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -38,6 +40,7 @@ pub struct GrizolFS<TS: TimeSource<Utc>> {
     last_folders_files: Instant,
     folders: Vec<GrizolFolder>,
     files: Vec<GrizolFileInfo>,
+    storage_manager: StorageManager,
 }
 
 impl<TS: TimeSource<Utc>> GrizolFS<TS> {
@@ -48,6 +51,7 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
             .unwrap();
 
         GrizolFS {
+            storage_manager: StorageManager::new(config.clone()),
             config,
             state,
             rt,
@@ -296,6 +300,104 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
                 return;
             }
         }
+
+        reply.ok();
+    }
+
+    fn rename(
+        &mut self,
+        _req: &Request<'_>,
+        orig_parent_dir_ino: u64,
+        orig_name: &OsStr,
+        dest_parent_dir_ino: u64,
+        dest_name: &OsStr,
+        flags: u32,
+        reply: ReplyEmpty,
+    ) {
+        self.refresh_expired_folders_files();
+        let (folders, files) = self.folders_files();
+
+        let orig_parent_dir = if orig_parent_dir_ino == FUSE_ROOT_ID {
+            todo!();
+        } else if orig_parent_dir_ino < ENTRIES_START {
+            todo!();
+        } else {
+            files.iter().find(|f| entry_id(f.id) == orig_parent_dir_ino)
+        };
+
+        let dest_parent_dir = if dest_parent_dir_ino == FUSE_ROOT_ID {
+            todo!();
+        } else if dest_parent_dir_ino < ENTRIES_START {
+            todo!();
+        } else {
+            files.iter().find(|f| entry_id(f.id) == dest_parent_dir_ino)
+        };
+
+        if orig_parent_dir.is_none() && dest_parent_dir.is_none() {
+            debug!("Dirs not found");
+            return reply.error(ENOENT);
+        }
+
+        let orig_parent_dir = orig_parent_dir.unwrap();
+        let dest_parent_dir = dest_parent_dir.unwrap();
+
+        // The file that needs to be moved.
+        let grizol_file = files
+            .iter()
+            .filter(|f| f.file_info.name.contains(orig_name.to_str().unwrap()))
+            .find(|&f| is_file_in_current_dir(&orig_parent_dir.file_info.name, f));
+
+        if grizol_file.is_none() {
+            return reply.error(ENOENT);
+        }
+        let grizol_file = grizol_file.unwrap().clone();
+
+        let orig_folder = &grizol_file.folder;
+        // TODO: add the correct dest folder
+        let dest_folder = &grizol_file.folder;
+
+        self.rt.block_on(async {
+            let mut state = self.state.lock().await;
+
+            // TODO: this is terribly inefficient
+            // FileInfo that will be copied in the index.
+            let mut file = state
+                .file(
+                    orig_folder,
+                    self.config.local_device_id,
+                    &grizol_file.file_info.name,
+                )
+                .await
+                .unwrap();
+
+            let orig_file_path = file.name;
+
+            // TODO: merge the data with Path and not manually
+            // Path within a folder
+            let dest_file_path = format!(
+                "{}/{}",
+                dest_parent_dir.file_info.name,
+                dest_name.to_str().unwrap()
+            );
+            file.name = dest_file_path.clone();
+
+            let res = self
+                .storage_manager
+                .cp(orig_folder, &orig_file_path, dest_folder, &dest_file_path)
+                .await;
+
+            if res.is_err() {
+                error!("cannot move the files: {:?}", res);
+            }
+
+            state
+                .insert_file_info(&dest_folder, &self.config.local_device_id, &vec![file])
+                .await;
+
+            // TODO: remove the file from the index, remove the file from the backends
+            // TODO: it seems that the find function does not work properly, investigate if the
+            // index stores the right location of the file in the backend
+        });
 
         reply.ok();
     }
