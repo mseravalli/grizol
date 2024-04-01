@@ -1,0 +1,125 @@
+#!/usr/bin/env bats
+
+# To be run from main directory
+
+setup_file() {
+  source scripts/env.sh
+  export RUST_LOG=info,grizol=debug
+
+  cargo build
+  cp target/debug/grizol tests/util/grizol
+
+  rm -rf tests/util/syncthing_home/index-v0.14.0.db
+
+  scripts/reset_db.sh
+
+  export ORIG_DIR="tests/util/orig_dir"
+  export DEST_DIR="tests/util/dest_dir"
+
+  rm -rf ${ORIG_DIR}
+  rm -rf ${DEST_DIR}
+
+  mkdir -p ${ORIG_DIR}
+  mkdir -p ${DEST_DIR}
+
+  tests/util/grizol --config tests/util/config.textproto > /tmp/grizol 2>&1 &
+  export GRIZOL_PID=$!
+  echo "Started grizol with pid ${GRIZOL_PID}"
+
+  tests/util/syncthing --home tests/util/syncthing_home > /tmp/syncthing 2>&1 &
+  export SYNCTHING_PID=$!
+  echo "Started syncthing with pid ${SYNCTHING_PID}" 
+}
+
+teardown_file() {
+  echo "Killing grizol (${GRIZOL_PID}) and syncthing (${SYNCTHING_PID})"
+
+  kill ${GRIZOL_PID} ${SYNCTHING_PID}
+}
+
+setup() {
+  load '/usr/lib/bats/bats-support/load.bash'
+  load '/usr/lib/bats/bats-assert/load.bash'
+}
+
+trigger_syncthing_rescan() {
+  # TODO: given the initial setup of syncthing can take some time, we need to find a better way to see when syncthing is ready
+  sleep_time="${VARIABLE:-0}"
+  sleep ${sleep_time}
+
+  while [[ $(rg 'Device .* client is .grizol' /tmp/syncthing | wc -l) -lt 1 ]]; do sleep 1; done
+  curl 'http://localhost:8384/rest/db/scan' \
+    -X 'POST' \
+    -H 'X-CSRF-Token-RFJWU2I: DRzPJNiGgMhcPchiAEbZPnptv6qsAwXa' \
+    --compressed
+}
+
+run_diff() {
+  orig_dir=$1
+  dest_dir=$2
+  res=""
+  # check only the files not the directories 
+  for f in $(fdfind ".*" ${orig_dir} | rg -v "/$"); do
+    f=$(echo $f | sd "${orig_dir}/" "")
+    orig_dir_name=$(echo "${orig_dir}" | rg -o "/([^/.]+)$" -r '$1')
+    d=$(diff "${orig_dir}/${f}" "${dest_dir}/${orig_dir_name}/${f}" || true)
+    if [[ ! -z "$d" ]]; then
+      res="${f} ${res}"
+    fi
+  done
+  if [[ -z ${res} ]]; then 
+    # Success: No diffs found
+    exit 0
+  else
+    # Failures: Diffs found
+    exit 1
+  fi
+}
+
+@test "Test adding data" {
+  while [[ -z $(rg 'Ready to synchronize "orig_dir"' /tmp/syncthing) ]]; do sleep 1; done
+  scripts/create_random_files.sh ${ORIG_DIR}/ 3
+  trigger_syncthing_rescan 2
+  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 3 ]]; do sleep 1; done
+  run run_diff ${ORIG_DIR} ${DEST_DIR}
+  assert_success
+}
+
+@test "Test adding more data" {
+  scripts/create_random_files.sh ${ORIG_DIR}/ 3
+  trigger_syncthing_rescan
+  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 6 ]]; do sleep 1; done
+  run run_diff ${ORIG_DIR} ${DEST_DIR}
+  assert_success
+}
+
+@test "Test modifying data: change file content" {
+  file_name=$(ls ${ORIG_DIR}/ | sort | head -n 1)
+  cat /dev/urandom | head -c 100 | base32  > "${ORIG_DIR}/${file_name}"
+  trigger_syncthing_rescan
+  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 7 ]]; do sleep 1; done
+  run run_diff ${ORIG_DIR} ${DEST_DIR}
+  assert_success
+}
+
+@test "Test modifying data: remove file content" {
+  file_name=$(ls ${ORIG_DIR}/ | sort | head -n 1)
+  head -c 1 "${ORIG_DIR}/${file_name}" > "${ORIG_DIR}/${file_name}" 
+  trigger_syncthing_rescan
+  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 8 ]]; do sleep 1; done
+  run run_diff ${ORIG_DIR} ${DEST_DIR}
+  assert_success
+}
+
+@test "Test deleting data" {
+  file_name=$(ls ${ORIG_DIR}/ | sort | head -n 1)
+  rm "${ORIG_DIR}/${file_name}"
+  trigger_syncthing_rescan
+  while [[ $(rg 'File .* was deleted on device' /tmp/grizol | wc -l) -ne 1 ]]; do sleep 1; done
+  if [[ ! -f ${ORIG_DIR}/{file_name} && -f ${DEST_DIR}/${file_name} ]]; then
+      echo "Success: file was deleted remotely but not locally"
+  fi
+  run run_diff ${ORIG_DIR} ${DEST_DIR}
+  assert_success
+}
+

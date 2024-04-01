@@ -7,7 +7,7 @@ The source of truth is at https://gitlab.com/com.marcoseravalli/grizol/.
 Install the following dependencies.
 
 ```shell
-sudo apt install -y protobuf-compiler
+sudo apt install -y protobuf-compiler bats bats-assert
 cargo install cargo-watch
 cargo install sqlx-cli
 ```
