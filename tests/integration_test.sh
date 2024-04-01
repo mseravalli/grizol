@@ -50,7 +50,7 @@ trigger_syncthing_rescan() {
   while [[ $(rg 'Device .* client is .grizol' /tmp/syncthing | wc -l) -lt 1 ]]; do sleep 1; done
   curl 'http://localhost:8384/rest/db/scan' \
     -X 'POST' \
-    -H 'X-CSRF-Token-RFJWU2I: DRzPJNiGgMhcPchiAEbZPnptv6qsAwXa' \
+    -H "X-API-Key: un66wPwNPteiJ6Rm26UrMhwCgmetimvj" \
     --compressed
 }
 
