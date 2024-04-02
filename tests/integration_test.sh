@@ -76,7 +76,7 @@ run_diff() {
   fi
 }
 
-@test "Test adding data" {
+@test "Syncthing: add data" {
   while [[ -z $(rg 'Ready to synchronize "orig_dir"' /tmp/syncthing) ]]; do sleep 1; done
 
   yes a | xargs echo -n 2>/dev/null | head -c 900 | fmt > ${ORIG_DIR}/a.txt
@@ -90,7 +90,7 @@ run_diff() {
   assert_success
 }
 
-@test "Test adding more data" {
+@test "Syncthing: add more data" {
   yes d | xargs echo -n 2>/dev/null | head -c 900 | fmt > ${ORIG_DIR}/d.txt
   yes e | xargs echo -n 2>/dev/null | head -c 90000 | fmt > ${ORIG_DIR}/e.txt
   mkdir ${ORIG_DIR}/f_dir
@@ -102,7 +102,7 @@ run_diff() {
   assert_success
 }
 
-@test "Test modifying data: change file content" {
+@test "Syncthing: change file content" {
   file_name=a.txt
   yes a | head -c 100 | base32  > "${ORIG_DIR}/${file_name}"
   trigger_syncthing_rescan
@@ -111,7 +111,7 @@ run_diff() {
   assert_success
 }
 
-@test "Test modifying data: remove file content" {
+@test "Syncthing: remove file content" {
   file_name=a.txt
   head -c 1 "${ORIG_DIR}/${file_name}" > "${ORIG_DIR}/${file_name}" 
   trigger_syncthing_rescan
@@ -120,7 +120,7 @@ run_diff() {
   assert_success
 }
 
-@test "Test deleting data" {
+@test "Syncthing: delete file - only remotely" {
   file_name=a.txt
   rm "${ORIG_DIR}/${file_name}"
   trigger_syncthing_rescan
@@ -131,4 +131,3 @@ run_diff() {
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }
-
