@@ -57,29 +57,34 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
     async fn next_sequence_id(&mut self) -> i64 {
         if self.sequence.is_none() {
-            let max_sequence = sqlx::query!(
+            let max_sequence_record = sqlx::query!(
                 r#"
                 SELECT MAX(sequence) as max_seq FROM bep_file_info;
                 "#,
             )
             .fetch_optional(&self.db_pool)
             .await;
-            match max_sequence {
-                Ok(s) => {
-                    self.sequence = s.unwrap().max_seq.map(|x| x.into());
+            match max_sequence_record {
+                Ok(record) => {
+                    self.sequence = record.map(|r| r.max_seq).flatten().map(|x| x.into());
                 }
-                Err(_e) => {
-                    warn!("Could not get max sequence, will start from 0");
-                    self.sequence = Some(0);
+                Err(e) => {
+                    warn!(
+                        "Error encountered when retrieving max sequence from the database: {:?}",
+                        e
+                    );
                 }
             }
         }
 
         if let Some(s) = self.sequence.as_mut() {
             *s += 1;
+            s.clone()
+        } else {
+            warn!("No sequence found in the database will start from 1, this might cause issues");
+            self.sequence = Some(1);
+            1
         }
-
-        self.sequence.unwrap()
     }
 
     pub async fn init_index(&self, folder: &str, device_id: &DeviceId) {
