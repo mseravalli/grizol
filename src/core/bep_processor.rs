@@ -330,7 +330,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     {
                         let locations = self
                             .storage_manager
-                            .cp_to_remote(&request.folder, &request.name)
+                            .cp_local_to_remote(&request.folder, &request.name)
                             .await
                             .expect("Error occured when uploading file");
                         state

@@ -1397,6 +1397,36 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         file_dests
     }
 
+    pub async fn rm_file_info(&self, folder: &str, device_id: &DeviceId, file_name: &str) {
+        let device_id = device_id.to_string();
+        debug!("Deleting file: {}", file_name);
+
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        // We have a cascading removal.
+        let _delete_res = sqlx::query!(
+            "
+                PRAGMA foreign_keys = ON;
+                DELETE FROM bep_file_info
+                WHERE folder = ? AND device = ? AND name = ?; 
+            ",
+            folder,
+            device_id,
+            file_name,
+        )
+        .execute(&self.db_pool)
+        .await
+        .expect("Failed to execute query");
+
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+    }
+
     pub async fn update_file_locations(
         &self,
         folder: &str,

@@ -82,10 +82,11 @@ run_diff() {
   yes a | xargs echo -n 2>/dev/null | head -c 900 | fmt > ${ORIG_DIR}/a.txt
   yes b | xargs echo -n 2>/dev/null | head -c 90000 | fmt > ${ORIG_DIR}/b.txt
   mkdir ${ORIG_DIR}/c_dir
-  yes c | xargs echo -n 2>/dev/null | head -c 9000000 | fmt > ${ORIG_DIR}/c_dir/c.txt
+  yes c | xargs echo -n 2>/dev/null | head -c 9000000 | fmt > ${ORIG_DIR}/c_dir/c1.txt
+  yes c | xargs echo -n 2>/dev/null | head -c 9000000 | fmt > ${ORIG_DIR}/c_dir/c2.txt
 
   trigger_syncthing_rescan 2
-  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 3 ]]; do sleep 1; done
+  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 4 ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }
@@ -97,7 +98,7 @@ run_diff() {
   yes f | xargs echo -n 2>/dev/null | head -c 9000000 | fmt > ${ORIG_DIR}/f_dir/f.txt
 
   trigger_syncthing_rescan
-  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 6 ]]; do sleep 1; done
+  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 7 ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }
@@ -106,7 +107,7 @@ run_diff() {
   file_name=a.txt
   yes a | head -c 100 | base32  > "${ORIG_DIR}/${file_name}"
   trigger_syncthing_rescan
-  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 7 ]]; do sleep 1; done
+  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 8 ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }
@@ -115,7 +116,7 @@ run_diff() {
   file_name=a.txt
   head -c 1 "${ORIG_DIR}/${file_name}" > "${ORIG_DIR}/${file_name}" 
   trigger_syncthing_rescan
-  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 8 ]]; do sleep 1; done
+  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 9 ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }
@@ -129,5 +130,46 @@ run_diff() {
       echo "Success: file was deleted remotely but not locally"
   fi
   run run_diff ${ORIG_DIR} ${DEST_DIR}
+  assert_success
+}
+
+@test "Fuse: ls files" {
+  expected_ls=". ./a.txt ./b.txt ./c_dir ./c_dir/c1.txt ./c_dir/c2.txt ./d.txt ./e.txt ./f_dir ./f_dir/f.txt"
+  cd tests/util/fuse_mountpoint/orig_dir/
+  run diff <(echo ${expected_ls}) <(find . | sort | paste -d ' ' -s ) 
+  assert_success
+}
+
+@test "Fuse: mv files top dir to top dir" {
+  mv tests/util/fuse_mountpoint/orig_dir/a{,_moved}.txt
+  expected_ls="tests/util/fuse_mountpoint/orig_dir/a_moved.txt"
+  run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/a*) 
+  assert_success
+}
+
+@test "Fuse: mv files sub dir to sub dir" {
+  mv tests/util/fuse_mountpoint/orig_dir/c_dir/c1{,_moved}.txt
+  expected_ls="tests/util/fuse_mountpoint/orig_dir/c_dir/c1_moved.txt"
+  run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/c_dir/c1*) 
+  assert_success
+}
+
+@test "Fuse: mv files sub dir to top dir" {
+  mv tests/util/fuse_mountpoint/orig_dir/c_dir/c2.txt tests/util/fuse_mountpoint/orig_dir/c2.txt
+  expected_ls="c1_moved.txt"
+  run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/c_dir/ | sort | paste -d ' ' -s) 
+  assert_success
+  expected_ls="a_moved.txt b.txt c2.txt c_dir d.txt e.txt f_dir"
+  run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/ | sort | paste -d ' ' -s) 
+  assert_success
+}
+
+@test "Fuse: mv files top dir to sub dir" {
+  mv tests/util/fuse_mountpoint/orig_dir/c2.txt tests/util/fuse_mountpoint/orig_dir/c_dir/c2.txt
+  expected_ls="c1_moved.txt c2.txt"
+  run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/c_dir/ | sort | paste -d ' ' -s) 
+  assert_success
+  expected_ls="a_moved.txt b.txt c_dir d.txt e.txt f_dir"
+  run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/ | sort | paste -d ' ' -s) 
   assert_success
 }

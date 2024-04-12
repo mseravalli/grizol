@@ -1,12 +1,14 @@
 use crate::core::bep_state::BepState;
 use crate::core::{GrizolConfig, GrizolFileInfo, GrizolFolder};
+use crate::storage::StorageManager;
 use chrono::prelude::*;
 use chrono_timesource::TimeSource;
 use fuser::{
-    BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, Request,
+    BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyEmpty, Request,
     FUSE_ROOT_ID,
 };
-use libc::{ENOBUFS, ENOENT};
+use libc::{EFAULT, ENOBUFS, ENOENT};
+use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -38,6 +40,7 @@ pub struct GrizolFS<TS: TimeSource<Utc>> {
     last_folders_files: Instant,
     folders: Vec<GrizolFolder>,
     files: Vec<GrizolFileInfo>,
+    storage_manager: StorageManager,
 }
 
 impl<TS: TimeSource<Utc>> GrizolFS<TS> {
@@ -48,6 +51,7 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
             .unwrap();
 
         GrizolFS {
+            storage_manager: StorageManager::new(config.clone()),
             config,
             state,
             rt,
@@ -193,14 +197,19 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         let attr = if parent_ino == FUSE_ROOT_ID {
             folders
                 .iter()
-                .find(|f| f.folder.id.contains(name.to_str().unwrap()))
+                .find(|f| f.folder.id == name.to_str().unwrap())
                 .map(|f| self.attr_from_folder(f))
         } else {
             let parent_dir = parent_dir(files, parent_ino);
 
             files
                 .iter()
-                .filter(|f| f.file_info.name.contains(name.to_str().unwrap()))
+                .filter(|f| {
+                    Path::new(&f.file_info.name)
+                        .file_name()
+                        .map(|f| f == name)
+                        .unwrap_or(false)
+                })
                 .find(|&f| is_file_in_current_dir(&parent_dir, f))
                 .map(|f| self.attr_from_file(f))
         };
@@ -296,6 +305,223 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
                 return;
             }
         }
+
+        reply.ok();
+    }
+
+    fn rename(
+        &mut self,
+        _req: &Request<'_>,
+        orig_parent_dir_ino: u64,
+        orig_name: &OsStr,
+        dest_parent_dir_ino: u64,
+        dest_name: &OsStr,
+        flags: u32,
+        reply: ReplyEmpty,
+    ) {
+        debug!(
+            "Start moving {} {:?} to {} {:?}",
+            &orig_parent_dir_ino, orig_name, &dest_parent_dir_ino, dest_name
+        );
+
+        self.refresh_expired_folders_files();
+        let (folders, files) = self.folders_files();
+
+        struct Dirs {
+            top_folder: Option<String>,
+            dir: Option<String>,
+        };
+
+        let orig_parent_dir: Option<Dirs> = if orig_parent_dir_ino == FUSE_ROOT_ID {
+            Some(Dirs {
+                top_folder: None,
+                dir: None,
+            })
+        } else if orig_parent_dir_ino < ENTRIES_START {
+            folders
+                .iter()
+                .find(|f| top_dir_id(f.id) == orig_parent_dir_ino)
+                .map(|f| Dirs {
+                    top_folder: Some(f.folder.id.clone()),
+                    dir: None,
+                })
+        } else {
+            files
+                .iter()
+                .find(|f| entry_id(f.id) == orig_parent_dir_ino)
+                .map(|f| Dirs {
+                    top_folder: Some(f.folder.clone()),
+                    dir: Some(f.file_info.name.clone()),
+                })
+        };
+
+        let dest_parent_dir: Option<Dirs> = if dest_parent_dir_ino == FUSE_ROOT_ID {
+            Some(Dirs {
+                top_folder: None,
+                dir: None,
+            })
+        } else if dest_parent_dir_ino < ENTRIES_START {
+            folders
+                .iter()
+                .find(|f| top_dir_id(f.id) == dest_parent_dir_ino)
+                .map(|f| Dirs {
+                    top_folder: Some(f.folder.id.clone()),
+                    dir: None,
+                })
+        } else {
+            files
+                .iter()
+                .find(|f| entry_id(f.id) == dest_parent_dir_ino)
+                .map(|f| Dirs {
+                    top_folder: Some(f.folder.clone()),
+                    dir: Some(f.file_info.name.clone()),
+                })
+        };
+
+        if orig_parent_dir.is_none() {
+            debug!("Orig dir not found");
+            return reply.error(ENOENT);
+        }
+
+        if dest_parent_dir.is_none() {
+            debug!("Dest dir not found");
+            return reply.error(ENOENT);
+        }
+
+        let orig_parent_dir = orig_parent_dir.unwrap();
+        let dest_parent_dir = dest_parent_dir.unwrap();
+
+        // The file that needs to be moved.
+        let orig_grizol_file = files
+            .iter()
+            .filter(|f| {
+                let is_top_dir_same = &orig_parent_dir
+                    .top_folder
+                    .as_ref()
+                    .map(|d| d == &f.folder)
+                    .unwrap_or(false);
+
+                let is_dir_same = &orig_parent_dir
+                    .dir
+                    .as_ref()
+                    .map(|d| format!("{}/{}", d, orig_name.to_str().unwrap()) == f.file_info.name)
+                    .unwrap_or(orig_name.to_str().unwrap() == f.file_info.name);
+
+                debug!(
+                    "is_top_dir_same {}, {:?}/{} =?= {}",
+                    is_top_dir_same,
+                    &orig_parent_dir.dir,
+                    orig_name.to_str().unwrap(),
+                    f.file_info.name
+                );
+                debug!("Are dirs same: {}", *is_top_dir_same && *is_dir_same);
+
+                *is_top_dir_same && *is_dir_same
+            })
+            .find(|&f| {
+                is_file_in_current_dir(
+                    orig_parent_dir
+                        .dir
+                        .as_ref()
+                        .map(|x| x.to_string())
+                        .unwrap_or("".to_string())
+                        .as_str(),
+                    f,
+                )
+            });
+
+        if orig_grizol_file.is_none() {
+            debug!("Origin file info not found");
+            return reply.error(ENOENT);
+        }
+        let orig_grizol_file = orig_grizol_file.unwrap().clone();
+        let orig_folder = &orig_grizol_file.folder;
+
+        let dest_folder = folders.iter().find(|&f| {
+            dest_parent_dir
+                .top_folder
+                .as_ref()
+                .map(|tf| tf == &f.folder.id)
+                .unwrap_or(false)
+        });
+        let dest_folder = if let Some(f) = dest_folder {
+            f.folder.id.as_ref()
+        } else {
+            debug!("Origin file info not found");
+            return reply.error(ENOENT);
+        };
+
+        self.rt.block_on(async {
+            let mut state = self.state.lock().await;
+
+            // TODO: this is terribly inefficient
+            // FileInfo that will be copied in the index.
+            let mut file = state
+                .file(
+                    orig_folder,
+                    self.config.local_device_id,
+                    &orig_grizol_file.file_info.name,
+                )
+                .await
+                .unwrap();
+
+            let orig_file_path = file.name;
+            debug!(
+                "orig_folder: {} - orig_file_path: {}",
+                orig_folder, orig_file_path
+            );
+
+            // TODO: merge the data with Path and not manually
+            // Path within a folder
+            let dest_file_path = format!(
+                "{}{}",
+                dest_parent_dir
+                    .dir
+                    .clone()
+                    .map(|x| format!("{}/", x))
+                    .unwrap_or("".to_string()),
+                dest_name.to_str().unwrap()
+            );
+            file.name = dest_file_path.clone();
+            debug!(
+                "dest_folder: {} - dest_file_path: {}",
+                dest_folder, dest_file_path
+            );
+
+            let res = self
+                .storage_manager
+                // TODO: consider if we should use mv (and implement it) instead of cp so that we
+                // leave the cp and rm mechanism to the backend? check the tradeoffs
+                .cp(orig_folder, &orig_file_path, dest_folder, &dest_file_path)
+                .await;
+
+            if res.is_err() {
+                error!("cannot move the files: {:?}", res);
+                // TODO: potentially undo stuff
+                // TODO: return more appropriate error e.g. reply.error(ENOENT);
+            }
+
+            state
+                .insert_file_info(
+                    &dest_folder,
+                    &self.config.local_device_id,
+                    &vec![file.clone()],
+                )
+                .await;
+
+            state.update_file_locations(
+                &dest_folder,
+                &self.config.local_device_id,
+                &file.name,
+                res.unwrap(),
+            );
+
+            state
+                .rm_file_info(&orig_folder, &self.config.local_device_id, &orig_file_path)
+                .await;
+
+            self.storage_manager.rm(&orig_folder, &orig_file_path).await;
+        });
 
         reply.ok();
     }
