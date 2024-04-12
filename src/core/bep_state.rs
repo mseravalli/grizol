@@ -1525,6 +1525,81 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
     pub fn remove_request(&mut self, request_id: &i32) -> Option<Request> {
         self.outgoing_requests.remove(request_id)
     }
+
+    pub async fn is_file_in_read_cache(
+        &self,
+        device_id: &DeviceId,
+        folder: &str,
+        file: &str,
+    ) -> bool {
+        let device_id = device_id.to_string();
+        let file_count = sqlx::query!(
+            "
+                SELECT COUNT(cache_file_name) as c
+                FROM bep_local_cache
+                WHERE TRUE
+                  AND cache_folder = ?
+                  AND cache_device = ?
+                  AND cache_file_name = ?
+                ;
+            ",
+            folder,
+            device_id,
+            file,
+        )
+        .fetch_optional(&self.db_pool)
+        .await
+        .expect("Failed to execute query")
+        .map(|fc| fc.c);
+
+        match file_count {
+            Some(1) => true,
+            Some(0) => false,
+            Some(c) => {
+                error!(
+                    "This should not happen. There are '{}' instances of '{}'. There is likely an error in the database schema.",
+                    c, file
+                );
+                false
+            }
+            None => false,
+        }
+    }
+
+    pub async fn update_read_cache(&self, device_id: &DeviceId, folder: &str, file: &str) {
+        let device_id = device_id.to_string();
+
+        let now = {
+            let clock = self.clock.lock().await;
+            clock
+                .now()
+                .map(|date_time| date_time.timestamp_millis())
+                .unwrap_or(0)
+        };
+
+        let _insert_res = sqlx::query!(
+            "
+                INSERT INTO bep_local_cache (
+                    cache_folder    ,
+                    cache_device    ,
+                    cache_file_name ,
+                    timestamp_added 
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(cache_folder, cache_device, cache_file_name) DO UPDATE SET
+                    cache_folder    = excluded.cache_folder    ,
+                    cache_device    = excluded.cache_device    ,
+                    cache_file_name = excluded.cache_file_name 
+                ",
+            folder,
+            device_id,
+            file,
+            now
+        )
+        .execute(&self.db_pool)
+        .await
+        .expect("Failed to execute query");
+    }
 }
 
 /// Rename a file according to
