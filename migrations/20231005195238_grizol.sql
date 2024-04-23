@@ -98,6 +98,25 @@ CREATE TABLE IF NOT EXISTS bep_file_location
     FOREIGN KEY(loc_name, loc_folder, loc_device) REFERENCES bep_file_info(name, folder, device) ON DELETE CASCADE ON UPDATE CASCADE 
 );
 
+-- Using a differnt table from bep_file_location as this table is expected to
+-- have a much smaller number of entries and a much higher turnover.
+-- The files in the local cache will be read_only.
+CREATE TABLE IF NOT EXISTS bep_local_cache
+(
+    cache_folder      TEXT    NOT NULL ,
+    cache_device      TEXT    NOT NULL ,
+    cache_file_name   TEXT    NOT NULL ,
+
+    -- unix timestamp in milliseconds for when this file was added to the cache
+    timestamp_added   INTEGER NOT NULL ,
+    -- TODO: think about further possible attributes that could be tracked for
+    -- better cache efficiency, e.g. last_accessed, number of accesses,
+    -- timestamp of every access, other.
+
+    PRIMARY KEY(cache_folder, cache_device, cache_file_name) ,
+    FOREIGN KEY(cache_folder, cache_device, cache_file_name) REFERENCES bep_file_info(folder, device, name) ON DELETE CASCADE ON UPDATE CASCADE 
+);
+
 CREATE TABLE IF NOT EXISTS bep_block_info (
     file_name   TEXT    NOT NULL ,
     file_folder TEXT    NOT NULL ,

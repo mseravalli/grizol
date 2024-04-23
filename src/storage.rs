@@ -5,6 +5,7 @@ use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::io;
 use std::path::Path;
+use std::process::ExitStatus;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::process::Command;
@@ -117,6 +118,21 @@ impl StorageManager {
     }
 
     // TODO: Consider using a struct instread of (String, String)
+    pub async fn cp_remote_to_read_cache(&self, folder: &str, name: &str) -> Result<(), String> {
+        // FIXME: add a way to select preferred backend
+        let storage_backend = "gcs";
+
+        let bucket = self.config.remote_base_dir.clone();
+        let orig = format!("{storage_backend}:{bucket}/{folder}/{name}");
+        let dest = format!("{}/{}/{}", self.config.read_cache_dir, folder, name);
+        let rclone_command = &["copyto", orig.as_str(), dest.as_str()];
+        self.run_rclone(rclone_command)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("Failed to run command: {:?}", e))
+    }
+
+    // TODO: Consider using a struct instread of (String, String)
     pub async fn cp_local_to_remote(
         &self,
         folder: &str,
@@ -216,8 +232,58 @@ impl StorageManager {
             .map_err(|e| format!("{}", e))?;
         Ok(())
     }
-}
 
+    pub async fn read_cached(
+        &self,
+        folder: &str,
+        name: &str,
+        base_offset: i64,
+        size: u32,
+    ) -> Result<Vec<u8>, String> {
+        let file_path = format!("{}/{}/{}", self.config.read_cache_dir, folder, name);
+        let mut f = File::open(file_path).await.expect("Cannot open file");
+        let mut buffer = vec![0; size.try_into().unwrap()];
+
+        f.seek(SeekFrom::Start(base_offset.try_into().unwrap()))
+            .await
+            .expect("Failed to seek");
+        let mut total_read_bytes: usize = 0;
+        while total_read_bytes < size.try_into().unwrap() {
+            let read_bytes = f
+                .read(&mut buffer)
+                .await
+                .map_err(|e| format!("Failed to read file {:?}", e))?;
+
+            if read_bytes == 0 {
+                break;
+            }
+
+            f.seek(SeekFrom::Current(read_bytes.try_into().unwrap()))
+                .await
+                .expect("Failed to seek");
+            total_read_bytes += read_bytes;
+        }
+
+        Ok(buffer)
+    }
+
+    async fn run_rclone(&self, rclone_command: &[&str]) -> Result<ExitStatus, io::Error> {
+        let config_location = self
+            .config
+            .rclone_config
+            .as_ref()
+            .map(|x| format!("--config={}", x))
+            .unwrap_or("".to_string());
+        let cmd = &[&["rclone", config_location.as_str()], rclone_command].concat();
+        info!("Running: `{}`", cmd.join(" "));
+        Command::new(cmd[0])
+            .args(&cmd[1..])
+            .spawn()
+            .expect("command failed to start")
+            .wait()
+            .await
+    }
+}
 // pub fn data_from_file_block(
 //     dir_path: &str,
 //     file_info: &syncthing::FileInfo,
