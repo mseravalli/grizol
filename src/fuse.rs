@@ -7,7 +7,7 @@ use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData,
     ReplyEmpty, Request, FUSE_ROOT_ID,
 };
-use libc::{EISDIR, ENOBUFS, ENOENT, ENOSYS};
+use libc::{EFBIG, EISDIR, ENOBUFS, ENOENT, ENOSYS};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::Arc;
@@ -544,21 +544,26 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         };
 
         // TODO: extend to symlinks
-        let g_file = files.iter().find(|&f| entry_id(f.id) == ino).and_then(|f| {
-            if f.file_info.r#type == 0 {
-                Some(f)
-            } else {
-                None
-            }
-        });
+        let g_file = files
+            .iter()
+            .find(|&f| entry_id(f.id) == ino && f.file_info.r#type == 0);
 
-        let (folder, file) = if let Some(f) = g_file {
-            (f.folder.clone(), f.file_info.name.clone())
+        let g_file = if let Some(f) = g_file {
+            f
         } else {
             // TODO: better error handling, distingush e.g. folders
             reply.error(EISDIR);
             return;
         };
+
+        if u64::try_from(g_file.file_info.size).unwrap() > self.config.read_cache_size {
+            reply.error(EFBIG);
+            return;
+        }
+
+        debug!("file to be read: {:?}", g_file);
+
+        let (folder, file_name) = (g_file.folder.clone(), g_file.file_info.name.clone());
 
         let is_dir = false;
         if is_dir {
@@ -569,19 +574,31 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         let data = self.rt.block_on(async {
             let state = self.state.lock().await;
             if !state
-                .is_file_in_read_cache(&self.config.local_device_id, &folder, &file)
+                .is_file_in_read_cache(&self.config.local_device_id, &folder, &file_name)
                 .await
             {
+                let removed_files = state
+                    .free_read_cache(
+                        self.config.read_cache_size,
+                        g_file.file_info.size.try_into().unwrap(),
+                    )
+                    .await
+                    .expect("Failed to remove from database");
+                debug!("removed_files: {:?}", removed_files);
                 self.storage_manager
-                    .cp_remote_to_read_cache(&folder, &file)
+                    .free_read_cache(removed_files)
+                    .await
+                    .expect("Failed to remove files");
+                self.storage_manager
+                    .cp_remote_to_read_cache(&folder, &file_name)
                     .await
                     .expect("Failed to copy file");
             }
             state
-                .update_read_cache(&self.config.local_device_id, &folder, &file)
+                .update_read_cache(&self.config.local_device_id, &folder, &file_name)
                 .await;
             self.storage_manager
-                .read_cached(&folder, &file, offset, size)
+                .read_cached(&folder, &file_name, offset, size)
                 .await
                 .expect("Failed to read data")
         });

@@ -174,3 +174,8 @@ run_diff() {
   run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/ | sort | paste -d ' ' -s) 
   assert_success
 }
+
+@test "Fuse: cat files" {
+  run cat tests/util/fuse_mountpoint/orig_dir/c_dir/c2.txt
+  assert_success
+}

@@ -3,6 +3,7 @@ use crate::device_id::DeviceId;
 use crate::syncthing::{self, Folder};
 use chrono::prelude::*;
 use chrono_timesource::TimeSource;
+use futures::future::try_join_all;
 use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -1564,6 +1565,78 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             }
             None => false,
         }
+    }
+
+    // TODO: Improve cache eviction algorithm
+    /// Frees the cache using a FIFO mechanism.
+    pub async fn free_read_cache(
+        &self,
+        cache_size: u64,
+        needed_bytes: u64,
+    ) -> Result<Vec<(String, String)>, String> {
+        sqlx::query!("BEGIN TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        // TODO: deal with symlinks
+        let files = sqlx::query!(
+            r#"
+            SELECT lc.cache_folder, lc.cache_file_name, lc.cache_device, lc.timestamp_added, fi.size
+            FROM bep_local_cache lc JOIN bep_file_info fi ON TRUE
+              AND lc.cache_folder = fi.folder
+              AND lc.cache_file_name = fi.name
+              AND lc.cache_device = fi.device
+            WHERE fi.type = 0
+            ORDER BY lc.timestamp_added ASC
+        ;"#
+        )
+        .fetch_all(&self.db_pool)
+        .await
+        .expect("Error occurred");
+
+        let used_bytes: u64 = files.iter().map(|f| u64::try_from(f.size).unwrap()).sum();
+        let mut available_bytes = cache_size - used_bytes;
+        let mut removed_files = vec![];
+        for file in files.iter() {
+            if available_bytes >= needed_bytes {
+                break;
+            }
+            available_bytes += u64::try_from(file.size).unwrap();
+            removed_files.push(file);
+        }
+
+        // TODO: do this in a SQL single statement if possible
+        let rm_ops = removed_files.iter().map(|removed_file| {
+            // We have cascading removal.
+            sqlx::query!(
+                "
+                DELETE FROM bep_local_cache WHERE TRUE
+                    AND cache_device = ?
+                    AND cache_folder = ?
+                    AND cache_file_name = ?
+                ",
+                removed_file.cache_device,
+                removed_file.cache_folder,
+                removed_file.cache_file_name,
+            )
+            .execute(&self.db_pool)
+        });
+
+        try_join_all(rm_ops)
+            .await
+            .map_err(|e| format!("Failed to execute query: {:?}", e))?;
+
+        sqlx::query!("END TRANSACTION;")
+            .execute(&self.db_pool)
+            .await
+            .unwrap();
+
+        let res = removed_files
+            .iter()
+            .map(|&f| (f.cache_folder.clone(), f.cache_file_name.clone()))
+            .collect();
+        Ok(res)
     }
 
     pub async fn update_read_cache(&self, device_id: &DeviceId, folder: &str, file: &str) {

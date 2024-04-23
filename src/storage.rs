@@ -1,12 +1,13 @@
 use crate::syncthing::Request;
 
 use crate::GrizolConfig;
+use futures::future::try_join_all;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::io;
 use std::path::Path;
 use std::process::ExitStatus;
-use tokio::fs::{File, OpenOptions};
+use tokio::fs::{remove_file, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::process::Command;
 
@@ -230,6 +231,27 @@ impl StorageManager {
         tokio::fs::remove_file(Path::new(&orig))
             .await
             .map_err(|e| format!("{}", e))?;
+        Ok(())
+    }
+
+    // TODO: use a safer structure to hold Folder and name
+    /// Remove the provided files.
+    pub async fn free_read_cache(
+        &self,
+        removed_files: Vec<(String, String)>,
+    ) -> Result<(), String> {
+        let rm_ops = removed_files.iter().map(|removed_file| {
+            let file_path = format!(
+                "{}/{}/{}",
+                self.config.read_cache_dir, removed_file.0, removed_file.1
+            );
+            remove_file(file_path)
+        });
+
+        try_join_all(rm_ops)
+            .await
+            .map_err(|e| format!("Failed to remove file {:?}", e))?;
+
         Ok(())
     }
 
