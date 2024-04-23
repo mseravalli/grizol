@@ -18,6 +18,7 @@ libc = "0"
 log = { version = "0.4.4" }
 lz4_flex = { version = "0.10" }
 mio = { version = "0.8", features = ["net", "os-poll"] }
+parse-size = "1"
 prost = "0"
 prost-reflect = { version = "0", features = ["text-format", "derive"] }
 prost-types = "0"

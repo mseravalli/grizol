@@ -9,6 +9,7 @@ use crate::device_id::DeviceId;
 use crate::grizol;
 use crate::grizol::StorageStrategy;
 use crate::syncthing::{FileInfo, Folder};
+use parse_size::parse_size;
 use std::collections::HashSet;
 use std::convert::From;
 use std::path::{Path, PathBuf};
@@ -85,6 +86,7 @@ pub struct GrizolConfig {
     pub rclone_config: Option<String>,
     pub remote_base_dir: String,
     pub read_cache_dir: String,
+    pub read_cache_size: u64,
     pub mountpoint: Option<PathBuf>,
     pub uid: u32,
     pub gid: u32,
@@ -138,6 +140,18 @@ impl From<grizol::Config> for GrizolConfig {
             grizol_proto_config.read_cache_dir
         };
 
+        let read_cache_size = if grizol_proto_config.read_cache_size.is_empty() {
+            1_000_000_000 // 1GB
+        } else {
+            match parse_size(grizol_proto_config.read_cache_size.clone()) {
+                Ok(size) => size,
+                Err(e) => panic!(
+                    "Cannot convert '{}' to bytes: {}",
+                    grizol_proto_config.read_cache_size, e
+                ),
+            }
+        };
+
         let mountpoint = if grizol_proto_config.mountpoint.is_empty() {
             None
         } else {
@@ -162,6 +176,7 @@ impl From<grizol::Config> for GrizolConfig {
             rclone_config,
             remote_base_dir,
             read_cache_dir,
+            read_cache_size,
             mountpoint,
             uid,
             gid,
