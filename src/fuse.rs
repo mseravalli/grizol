@@ -4,10 +4,10 @@ use crate::storage::StorageManager;
 use chrono::prelude::*;
 use chrono_timesource::TimeSource;
 use fuser::{
-    BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyEmpty, Request,
-    FUSE_ROOT_ID,
+    BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData,
+    ReplyEmpty, Request, FUSE_ROOT_ID,
 };
-use libc::{ENOBUFS, ENOENT};
+use libc::{EISDIR, ENOBUFS, ENOENT, ENOSYS};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::Arc;
@@ -525,6 +525,71 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         });
 
         reply.ok();
+    }
+
+    fn read(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        _fh: u64,
+        offset: i64,
+        size: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        reply: ReplyData,
+    ) {
+        self.refresh_expired_folders_files();
+        let (_folders, files) = self.folders_files();
+
+        if ino < ENTRIES_START {
+            reply.error(EISDIR);
+            return;
+        };
+
+        // TODO: extend to symlinks
+        let g_file = files.iter().find(|&f| entry_id(f.id) == ino).and_then(|f| {
+            if f.file_info.r#type == 0 {
+                Some(f)
+            } else {
+                None
+            }
+        });
+
+        let (folder, file) = if let Some(f) = g_file {
+            (f.folder.clone(), f.file_info.name.clone())
+        } else {
+            // TODO: better error handling, distingush e.g. folders
+            reply.error(EISDIR);
+            return;
+        };
+
+        let is_dir = false;
+        if is_dir {
+            reply.error(ENOSYS);
+            return;
+        }
+
+        let data = self.rt.block_on(async {
+            let state = self.state.lock().await;
+            if !state
+                .is_file_in_read_cache(&self.config.local_device_id, &folder, &file)
+                .await
+            {
+                self.storage_manager
+                    .cp_remote_to_read_cache(&folder, &file)
+                    .await
+                    .expect("Failed to copy file");
+            }
+            state
+                .update_read_cache(&self.config.local_device_id, &folder, &file)
+                .await;
+            self.storage_manager
+                .read_cached(&folder, &file, offset, size)
+                .await
+                .expect("Failed to read data")
+        });
+
+        reply.data(&data);
     }
 }
 

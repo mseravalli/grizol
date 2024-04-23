@@ -27,7 +27,9 @@
 /* WHERE fin.device = 'DC3KS6Y-XZWHD4F-T2L5QY6-LJ2GR7X-THN23CX-33LLN46-WZ7FAQO-AVE3BQV' */
 /* ; */
 
-SELECT fin.name, fin.device
-FROM bep_file_info fin
-/* WHERE fin.device = 'DC3KS6Y-XZWHD4F-T2L5QY6-LJ2GR7X-THN23CX-33LLN46-WZ7FAQO-AVE3BQV' */
-;
+ 
+-- select fin.folder, fin.device, fin.name, fin.sequence, fin.rowid
+-- from bep_file_info fin
+-- WHERE fin.device = 'DC3KS6Y-XZWHD4F-T2L5QY6-LJ2GR7X-THN23CX-33LLN46-WZ7FAQO-AVE3BQV'
+-- order by fin.name
+-- ;
