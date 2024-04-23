@@ -7,7 +7,7 @@ use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyEmpty, Request,
     FUSE_ROOT_ID,
 };
-use libc::{EFAULT, ENOBUFS, ENOENT};
+use libc::{ENOBUFS, ENOENT};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::Arc;
@@ -316,7 +316,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         orig_name: &OsStr,
         dest_parent_dir_ino: u64,
         dest_name: &OsStr,
-        flags: u32,
+        _flags: u32,
         reply: ReplyEmpty,
     ) {
         debug!(
@@ -330,7 +330,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         struct Dirs {
             top_folder: Option<String>,
             dir: Option<String>,
-        };
+        }
 
         let orig_parent_dir: Option<Dirs> = if orig_parent_dir_ino == FUSE_ROOT_ID {
             Some(Dirs {
@@ -502,25 +502,26 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             }
 
             state
-                .insert_file_info(
-                    &dest_folder,
+                .insert_file_info(dest_folder, &self.config.local_device_id, &[file.clone()])
+                .await;
+
+            state
+                .update_file_locations(
+                    dest_folder,
                     &self.config.local_device_id,
-                    &vec![file.clone()],
+                    &file.name,
+                    res.unwrap(),
                 )
                 .await;
 
-            state.update_file_locations(
-                &dest_folder,
-                &self.config.local_device_id,
-                &file.name,
-                res.unwrap(),
-            );
-
             state
-                .rm_file_info(&orig_folder, &self.config.local_device_id, &orig_file_path)
+                .rm_file_info(orig_folder, &self.config.local_device_id, &orig_file_path)
                 .await;
 
-            self.storage_manager.rm(&orig_folder, &orig_file_path).await;
+            self.storage_manager
+                .rm(orig_folder, &orig_file_path)
+                .await
+                .expect("Failed to remove file");
         });
 
         reply.ok();
