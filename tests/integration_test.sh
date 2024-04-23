@@ -2,6 +2,8 @@
 
 # To be run from main directory
 
+GRIZOL_LOG="/tmp/grizol_log"
+
 setup_file() {
   source scripts/env.sh
   export RUST_LOG=info,grizol=debug
@@ -22,7 +24,7 @@ setup_file() {
   mkdir -p ${ORIG_DIR}
   mkdir -p ${DEST_DIR}
 
-  tests/util/grizol --config tests/util/config.textproto > /tmp/grizol 2>&1 &
+  tests/util/grizol --config tests/util/config.textproto > ${GRIZOL_LOG} 2>&1 &
   export GRIZOL_PID=$!
   echo "Started grizol with pid ${GRIZOL_PID}"
 
@@ -86,7 +88,7 @@ run_diff() {
   yes c | xargs echo -n 2>/dev/null | head -c 9000000 | fmt > ${ORIG_DIR}/c_dir/c2.txt
 
   trigger_syncthing_rescan 2
-  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 4 ]]; do sleep 1; done
+  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 4 ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }
@@ -96,9 +98,8 @@ run_diff() {
   yes e | xargs echo -n 2>/dev/null | head -c 90000 | fmt > ${ORIG_DIR}/e.txt
   mkdir ${ORIG_DIR}/f_dir
   yes f | xargs echo -n 2>/dev/null | head -c 9000000 | fmt > ${ORIG_DIR}/f_dir/f.txt
-
   trigger_syncthing_rescan
-  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 7 ]]; do sleep 1; done
+  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 7 ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }
@@ -107,7 +108,7 @@ run_diff() {
   file_name=a.txt
   yes a | head -c 100 | base32  > "${ORIG_DIR}/${file_name}"
   trigger_syncthing_rescan
-  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 8 ]]; do sleep 1; done
+  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 8 ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }
@@ -116,7 +117,7 @@ run_diff() {
   file_name=a.txt
   head -c 1 "${ORIG_DIR}/${file_name}" > "${ORIG_DIR}/${file_name}" 
   trigger_syncthing_rescan
-  while [[ $(rg 'Stored whole file' /tmp/grizol | wc -l) -ne 9 ]]; do sleep 1; done
+  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 9 ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }
@@ -125,7 +126,7 @@ run_diff() {
   file_name=a.txt
   rm "${ORIG_DIR}/${file_name}"
   trigger_syncthing_rescan
-  while [[ $(rg 'File .* was deleted on device' /tmp/grizol | wc -l) -ne 1 ]]; do sleep 1; done
+  while [[ $(rg 'File .* was deleted on device' ${GRIZOL_LOG} | wc -l) -ne 1 ]]; do sleep 1; done
   if [[ ! -f ${ORIG_DIR}/{file_name} && -f ${DEST_DIR}/${file_name} ]]; then
       echo "Success: file was deleted remotely but not locally"
   fi
