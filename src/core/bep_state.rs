@@ -66,7 +66,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .await;
             match max_sequence_record {
                 Ok(record) => {
-                    self.sequence = record.map(|r| r.max_seq).flatten().map(|x| x.into());
+                    self.sequence = record.and_then(|r| r.max_seq).map(|x| x.into());
                 }
                 Err(e) => {
                     warn!(
@@ -79,7 +79,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
         if let Some(s) = self.sequence.as_mut() {
             *s += 1;
-            s.clone()
+            *s
         } else {
             warn!("No sequence found in the database will start from 1, this might cause issues");
             self.sequence = Some(1);
