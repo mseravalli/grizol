@@ -38,6 +38,10 @@ message Config {
     string mountpoint                = 11;
     string read_cache_dir            = 12;
     // Specifies how large is the local cache, defaults to "1GB"
-    string read_cache_size           = 13;
-// next 14
+     string read_cache_size          = 13;
+    // Defines after how many milliseconds fuse should reload it's data. If not
+    // set, it will default to 0ms. When set to 0ms, the reload will be
+    // performed for every operation.
+    optional uint32 fuse_refresh_rate_ms = 14;
+// next 15
 }

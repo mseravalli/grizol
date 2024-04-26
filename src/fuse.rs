@@ -15,8 +15,6 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
-const REFRESH_RATE: Duration = Duration::from_secs(2);
-
 // We allow 2^32 - 10 operations to be performed on the top dirs.
 const ENTRIES_START: u64 = 1 << 32;
 fn entry_id(e_id: i64) -> u64 {
@@ -57,16 +55,14 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
             rt,
             // We set the instant to a point in time in the past to guarantee that the first time
             // this will be called it will be refreshed. Maybe there is a better way.
-            last_folders_files: Instant::now()
-                .checked_sub(REFRESH_RATE.mul_f64(2.0))
-                .unwrap(),
+            last_folders_files: Instant::now().checked_sub(Duration::from_secs(10)).unwrap(),
             folders: Default::default(),
             files: Default::default(),
         }
     }
 
     fn refresh_expired_folders_files(&mut self) {
-        if self.last_folders_files.elapsed() >= REFRESH_RATE {
+        if self.last_folders_files.elapsed() >= self.config.fuse_refresh_rate {
             let (folders, files) = self.rt.block_on(async {
                 let state = self.state.lock().await;
 
@@ -77,6 +73,7 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
 
             self.folders = folders;
             self.files = files;
+            self.last_folders_files = Instant::now();
         }
     }
 
@@ -158,7 +155,7 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
 impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
         if ino == FUSE_ROOT_ID {
-            reply.attr(&REFRESH_RATE, &self.root_dir_attr());
+            reply.attr(&self.config.fuse_refresh_rate, &self.root_dir_attr());
             return;
         }
 
@@ -178,7 +175,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         };
 
         if let Some(a) = attr {
-            reply.attr(&REFRESH_RATE, &a);
+            reply.attr(&self.config.fuse_refresh_rate, &a);
         } else {
             reply.error(ENOENT);
         }
@@ -215,7 +212,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         };
 
         if let Some(a) = attr {
-            reply.entry(&REFRESH_RATE, &a, 1);
+            reply.entry(&self.config.fuse_refresh_rate, &a, 1);
         } else {
             reply.error(ENOENT);
         }
