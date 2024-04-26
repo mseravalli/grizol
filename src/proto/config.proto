@@ -25,19 +25,23 @@ message Peer {
 }
 
 message Config {
-    string name                      =  1;
-    string address                   =  2;
-    string cert                      =  3;
-    string key                       =  4;
-    repeated string trusted_peers    =  5;
-    string base_dir                  =  6;
-    string db_url                    =  7;
-    StorageStrategy storage_strategy =  8;
-    string rclone_config             =  9;
-    string remote_base_dir           = 10;
-    string mountpoint                = 11;
-    string read_cache_dir            = 12;
+    string name                       =  1;
+    string address                    =  2;
+    string cert                       =  3;
+    string key                        =  4;
+    repeated string trusted_peers     =  5;
+    string base_dir                   =  6;
+    string db_url                     =  7;
+    StorageStrategy storage_strategy  =  8;
+    string rclone_config              =  9;
+    string remote_base_dir            = 10;
+    string mountpoint                 = 11;
+    string read_cache_dir             = 12;
     // Specifies how large is the local cache, defaults to "1GB"
-    string read_cache_size           = 13;
-// next 14
+     string read_cache_size           = 13;
+    // Defines after how many milliseconds fuse should reload it's data. If not
+    // set, it will default to 0ms. When set to 0ms, the reload will be
+    // performed for every operation.
+    optional uint32 fuse_refresh_rate_ms = 14;
+// next 15
 }
