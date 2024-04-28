@@ -13,6 +13,7 @@ use parse_size::parse_size;
 use std::collections::HashSet;
 use std::convert::From;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 // TODO: rethink this structure, e.g. if we should store CompleteMessages and encode them at the
 // time of reading.
@@ -88,6 +89,7 @@ pub struct GrizolConfig {
     pub read_cache_dir: String,
     pub read_cache_size: u64,
     pub mountpoint: Option<PathBuf>,
+    pub fuse_refresh_rate: Duration,
     pub uid: u32,
     pub gid: u32,
 }
@@ -158,6 +160,12 @@ impl From<grizol::Config> for GrizolConfig {
             Some(PathBuf::from(grizol_proto_config.mountpoint))
         };
 
+        let fuse_refresh_rate = if let Some(d) = grizol_proto_config.fuse_refresh_rate_ms {
+            Duration::from_millis(d.into())
+        } else {
+            Duration::from_millis(0)
+        };
+
         let uid = unsafe { libc::geteuid() };
         let gid = unsafe { libc::getegid() };
 
@@ -178,6 +186,7 @@ impl From<grizol::Config> for GrizolConfig {
             read_cache_dir,
             read_cache_size,
             mountpoint,
+            fuse_refresh_rate,
             uid,
             gid,
         }
