@@ -33,3 +33,11 @@
 -- WHERE fin.device = 'DC3KS6Y-XZWHD4F-T2L5QY6-LJ2GR7X-THN23CX-33LLN46-WZ7FAQO-AVE3BQV'
 -- order by fin.name
 -- ;
+
+SELECT lc.cache_folder, lc.cache_file_name, lc.cache_device, lc.timestamp_added, fi.size
+FROM bep_local_cache lc JOIN bep_file_info fi ON TRUE
+  AND lc.cache_folder = fi.folder
+  AND lc.cache_file_name = fi.name
+  AND lc.cache_device = fi.device
+WHERE fi.type = 0
+;
