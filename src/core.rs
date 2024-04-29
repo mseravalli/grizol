@@ -108,8 +108,9 @@ impl From<grizol::Config> for GrizolConfig {
             grizol_proto_config.address
         };
 
+        // FIXME: this needs to be renamed
         let base_dir = if grizol_proto_config.base_dir.is_empty() {
-            String::from("~/grizol")
+            String::from("~/grizol/staging_area")
         } else {
             grizol_proto_config.base_dir
         };
@@ -131,7 +132,7 @@ impl From<grizol::Config> for GrizolConfig {
         };
 
         let remote_base_dir = if grizol_proto_config.remote_base_dir.is_empty() {
-            String::from("~/grizol")
+            String::from("grizol")
         } else {
             grizol_proto_config.remote_base_dir
         };
