@@ -3,6 +3,7 @@
 # To be run from main directory
 
 GRIZOL_LOG="/tmp/grizol_log"
+SYNCTHING_LOG="/tmp/syncthing_log"
 
 setup_file() {
   source scripts/env.sh
@@ -28,7 +29,7 @@ setup_file() {
   export GRIZOL_PID=$!
   echo "Started grizol with pid ${GRIZOL_PID}"
 
-  tests/util/syncthing --home tests/util/syncthing_home > /tmp/syncthing 2>&1 &
+  tests/util/syncthing --home tests/util/syncthing_home > ${SYNCTHING_LOG} 2>&1 &
   export SYNCTHING_PID=$!
   echo "Started syncthing with pid ${SYNCTHING_PID}" 
 }
@@ -49,7 +50,7 @@ trigger_syncthing_rescan() {
   sleep_time="${VARIABLE:-0}"
   sleep ${sleep_time}
 
-  while [[ $(rg 'Device .* client is .grizol' /tmp/syncthing | wc -l) -lt 1 ]]; do sleep 1; done
+  while [[ $(rg 'Device .* client is .grizol' ${SYNCTHING_LOG} | wc -l) -lt 1 ]]; do sleep 1; done
   curl 'http://localhost:8384/rest/db/scan' \
     -X 'POST' \
     -H "X-API-Key: un66wPwNPteiJ6Rm26UrMhwCgmetimvj" \
@@ -79,7 +80,7 @@ run_diff() {
 }
 
 @test "Syncthing: add data" {
-  while [[ -z $(rg 'Ready to synchronize "orig_dir"' /tmp/syncthing) ]]; do sleep 1; done
+while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do sleep 1; done
 
   yes a | xargs echo -n 2>/dev/null | head -c 900 | fmt > ${ORIG_DIR}/a.txt
   yes b | xargs echo -n 2>/dev/null | head -c 90000 | fmt > ${ORIG_DIR}/b.txt
