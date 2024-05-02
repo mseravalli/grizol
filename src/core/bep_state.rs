@@ -391,6 +391,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         &self,
         folder: Option<&String>,
         device_id: Option<&DeviceId>,
+        client_device_id: DeviceId,
     ) -> Vec<Index> {
         // TODO: this method is very inefficient as it calls index() multiple times
 
@@ -423,13 +424,15 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             vec![f.clone()]
         } else {
             let id = device_ids.first().unwrap().to_string();
+            let client_device_id = client_device_id.to_string();
             sqlx::query!(
                 r#"
-                SELECT folder
-                FROM bep_index
-                WHERE device = ?
+                SELECT ind_a.folder
+                FROM bep_index ind_a JOIN bep_index ind_b ON ind_a.folder = ind_b.folder
+                WHERE ind_a.device = ? and ind_b.device = ?
                 ;"#,
                 id,
+                client_device_id,
             )
             .fetch_all(&self.db_pool)
             .await
@@ -953,7 +956,14 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         Some(fi)
     }
 
-    pub async fn cluster_config(&self) -> Result<ClusterConfig, String> {
+    pub async fn cluster_config(
+        &self,
+        local_device_id: DeviceId,
+        client_device_id: DeviceId,
+    ) -> Result<ClusterConfig, String> {
+        let local_device_id = local_device_id.to_string();
+        let client_device_id = client_device_id.to_string();
+
         // TODO: measure if it's better to join or have separate queries
         sqlx::query!("BEGIN TRANSACTION;")
             .execute(&self.db_pool)
@@ -964,15 +974,19 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             r#"
             SELECT *
             FROM bep_devices
+            WHERE id = ? OR id = ?
             ;"#,
+            local_device_id,
+            client_device_id
         )
         .fetch_all(&self.db_pool);
 
         let folders = sqlx::query!(
             r#"
-            SELECT *
-            FROM bep_folders
-            ;"#,
+            SELECT fo.*
+            FROM bep_folders fo JOIN bep_devices de ON fo.id = de.folder
+            WHERE de.id = ? ;"#,
+            client_device_id
         )
         .fetch_all(&self.db_pool);
 
