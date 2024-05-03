@@ -72,7 +72,9 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         trace!("Received Cluster Config: {:#?}", &cluster_config);
         {
             let mut state = self.state.lock().await;
-            state.update_cluster_config(&cluster_config).await;
+            state
+                .update_cluster_config(&cluster_config, &self.config.local_device_id)
+                .await;
 
             let folders_shared_with_me: Vec<String> = cluster_config
                 .folders

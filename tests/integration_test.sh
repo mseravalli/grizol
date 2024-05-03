@@ -9,7 +9,7 @@ setup_file() {
   source scripts/env.sh
   export RUST_LOG=info,grizol=debug
 
-  cargo build
+  cargo build --release
   cp target/debug/grizol tests/util/grizol
 
   rm -rf tests/util/syncthing_home/index-v0.14.0.db
@@ -24,6 +24,8 @@ setup_file() {
 
   mkdir -p ${ORIG_DIR}
   mkdir -p ${DEST_DIR}
+
+  yes z | xargs echo -n 2>/dev/null | head -c 900 | fmt > ${ORIG_DIR}/z.txt
 
   tests/util/grizol --config tests/util/config.textproto > ${GRIZOL_LOG} 2>&1 &
   export GRIZOL_PID=$!
@@ -65,15 +67,16 @@ run_diff() {
   for f in $(fdfind ".*" ${orig_dir} | rg -v "/$"); do
     f=$(echo $f | sd "${orig_dir}/" "")
     orig_dir_name=$(echo "${orig_dir}" | rg -o "/([^/.]+)$" -r '$1')
-    d=$(diff "${orig_dir}/${f}" "${dest_dir}/${orig_dir_name}/${f}" || true)
+    d=$(diff "${orig_dir}/${f}" "${dest_dir}/${orig_dir_name}/${f}" 2>&1 || true)
     if [[ ! -z "$d" ]]; then
-      res="${f} ${res}"
+      res="affected: ${f} - ${d}; ${res}"
     fi
   done
   if [[ -z ${res} ]]; then 
     # Success: No diffs found
     exit 0
   else
+    echo ${res}
     # Failures: Diffs found
     exit 1
   fi
@@ -89,8 +92,9 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
   yes c | xargs echo -n 2>/dev/null | head -c 9000000 | fmt > ${ORIG_DIR}/c_dir/c2.txt
 
   trigger_syncthing_rescan 2
-  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 4 ]]; do sleep 1; done
+  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 5 ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
+
   assert_success
 }
 
@@ -100,7 +104,7 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
   mkdir ${ORIG_DIR}/f_dir
   yes f | xargs echo -n 2>/dev/null | head -c 9000000 | fmt > ${ORIG_DIR}/f_dir/f.txt
   trigger_syncthing_rescan
-  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 7 ]]; do sleep 1; done
+  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 8 ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }
@@ -109,7 +113,7 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
   file_name=a.txt
   yes a | head -c 100 | base32  > "${ORIG_DIR}/${file_name}"
   trigger_syncthing_rescan
-  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 8 ]]; do sleep 1; done
+  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 9 ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }
@@ -118,7 +122,7 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
   file_name=a.txt
   head -c 1 "${ORIG_DIR}/${file_name}" > "${ORIG_DIR}/${file_name}" 
   trigger_syncthing_rescan
-  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 9 ]]; do sleep 1; done
+  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 10 ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }
@@ -136,7 +140,7 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
 }
 
 @test "Fuse: ls files" {
-  expected_ls=". ./a.txt ./b.txt ./c_dir ./c_dir/c1.txt ./c_dir/c2.txt ./d.txt ./e.txt ./f_dir ./f_dir/f.txt"
+  expected_ls=". ./a.txt ./b.txt ./c_dir ./c_dir/c1.txt ./c_dir/c2.txt ./d.txt ./e.txt ./f_dir ./f_dir/f.txt ./z.txt"
   cd tests/util/fuse_mountpoint/orig_dir/
   run diff <(echo ${expected_ls}) <(find . | sort | paste -d ' ' -s ) 
   assert_success
@@ -161,7 +165,7 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
   expected_ls="c1_moved.txt"
   run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/c_dir/ | sort | paste -d ' ' -s) 
   assert_success
-  expected_ls="a_moved.txt b.txt c2.txt c_dir d.txt e.txt f_dir"
+  expected_ls="a_moved.txt b.txt c2.txt c_dir d.txt e.txt f_dir z.txt"
   run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/ | sort | paste -d ' ' -s) 
   assert_success
 }
@@ -171,7 +175,7 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
   expected_ls="c1_moved.txt c2.txt"
   run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/c_dir/ | sort | paste -d ' ' -s) 
   assert_success
-  expected_ls="a_moved.txt b.txt c_dir d.txt e.txt f_dir"
+  expected_ls="a_moved.txt b.txt c_dir d.txt e.txt f_dir z.txt"
   run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/ | sort | paste -d ' ' -s) 
   assert_success
 }

@@ -262,7 +262,11 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .unwrap();
     }
 
-    pub async fn update_cluster_config(&mut self, other: &ClusterConfig) -> Vec<SqliteQueryResult> {
+    pub async fn update_cluster_config(
+        &mut self,
+        other: &ClusterConfig,
+        local_device_id: &DeviceId,
+    ) -> Vec<SqliteQueryResult> {
         let mut insert_results: Vec<SqliteQueryResult> = vec![];
 
         sqlx::query!("BEGIN TRANSACTION;")
@@ -306,8 +310,11 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .expect("Failed to execute query");
 
             for device in other_folder.devices.iter() {
-                // TODO: handle the case about the current device.
-                let index_id: Vec<u8> = device.index_id.to_be_bytes().into();
+                let index_id: Vec<u8> = if device.id == Vec::<u8>::from(local_device_id) {
+                    vec![0; 8]
+                } else {
+                    device.index_id.to_be_bytes().into()
+                };
                 debug!(
                     "Inserting index id {:?} as {:?}",
                     &device.index_id, &index_id
@@ -352,7 +359,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     device_addresses,
                     device.compression,
                     device.cert_name,
-                    device.max_sequence,
+                    0, // when first inserting don't use device.max_sequence as we haven't received any updates from that device yet.
                     device.introducer,
                     index_id,
                     device.skip_introduction_removals,
