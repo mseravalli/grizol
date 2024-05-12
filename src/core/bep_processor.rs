@@ -93,7 +93,10 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
             }
         }
 
-        vec![self.cluster_config().await, self.index().await]
+        vec![
+            self.cluster_config(client_device_id).await,
+            self.index(client_device_id).await,
+        ]
     }
 
     async fn handle_index_update(
@@ -212,7 +215,6 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     .await
                     .expect("The local index must exist");
                 // TODO: ideally we should filter out the local index from all the indices
-                let _indices = state.indices(Some(&folder), None).await;
                 let diff = diff_indices(&folder, &received_index, &local_index)
                     .expect("Should pass the same folders");
                 state
@@ -418,7 +420,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
     }
 
     // TODO: read this from the last state and add additional information from the config.
-    async fn cluster_config(&self) -> EncodedMessages {
+    async fn cluster_config(&self, client_device_id: DeviceId) -> EncodedMessages {
         let header = Header {
             compression: 0,
             r#type: MessageType::ClusterConfig.into(),
@@ -428,7 +430,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
             .state
             .lock()
             .await
-            .cluster_config()
+            .cluster_config(self.config.local_device_id, client_device_id)
             .await
             .expect("something went wrong when restoring");
 
@@ -436,7 +438,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         encode_message(header, cluster_config).unwrap()
     }
 
-    async fn index(&self) -> EncodedMessages {
+    async fn index(&self, client_device_id: DeviceId) -> EncodedMessages {
         let header = Header {
             compression: 0,
             r#type: MessageType::Index.into(),
@@ -446,7 +448,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
             .state
             .lock()
             .await
-            .indices(None, Some(&self.config.local_device_id))
+            .indices(None, Some(&self.config.local_device_id), client_device_id)
             .await;
         trace!("Sending Index, {:?}", &indices);
 
