@@ -1,6 +1,10 @@
 cert: "config/cert.pem"
 key: "config/key.pem"
-base_dir: "data"
+base_dir: "staging_area"
 db_url: "sqlite:state/grizol.db"
-storage_strategy: 1
+storage_strategy: 0
 rclone_config: "config/rclone.conf"
+mountpoint: "fuse_mountpoint"
+read_cache_dir: "read_cache_dir"
+read_cache_size: "1GB"
+fuse_refresh_rate_ms: 500
