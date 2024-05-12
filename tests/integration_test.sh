@@ -26,6 +26,11 @@ setup_file() {
   mkdir -p ${STAGING_AREA}
 
   yes z | xargs echo -n 2>/dev/null | head -c 900 | fmt > ${ORIG_DIR}/z.txt
+  mkdir -p ${ORIG_DIR}/foto
+  readarray -t fotos < <(ls ~/foto/Foto\ -\ Video/My\ Photos/Camera/PXL* | sort | head -n 100)
+  for img in "${fotos[@]}"; do
+    cp "${img}" ${ORIG_DIR}/foto/
+  done
 
   tests/util/grizol --config tests/util/config/config-test.textproto > ${GRIZOL_LOG} 2>&1 &
   export GRIZOL_PID=$!
