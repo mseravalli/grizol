@@ -8,7 +8,7 @@ use fuser::{
     FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyEmpty, Request,
     FUSE_ROOT_ID,
 };
-use libc::{EFAULT, EFBIG, EISDIR, ENOENT, ENOSYS, ENOTDIR};
+use libc::{EFAULT, EFBIG, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR};
 use std::borrow::Borrow;
 use std::cell::Ref;
 use std::cell::RefCell;
@@ -525,7 +525,7 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
                 GrizolFSFileType::File(f) => self.attr_from_file(&f),
             };
 
-            debug!("Adding attr: {:?}", &attr);
+            trace!("Adding attr: {:?}", &attr);
             reply.attr(&self.config.fuse_refresh_rate, &attr);
             return;
         }
@@ -631,7 +631,7 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
             return;
         }
 
-        debug!("file to be read: {:?}", file);
+        trace!("file to be read: {:?}", file);
 
         let file_name = &file.file_info.name;
         let folder = folder.unwrap();
@@ -652,9 +652,14 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
                 debug!("removed_files: {:?}", removed_files);
                 // TODO: this can fail e.g. if the file is not there anymore
                 self.storage_manager
-                    .free_read_cache(removed_files)
+                    .free_read_cache(&removed_files)
                     .await
-                    .expect("Failed to remove files");
+                    .map_err(|e| {
+                        error!(
+                            "Could not remove '{:?}' from the temporary storage due to: {}",
+                            removed_files, e
+                        )
+                    });
                 self.storage_manager
                     .cp_remote_to_read_cache(&folder, &file_name)
                     .await
@@ -666,10 +671,15 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
             self.storage_manager
                 .read_cached(&folder, &file_name, offset, size)
                 .await
-                .expect("Failed to read data")
         });
 
-        reply.data(&data);
+        match data {
+            Ok(d) => reply.data(&d),
+            Err(e) => {
+                error!("Could not read '{}' due to: {}", file_name, e);
+                reply.error(EIO)
+            }
+        }
     }
 
     fn read_db(
@@ -734,7 +744,7 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
                 debug!("removed_files: {:?}", removed_files);
                 // TODO: this can fail e.g. if the file is not there anymore
                 self.storage_manager
-                    .free_read_cache(removed_files)
+                    .free_read_cache(&removed_files)
                     .await
                     .expect("Failed to remove files");
                 self.storage_manager

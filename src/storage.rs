@@ -238,7 +238,7 @@ impl StorageManager {
     /// Remove the provided files.
     pub async fn free_read_cache(
         &self,
-        removed_files: Vec<(String, String)>,
+        removed_files: &Vec<(String, String)>,
     ) -> Result<(), String> {
         let rm_ops = removed_files.iter().map(|removed_file| {
             let file_path = format!(
@@ -264,7 +264,7 @@ impl StorageManager {
     ) -> Result<Vec<u8>, String> {
         let file_path = format!("{}/{}/{}", self.config.read_cache_dir, folder, name);
         // TODO: better handle this failure
-        let mut f = File::open(file_path).await.expect("Cannot open file");
+        let mut f = File::open(file_path).await.map_err(|e| e.to_string())?;
         let mut buffer = vec![0; size.try_into().unwrap()];
 
         f.seek(SeekFrom::Start(base_offset.try_into().unwrap()))
