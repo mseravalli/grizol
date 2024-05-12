@@ -23,8 +23,21 @@ cargo install cargo-watch
 cargo install sqlx-cli
 ```
 
+
+Export the desired configuration to be used during development. From the main dir run:
+
+```shell
+source ./scripts/dev_dbg.sh
+```
+
 Run the following commands:
 
 ```shell
 ./scripts/reset_db.sh
+```
+
+Then start the development instance with 
+
+```shell
+./scripts/run.sh run
 ```
