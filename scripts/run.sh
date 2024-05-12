@@ -8,6 +8,7 @@ if [[ -z "${GRIZOL_CONFIG_TYPE}" ]] ; then
 fi
 
 echo "Running config type: '${GRIZOL_CONFIG_TYPE}'"
+source "scripts/${GRIZOL_CONFIG_TYPE}.sh"
 
 cmd=$1
 
