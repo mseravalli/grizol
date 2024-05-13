@@ -11,6 +11,8 @@ use prost::Message;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
 use std::sync::Arc;
 use syncthing::{
     Close, ClusterConfig, ErrorCode, FileInfo, Header, Hello, Index, IndexUpdate, MessageType,
@@ -25,6 +27,30 @@ pub struct BepProcessor<TS: TimeSource<Utc>> {
     storage_manager: StorageManager,
 }
 
+#[derive(Debug)]
+pub enum BepProcessorError {
+    NoAssociatedReqeust(String),
+    WrongDataInResponse(String),
+    ErrorInResponse(String),
+    FileNotInIndex(String),
+    StorageError(String),
+    StateError(String),
+}
+impl fmt::Display for BepProcessorError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let msg = match self {
+            Self::NoAssociatedReqeust(m) => format!("NoAssociatedReqeust: {}", m),
+            Self::WrongDataInResponse(m) => format!("WrongDataInResponse: {}", m),
+            Self::ErrorInResponse(m) => format!("ErrorInResponse: {}", m),
+            Self::FileNotInIndex(m) => format!("FileNotInIndex: {}", m),
+            Self::StorageError(m) => format!("StorageError: {}", m),
+            Self::StateError(m) => format!("StateError: {}", m),
+        };
+        write!(f, "{}", msg)
+    }
+}
+impl Error for BepProcessorError {}
+
 impl<TS: TimeSource<Utc>> BepProcessor<TS> {
     pub fn new(config: GrizolConfig, state: Arc<Mutex<BepState<TS>>>) -> Self {
         BepProcessor {
@@ -38,7 +64,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         &self,
         complete_message: CompleteMessage,
         client_device_id: DeviceId,
-    ) -> Vec<EncodedMessages> {
+    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
         match complete_message {
             CompleteMessage::Hello(x) => self.handle_hello(x, client_device_id).await,
             CompleteMessage::ClusterConfig(x) => {
@@ -58,16 +84,16 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         &self,
         _hello: Hello,
         _client_device_id: DeviceId,
-    ) -> Vec<EncodedMessages> {
+    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
         debug!("Handling Hello");
-        vec![self.hello()]
+        vec![Ok(self.hello())]
     }
 
     async fn handle_cluster_config(
         &self,
         cluster_config: ClusterConfig,
         client_device_id: DeviceId,
-    ) -> Vec<EncodedMessages> {
+    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
         debug!("Handling Cluster Config");
         trace!("Received Cluster Config: {:#?}", &cluster_config);
         {
@@ -96,8 +122,8 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         }
 
         vec![
-            self.cluster_config(client_device_id).await,
-            self.index(client_device_id).await,
+            Ok(self.cluster_config(client_device_id).await),
+            Ok(self.index(client_device_id).await),
         ]
     }
 
@@ -105,7 +131,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         &self,
         index_update: IndexUpdate,
         client_device_id: DeviceId,
-    ) -> Vec<EncodedMessages> {
+    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
         debug!("Handling IndexUpdate");
         trace!("Received IndexUpdate: {:#?}", &index_update);
         let received_index = Index {
@@ -185,14 +211,14 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         }
         .await;
 
-        vec![ems]
+        vec![Ok(ems)]
     }
 
     async fn handle_index(
         &self,
         received_index: Index,
         client_device_id: DeviceId,
-    ) -> Vec<EncodedMessages> {
+    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
         debug!("Handling Index");
         trace!("Received Index: {:#?}", &received_index);
         let folder = received_index.folder.clone();
@@ -247,14 +273,14 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         }
         .await;
 
-        vec![ems]
+        vec![Ok(ems)]
     }
 
     async fn handle_request(
         &self,
         request: Request,
         _client_device_id: DeviceId,
-    ) -> Vec<EncodedMessages> {
+    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
         debug!("Handling Request");
         debug!("{:?}", request);
 
@@ -265,7 +291,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         &self,
         response: Response,
         _client_device_id: DeviceId,
-    ) -> Vec<EncodedMessages> {
+    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
         debug!("Handling Response");
         debug!(
             "Received Response: {:?}, {}",
@@ -276,104 +302,26 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         if ErrorCode::NoError
             != ErrorCode::try_from(response.code).expect("Enum value must be valid")
         {
-            warn!(
-                "Request with id {} genereated an error: {:?} ",
+            let msg = format!(
+                "Request with id {} genereated response containing error: {:?} ",
                 response.id, response.code
             );
+            return vec![Err(BepProcessorError::ErrorInResponse(msg))];
         }
 
-        // TODO: put this in an external method and use ? with the results.
-        let res = async move {
+        let res = {
             let state = &mut self.state.lock().await;
-            trace!("Got the lock");
-            if let Some(request) = state.get_request(&response.id) {
-                if let Err(e) = check_data(&response.data, &request.hash) {
-                    panic!("Wrong data received: {}", e);
-                }
-                let weak_hash = compute_weak_hash(&response.data);
-                // TODO: check the weak hash against the hashes in other devices.
-                let file_size: u64 = state
-                    .file(&request.folder, self.config.local_device_id, &request.name)
-                    .await
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "Requesting a file not in the local index: {}",
-                            &request.name
-                        )
-                    })
-                    .size
-                    .try_into()
-                    .unwrap();
-                self.storage_manager
-                    .store_block(response.data, request, file_size)
-                    .await
-                    .expect("Error while storing the data");
-                let upload_status = state
-                    .update_block_storage_state(
-                        &response.id,
-                        weak_hash,
-                        &self.config.local_device_id,
-                    )
-                    .await
-                    .expect("It was not possible to update the index");
-
-                // TODO: test behaviour with directory
-                if upload_status == UploadStatus::AllBlocks {
-                    if self.config.storage_strategy == StorageStrategy::Remote
-                        || self.config.storage_strategy == StorageStrategy::LocalRemote
-                    {
-                        let locations = self
-                            .storage_manager
-                            .cp_local_to_remote(&request.folder, &request.name)
-                            .await
-                            .expect("Error occured when uploading file");
-                        state
-                            .update_file_locations(
-                                &request.folder,
-                                &self.config.local_device_id,
-                                &request.name,
-                                locations,
-                            )
-                            .await;
-                    }
-
-                    if self.config.storage_strategy == StorageStrategy::Remote {
-                        state
-                            .remove_file_locations(
-                                &request.folder,
-                                &self.config.local_device_id,
-                                &request.name,
-                                vec!["local".to_string()],
-                            )
-                            .await;
-                        self.storage_manager
-                            .rm_local_file(&request.folder, &request.name)
-                            .await
-                            .unwrap_or_else(|_| {
-                                panic!(
-                                    "Error occured when removing the local file {}/{}",
-                                    &request.folder, &request.name
-                                )
-                            });
-                    }
-                    debug!("Stored whole file: {}", &request.name);
-                }
-
-                state.remove_request(&response.id);
-            } else {
-                error!(
-                    "Response with id {} does not have a corresponding request",
-                    response.id
-                );
-            }
-
-            EncodedMessages::empty()
+            self.store_response_data(state, response).await
         };
 
-        vec![res.await]
+        vec![res]
     }
 
-    async fn handle_ping(&self, ping: Ping, _client_device_id: DeviceId) -> Vec<EncodedMessages> {
+    async fn handle_ping(
+        &self,
+        ping: Ping,
+        _client_device_id: DeviceId,
+    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
         debug!("Handling Ping");
         trace!("{:?}", ping);
         vec![]
@@ -383,7 +331,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         &self,
         close: Close,
         _client_device_id: DeviceId,
-    ) -> Vec<EncodedMessages> {
+    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
         debug!("Handling Close");
         trace!("{:?}", close);
         vec![]
@@ -464,7 +412,91 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         debug!("Sending Ping");
         encode_message(header, ping).unwrap()
     }
+
+    async fn store_response_data(
+        &self,
+        state: &mut BepState<TS>,
+        response: Response,
+    ) -> Result<EncodedMessages, BepProcessorError> {
+        if let Some(request) = state.get_request(&response.id) {
+            if let Err(e) = check_data(&response.data, &request.hash) {
+                let msg = format!("Wrong data received for request {:?}: {}", &request, e);
+                return Err(BepProcessorError::WrongDataInResponse(msg));
+            }
+            let weak_hash = compute_weak_hash(&response.data);
+            // TODO: check the weak hash against the hashes in other devices.
+            let file_size: u64 = state
+                .file_info(&request.folder, self.config.local_device_id, &request.name)
+                .await
+                .ok_or({
+                    let msg = format!(
+                        "Requesting a file not in the local index: {}",
+                        &request.name
+                    );
+                    BepProcessorError::FileNotInIndex(msg)
+                })?
+                .size
+                .try_into()
+                .unwrap();
+            self.storage_manager
+                .store_block(response.data, request, file_size)
+                .await
+                .map_err(|e| BepProcessorError::StorageError(e.to_string()))?;
+            let upload_status = state
+                .update_block_storage_state(&response.id, weak_hash, &self.config.local_device_id)
+                .await
+                .map_err(|e| BepProcessorError::StateError(e.to_string()))?;
+
+            // TODO: test behaviour with directory
+            if upload_status == UploadStatus::AllBlocks {
+                if self.config.storage_strategy == StorageStrategy::Remote
+                    || self.config.storage_strategy == StorageStrategy::LocalRemote
+                {
+                    let locations = self
+                        .storage_manager
+                        .cp_local_to_remote(&request.folder, &request.name)
+                        .await
+                        .map_err(|e| BepProcessorError::StorageError(e.to_string()))?;
+                    state
+                        .update_file_locations(
+                            &request.folder,
+                            &self.config.local_device_id,
+                            &request.name,
+                            locations,
+                        )
+                        .await;
+                }
+
+                if self.config.storage_strategy == StorageStrategy::Remote {
+                    state
+                        .remove_file_locations(
+                            &request.folder,
+                            &self.config.local_device_id,
+                            &request.name,
+                            vec!["local".to_string()],
+                        )
+                        .await;
+                    self.storage_manager
+                        .rm_local_file(&request.folder, &request.name)
+                        .await
+                        .map_err(|e| BepProcessorError::StorageError(e.to_string()))?;
+                }
+                debug!("Stored whole file: {}", &request.name);
+            }
+
+            state.remove_request(&response.id);
+        } else {
+            let msg = format!(
+                "Response with id {} does not have a corresponding request",
+                response.id
+            );
+            return Err(BepProcessorError::NoAssociatedReqeust(msg));
+        }
+
+        Ok(EncodedMessages::empty())
+    }
 }
+
 async fn store_outgoing_requests<TS: TimeSource<Utc>>(
     state: &mut BepState<TS>,
     unstored_blocks: Vec<BlockInfoExt>,

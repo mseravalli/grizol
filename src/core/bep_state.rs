@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 
 /// How long a requests stays in the queue before being removed and being resent.
 // TODO: evaluate what's a reasonable value here
-const MAX_TIME_IN_QUEUE: Duration = Duration::from_secs(60 * 30);
+const MAX_TIME_IN_QUEUE: Duration = Duration::from_secs(60 * 60 * 12);
 
 /// Stores BlockInfo and addtitional data to simplify processing.
 #[derive(Hash, Clone, Debug, Eq, PartialEq)]
@@ -954,7 +954,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         files_fuse.into_values().collect()
     }
 
-    pub async fn file(
+    pub async fn file_info(
         &self,
         folder_name: &str,
         device_id: DeviceId,
