@@ -6,7 +6,7 @@
 
 # Config for better quality
 export RUSTFLAGS=""
-export RUST_LOG=info
+export RUST_LOG=warn
 
 export RUST_BACKTRACE=1
 export DATABASE_URL="sqlite:tests/util/grizol.db"
