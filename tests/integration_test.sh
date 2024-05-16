@@ -92,7 +92,8 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
   yes c | xargs echo -n 2>/dev/null | head -c 9000000 | fmt > ${ORIG_DIR}/c_dir/c2.txt
 
   trigger_syncthing_rescan 2
-  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 5 ]]; do sleep 1; done
+  total_files=$(fdfind ".*" tests/util/orig_dir/ | rg -v "/$" | wc -l)
+  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne "${total_files}" ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }
@@ -103,7 +104,8 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
   mkdir ${ORIG_DIR}/f_dir
   yes f | xargs echo -n 2>/dev/null | head -c 9000000 | fmt > ${ORIG_DIR}/f_dir/f.txt
   trigger_syncthing_rescan
-  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 8 ]]; do sleep 1; done
+  total_files=$(fdfind ".*" tests/util/orig_dir/ | rg -v "/$" | wc -l)
+  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne "${total_files}" ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }
@@ -112,7 +114,9 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
   file_name=a.txt
   yes a | head -c 100 | base32  > "${ORIG_DIR}/${file_name}"
   trigger_syncthing_rescan
-  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 9 ]]; do sleep 1; done
+  total_files=$(fdfind ".*" tests/util/orig_dir/ | rg -v "/$" | wc -l)
+  # we have total_files + 1 because we performed 1 additional operation on the files
+  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne $(echo "${total_files} + 1" | bc) ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }
@@ -121,7 +125,9 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
   file_name=a.txt
   head -c 1 "${ORIG_DIR}/${file_name}" > "${ORIG_DIR}/${file_name}" 
   trigger_syncthing_rescan
-  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne 10 ]]; do sleep 1; done
+  total_files=$(fdfind ".*" tests/util/orig_dir/ | rg -v "/$" | wc -l)
+  # we have total_files + 2 because we performed 2 additional operations on the files
+  while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne $(echo "${total_files} + 2" | bc) ]]; do sleep 1; done
   run run_diff ${ORIG_DIR} ${DEST_DIR}
   assert_success
 }

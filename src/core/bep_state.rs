@@ -6,11 +6,16 @@ use chrono_timesource::TimeSource;
 use futures::future::try_join_all;
 use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use syncthing::{BlockInfo, ClusterConfig, Counter, FileInfo, Index, Request};
 use tokio::sync::Mutex;
+
+/// How long a requests stays in the queue before being removed and being resent.
+// TODO: evaluate what's a reasonable value here
+const MAX_TIME_IN_QUEUE: Duration = Duration::from_secs(60 * 30);
 
 /// Stores BlockInfo and addtitional data to simplify processing.
 #[derive(Hash, Clone, Debug, Eq, PartialEq)]
@@ -36,13 +41,111 @@ impl From<StorageStatus> for i32 {
     }
 }
 
+#[derive(Debug, Hash, Clone, Eq, PartialEq)]
+struct OutgoingRequest {
+    folder: String,
+    name: String,
+    offset: i64,
+    size: i32,
+    hash: [u8; 32],
+    from_temporary: bool,
+}
+
+impl From<Request> for OutgoingRequest {
+    fn from(other: Request) -> Self {
+        OutgoingRequest {
+            folder: other.folder,
+            name: other.name,
+            offset: other.offset,
+            size: other.size,
+            hash: other.hash.try_into().unwrap(),
+            from_temporary: other.from_temporary,
+        }
+    }
+}
+
+impl From<&Request> for OutgoingRequest {
+    fn from(other: &Request) -> Self {
+        OutgoingRequest {
+            folder: other.folder.clone(),
+            name: other.name.clone(),
+            offset: other.offset,
+            size: other.size,
+            hash: other.hash.clone().try_into().unwrap(),
+            from_temporary: other.from_temporary,
+        }
+    }
+}
+
+// Stores the same information, but in different data structures to be able to access them more
+// easily.
+#[derive(Debug, Default)]
+struct OutgoingRequests {
+    requests_by_id: HashMap<i32, Request>,
+    requests_by_type: HashMap<OutgoingRequest, (i32, Instant)>,
+}
+
+impl OutgoingRequests {
+    pub fn get<'a>(&'a self, request_id: &i32) -> Option<&'a Request> {
+        self.requests_by_id.get(request_id)
+    }
+    pub fn remove(&mut self, request_id: &i32) -> Option<Request> {
+        let request = self.requests_by_id.remove(request_id);
+        if let Some(ref r) = request {
+            let request_id = self.requests_by_type.remove(&(r.into()));
+            // if we remove something from requests_by_id, the same element must be in
+            // requests_by_type as well. If that's not the case, the invariant of OutgoingRequests
+            // does not hold.
+            assert!(request_id.is_some())
+        };
+        request
+    }
+
+    /// Returns whether it was inserted or not
+    pub fn insert(&mut self, request_id: i32, request: Request) -> Option<Request> {
+        let outgoing_request: OutgoingRequest = request.clone().into();
+
+        if self.requests_by_type.contains_key(&outgoing_request) {
+            return None;
+        }
+
+        self.requests_by_type
+            .insert(outgoing_request, (request_id, Instant::now()));
+
+        self.requests_by_id.insert(request_id, request.clone());
+
+        Some(request)
+    }
+
+    /// Removes requests that have been in the queue for more than [MAX_TIME_IN_QUEUE].
+    // This runs in O(n). It should be ok given that it should not be called very often, to improve
+    // the situation, it might be possible to add a new data structure in [OutgoingRequests] to
+    // store creation_time, but this would also increase the runtime of [insert] and [remove] from
+    // O(1) to O(log(n)).
+    pub fn remove_old_requests(&mut self) {
+        let now = Instant::now();
+        let in_queue_less_than_max =
+            |creation_time: &Instant| now - *creation_time < MAX_TIME_IN_QUEUE;
+        let waiting_requests_ids: HashSet<i32> = self
+            .requests_by_type
+            .iter()
+            .filter(|(_, (_, creation_time))| in_queue_less_than_max(creation_time))
+            .map(|(_, (request_id, _))| *request_id)
+            .collect();
+        self.requests_by_id
+            .retain(|request_id, _| waiting_requests_ids.contains(request_id));
+        self.requests_by_type
+            .retain(|_, (request_id, _)| waiting_requests_ids.contains(request_id));
+    }
+}
+
 #[derive(Debug)]
 pub struct BepState<TS: TimeSource<Utc>> {
     clock: Arc<Mutex<TS>>,
     db_pool: SqlitePool,
     sequence: Option<i64>,
     request_id: i32,
-    outgoing_requests: HashMap<i32, Request>,
+    outgoing_requests: OutgoingRequests,
 }
 
 impl<TS: TimeSource<Utc>> BepState<TS> {
@@ -579,8 +682,8 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         device_id: &DeviceId,
     ) -> Result<UploadStatus, String> {
         let device_id = device_id.to_string();
-        let request = &self.outgoing_requests[request_id];
-        debug!("Previously sent request: {:?}", &request);
+        let request: &Request = self.outgoing_requests.get(request_id).unwrap();
+        debug!("Previously sent request: {:?}", request);
 
         sqlx::query!("BEGIN TRANSACTION;")
             .execute(&self.db_pool)
@@ -1070,7 +1173,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .unwrap();
 
         for file in file_info.iter() {
-            trace!("Updating index, inserting file {}", &file.name);
+            debug!("Updating index, inserting file {}", &file.name);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
             let sequence = self.next_sequence_id().await;
             let _insert_res = sqlx::query!(
@@ -1534,10 +1637,14 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .unwrap();
     }
 
-    pub fn insert_requests(&mut self, requests: &[Request]) {
-        for request in requests.iter() {
-            self.outgoing_requests.insert(request.id, request.clone());
-        }
+    /// Returns the inserted requests
+    pub fn insert_requests(&mut self, requests: Vec<Request>) -> Vec<Request> {
+        self.outgoing_requests.remove_old_requests();
+
+        requests
+            .into_iter()
+            .filter_map(|request| self.outgoing_requests.insert(request.id, request))
+            .collect()
     }
 
     pub fn get_request<'a>(&'a self, request_id: &i32) -> Option<&'a Request> {
