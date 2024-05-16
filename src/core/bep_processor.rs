@@ -167,12 +167,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
 
             let file_requests = {
                 let state = &mut self.state.lock().await;
-                let base_req_id = state.load_request_id();
-                let requests = requests_from_blocks(base_req_id, unstored_blocks);
-                let max_req_id = requests.iter().map(|x| x.id).max().unwrap_or(base_req_id);
-                state.fetch_add_request_id(max_req_id - base_req_id);
-                state.insert_requests(&requests);
-                requests
+                store_outgoing_requests(state, unstored_blocks).await
             };
 
             let mut ems = EncodedMessages::empty();
@@ -234,12 +229,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
 
             let file_requests = {
                 let state = &mut self.state.lock().await;
-                let base_req_id = state.load_request_id();
-                let requests = requests_from_blocks(base_req_id, unstored_blocks);
-                let max_req_id = requests.iter().map(|x| x.id).max().unwrap_or(base_req_id);
-                state.fetch_add_request_id(max_req_id - base_req_id);
-                state.insert_requests(&requests);
-                requests
+                store_outgoing_requests(state, unstored_blocks).await
             };
 
             let mut ems = EncodedMessages::empty();
@@ -295,7 +285,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         // TODO: put this in an external method and use ? with the results.
         let res = async move {
             let state = &mut self.state.lock().await;
-            debug!("Got the lock");
+            trace!("Got the lock");
             if let Some(request) = state.get_request(&response.id) {
                 if let Err(e) = check_data(&response.data, &request.hash) {
                     panic!("Wrong data received: {}", e);
@@ -475,6 +465,16 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         encode_message(header, ping).unwrap()
     }
 }
+async fn store_outgoing_requests<TS: TimeSource<Utc>>(
+    state: &mut BepState<TS>,
+    unstored_blocks: Vec<BlockInfoExt>,
+) -> Vec<Request> {
+    let base_req_id = state.load_request_id();
+    let requests = requests_from_blocks(base_req_id, unstored_blocks);
+    let max_req_id = requests.iter().map(|x| x.id).max().unwrap_or(base_req_id);
+    state.fetch_add_request_id(max_req_id - base_req_id);
+    state.insert_requests(requests)
+}
 
 fn encode_message<T: prost::Message>(
     header: Header,
@@ -650,9 +650,11 @@ fn requests_from_blocks(base_request_id: i32, block_ids: Vec<BlockInfoExt>) -> V
     let mut res: Vec<Request> = vec![];
     for block_id in block_ids.into_iter() {
         request_id += 1;
-        debug!(
-            "Outgoing request {} with hash {:?}",
-            request_id, &block_id.hash
+        trace!(
+            "Creating outgoing request {}, for file {}, with hash {:?}",
+            request_id,
+            &block_id.name,
+            &block_id.hash
         );
         let request = Request {
             id: request_id,
