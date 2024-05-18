@@ -5,6 +5,7 @@ pub mod bep_data_parser;
 pub mod bep_processor;
 pub mod bep_state;
 
+use crate::core::bep_data_parser::CompleteMessage;
 use crate::device_id::DeviceId;
 use crate::grizol;
 use crate::grizol::StorageStrategy;
@@ -15,6 +16,12 @@ use std::convert::From;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+#[derive(Debug, Clone)]
+pub enum GrizolEvent {
+    Message(CompleteMessage),
+    RequestProcessed,
+}
+
 // TODO: rethink this structure, e.g. if we should store CompleteMessages and encode them at the
 // time of reading.
 #[derive(Debug, Clone)]
@@ -23,11 +30,11 @@ pub struct EncodedMessages {
 }
 
 impl EncodedMessages {
-    fn new(data: Vec<u8>) -> Self {
+    pub fn new(data: Vec<u8>) -> Self {
         EncodedMessages { data }
     }
 
-    fn empty() -> Self {
+    pub fn empty() -> Self {
         EncodedMessages { data: vec![] }
     }
 

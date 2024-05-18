@@ -20,6 +20,8 @@ use syncthing::{
 };
 use tokio::sync::Mutex;
 
+use super::GrizolEvent;
+
 // TODO: maybe change name to something like BepConnectionHandler
 pub struct BepProcessor<TS: TimeSource<Utc>> {
     config: GrizolConfig,
@@ -36,6 +38,7 @@ pub enum BepProcessorError {
     StorageError(String),
     StateError(String),
 }
+
 impl fmt::Display for BepProcessorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let msg = match self {
@@ -64,7 +67,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         &self,
         complete_message: CompleteMessage,
         client_device_id: DeviceId,
-    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
+    ) -> Vec<Result<GrizolEvent, BepProcessorError>> {
         match complete_message {
             CompleteMessage::Hello(x) => self.handle_hello(x, client_device_id).await,
             CompleteMessage::ClusterConfig(x) => {
@@ -84,16 +87,23 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         &self,
         _hello: Hello,
         _client_device_id: DeviceId,
-    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
+    ) -> Vec<Result<GrizolEvent, BepProcessorError>> {
         debug!("Handling Hello");
-        vec![Ok(self.hello())]
+
+        let hello = Hello {
+            device_name: self.config.name.clone(),
+            client_name: env!("CARGO_PKG_NAME").to_string(),
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+        };
+
+        vec![Ok(GrizolEvent::Message(CompleteMessage::Hello(hello)))]
     }
 
     async fn handle_cluster_config(
         &self,
         cluster_config: ClusterConfig,
         client_device_id: DeviceId,
-    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
+    ) -> Vec<Result<GrizolEvent, BepProcessorError>> {
         debug!("Handling Cluster Config");
         trace!("Received Cluster Config: {:#?}", &cluster_config);
         {
@@ -121,17 +131,25 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
             }
         }
 
-        vec![
-            Ok(self.cluster_config(client_device_id).await),
-            Ok(self.index(client_device_id).await),
-        ]
+        let mut indices: Vec<Result<GrizolEvent, BepProcessorError>> = self
+            .indices(client_device_id)
+            .await
+            .into_iter()
+            .map(|x| Ok(GrizolEvent::Message(x)))
+            .collect();
+        vec![Ok(GrizolEvent::Message(
+            self.cluster_config(client_device_id).await,
+        ))]
+        .into_iter()
+        .chain(indices)
+        .collect()
     }
 
     async fn handle_index_update(
         &self,
         index_update: IndexUpdate,
         client_device_id: DeviceId,
-    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
+    ) -> Vec<Result<GrizolEvent, BepProcessorError>> {
         debug!("Handling IndexUpdate");
         trace!("Received IndexUpdate: {:#?}", &index_update);
         let received_index = Index {
@@ -141,7 +159,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
 
         let folder = received_index.folder.clone();
 
-        let ems = async move {
+        let file_requests = async move {
             let unstored_blocks = {
                 let state = &mut self.state.lock().await;
 
@@ -174,17 +192,6 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                         &diff.newly_added_files,
                     )
                     .await;
-                // let file_dests = state
-                //     .mv_replace_file_info(
-                //         &folder,
-                //         &self.config.id,
-                //         &diff.newly_added_conflicting_files,
-                //     )
-                //     .await;
-                // for (orig, dest) in file_dests.iter() {
-                //     self.storage_manager.move_file(orig, dest).await;
-                //     debug!("moved file: {} -> {}", orig, dest);
-                // }
 
                 state
                     .blocks_info(&self.config.local_device_id, StorageStatus::NotStored)
@@ -196,34 +203,26 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                 store_outgoing_requests(state, unstored_blocks).await
             };
 
-            let mut ems = EncodedMessages::empty();
-
-            let header = Header {
-                compression: 0,
-                r#type: MessageType::Request.into(),
-            };
-
-            for request in file_requests.into_iter() {
-                ems.append(encode_message(header.clone(), request).unwrap());
-            }
-
-            ems
+            file_requests
+                .into_iter()
+                .map(|x| Ok(GrizolEvent::Message(CompleteMessage::Request(x))))
+                .collect()
         }
         .await;
 
-        vec![Ok(ems)]
+        file_requests
     }
 
     async fn handle_index(
         &self,
         received_index: Index,
         client_device_id: DeviceId,
-    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
+    ) -> Vec<Result<GrizolEvent, BepProcessorError>> {
         debug!("Handling Index");
         trace!("Received Index: {:#?}", &received_index);
         let folder = received_index.folder.clone();
 
-        let ems = async move {
+        let file_requests = async move {
             let unstored_blocks = {
                 let state = &mut self.state.lock().await;
 
@@ -258,29 +257,21 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                 store_outgoing_requests(state, unstored_blocks).await
             };
 
-            let mut ems = EncodedMessages::empty();
-
-            let header = Header {
-                compression: 0,
-                r#type: MessageType::Request.into(),
-            };
-
-            for request in file_requests.into_iter() {
-                ems.append(encode_message(header.clone(), request).unwrap());
-            }
-
-            ems
+            file_requests
+                .into_iter()
+                .map(|x| Ok(GrizolEvent::Message(CompleteMessage::Request(x))))
+                .collect()
         }
         .await;
 
-        vec![Ok(ems)]
+        file_requests
     }
 
     async fn handle_request(
         &self,
         request: Request,
         _client_device_id: DeviceId,
-    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
+    ) -> Vec<Result<GrizolEvent, BepProcessorError>> {
         debug!("Handling Request");
         debug!("{:?}", request);
 
@@ -291,7 +282,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         &self,
         response: Response,
         _client_device_id: DeviceId,
-    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
+    ) -> Vec<Result<GrizolEvent, BepProcessorError>> {
         debug!("Handling Response");
         debug!(
             "Received Response: {:?}, {}",
@@ -321,7 +312,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         &self,
         ping: Ping,
         _client_device_id: DeviceId,
-    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
+    ) -> Vec<Result<GrizolEvent, BepProcessorError>> {
         debug!("Handling Ping");
         trace!("{:?}", ping);
         vec![]
@@ -331,36 +322,14 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         &self,
         close: Close,
         _client_device_id: DeviceId,
-    ) -> Vec<Result<EncodedMessages, BepProcessorError>> {
+    ) -> Vec<Result<GrizolEvent, BepProcessorError>> {
         debug!("Handling Close");
         trace!("{:?}", close);
         vec![]
     }
 
-    fn hello(&self) -> EncodedMessages {
-        let hello = Hello {
-            device_name: self.config.name.clone(),
-            client_name: env!("CARGO_PKG_NAME").to_string(),
-            client_version: env!("CARGO_PKG_VERSION").to_string(),
-        };
-
-        let message_bytes = hello.encode_to_vec();
-        let message_len: u16 = message_bytes.len().try_into().unwrap();
-
-        trace!("{:#04x?}", &hello.encode_to_vec());
-
-        let message: Vec<u8> = vec![]
-            .into_iter()
-            .chain(MAGIC_NUMBER)
-            .chain(message_len.to_be_bytes())
-            .chain(message_bytes)
-            .collect();
-
-        EncodedMessages::new(message)
-    }
-
     // TODO: read this from the last state and add additional information from the config.
-    async fn cluster_config(&self, client_device_id: DeviceId) -> EncodedMessages {
+    async fn cluster_config(&self, client_device_id: DeviceId) -> CompleteMessage {
         let header = Header {
             compression: 0,
             r#type: MessageType::ClusterConfig.into(),
@@ -375,49 +344,31 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
             .expect("something went wrong when restoring");
 
         debug!("Sending Cluster Config: {:?}", &cluster_config);
-        encode_message(header, cluster_config).unwrap()
+        CompleteMessage::ClusterConfig(cluster_config)
     }
 
-    async fn index(&self, client_device_id: DeviceId) -> EncodedMessages {
-        let header = Header {
-            compression: 0,
-            r#type: MessageType::Index.into(),
-        };
-
+    async fn indices(&self, client_device_id: DeviceId) -> Vec<CompleteMessage> {
         let indices: Vec<Index> = self
             .state
             .lock()
             .await
             .indices(None, Some(&self.config.local_device_id), client_device_id)
             .await;
-        trace!("Sending Index, {:?}", &indices);
-
-        let mut res = EncodedMessages::empty();
-        for index in indices.into_iter() {
-            res.append(encode_message(header.clone(), index).unwrap());
-        }
 
         debug!("Sending Index");
-        res
-    }
+        trace!("Sending Index, {:?}", &indices);
 
-    pub async fn ping(&self) -> EncodedMessages {
-        let header = Header {
-            compression: 0,
-            r#type: MessageType::Ping.into(),
-        };
-
-        let ping = Ping {};
-
-        debug!("Sending Ping");
-        encode_message(header, ping).unwrap()
+        indices
+            .into_iter()
+            .map(|i| CompleteMessage::Index(i))
+            .collect()
     }
 
     async fn store_response_data(
         &self,
         state: &mut BepState<TS>,
         response: Response,
-    ) -> Result<EncodedMessages, BepProcessorError> {
+    ) -> Result<GrizolEvent, BepProcessorError> {
         if let Some(request) = state.get_request(&response.id) {
             if let Err(e) = check_data(&response.data, &request.hash) {
                 let msg = format!("Wrong data received for request {:?}: {}", &request, e);
@@ -493,7 +444,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
             return Err(BepProcessorError::NoAssociatedReqeust(msg));
         }
 
-        Ok(EncodedMessages::empty())
+        Ok(GrizolEvent::RequestProcessed)
     }
 }
 
