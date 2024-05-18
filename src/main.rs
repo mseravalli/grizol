@@ -193,8 +193,17 @@ async fn handle_incoming_data(
                 let ems = bep_processor.handle_complete_message(cm, cdid).await;
 
                 for em in ems.into_iter() {
+                    let em = match em {
+                        Ok(x) => x,
+                        Err(e) => {
+                            error!("Encountered error: {}", e);
+                            continue;
+                        }
+                    };
+
                     if let Err(e) = em_sender.send(em).await {
                         error!("Failed to send message due to {:?}", e);
+                        // FIXME: fail gracefully, send Close message etc..
                         return Err(io::Error::new(
                             io::ErrorKind::BrokenPipe,
                             format!("Failed to send message due to {:?}", e),

@@ -454,7 +454,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             // TODO: this is terribly inefficient
             // FileInfo that will be copied in the index.
             let mut file = state
-                .file(
+                .file_info(
                     orig_folder,
                     self.config.local_device_id,
                     &orig_grizol_file.file_info.name,
