@@ -6,7 +6,7 @@ use chrono_timesource::TimeSource;
 use futures::future::try_join_all;
 use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -41,7 +41,7 @@ impl From<StorageStatus> for i32 {
     }
 }
 
-#[derive(Debug, Hash, Clone, Eq, PartialEq)]
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct OutgoingRequest {
     folder: String,
     name: String,
@@ -82,7 +82,7 @@ impl From<&Request> for OutgoingRequest {
 #[derive(Debug, Default)]
 struct OutgoingRequests {
     requests_by_id: HashMap<i32, Request>,
-    requests_by_type: HashMap<OutgoingRequest, (i32, Instant)>,
+    requests_by_type: BTreeMap<OutgoingRequest, (i32, Instant)>,
 }
 
 impl OutgoingRequests {
@@ -120,8 +120,7 @@ impl OutgoingRequests {
     /// Removes requests that have been in the queue for more than [MAX_TIME_IN_QUEUE].
     // This runs in O(n). It should be ok given that it should not be called very often, to improve
     // the situation, it might be possible to add a new data structure in [OutgoingRequests] to
-    // store creation_time, but this would also increase the runtime of [insert] and [remove] from
-    // O(1) to O(log(n)).
+    // store creation_time.
     pub fn remove_old_requests(&mut self) {
         let now = Instant::now();
         let in_queue_less_than_max =
