@@ -99,13 +99,32 @@ async fn main() -> io::Result<()> {
     // From https://github.com/launchbadge/sqlx/issues/451#issuecomment-649866619 it might make
     // sense to have 1 pool for reading and 1 pool for writing.
     // TODO: implement multiple connections
-    let db_pool = SqlitePoolOptions::new()
+    let db_pool_read = SqlitePoolOptions::new()
+        .max_connections(20)
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                // When directly invoking `Executor` methods,
+                // it is possible to execute multiple statements with one call.
+                conn.execute("PRAGMA foreign_keys = ON;").await?;
+                conn.execute("PRAGMA journal_mode=WAL").await?;
+                conn.execute("PRAGMA busy_timeout=60000").await?;
+
+                Ok(())
+            })
+        })
+        .connect(&grizol_config.db_url)
+        .await
+        .expect("Not possible to connect to the sqlite database.");
+
+    let db_pool_write = SqlitePoolOptions::new()
         .max_connections(1)
         .after_connect(|conn, _meta| {
             Box::pin(async move {
                 // When directly invoking `Executor` methods,
                 // it is possible to execute multiple statements with one call.
                 conn.execute("PRAGMA foreign_keys = ON;").await?;
+                conn.execute("PRAGMA journal_mode=WAL").await?;
+                conn.execute("PRAGMA busy_timeout=60000").await?;
 
                 Ok(())
             })
@@ -116,7 +135,11 @@ async fn main() -> io::Result<()> {
 
     let clock = Arc::new(tokio::sync::Mutex::new(UtcTimeSource {}));
 
-    let bep_state = Arc::new(tokio::sync::Mutex::new(BepState::new(db_pool, clock)));
+    let bep_state = Arc::new(tokio::sync::Mutex::new(BepState::new(
+        db_pool_read,
+        db_pool_write,
+        clock,
+    )));
 
     let bep_processor = Arc::new(BepProcessor::new(grizol_config.clone(), bep_state.clone()));
 
