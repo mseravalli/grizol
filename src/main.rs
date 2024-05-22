@@ -310,6 +310,11 @@ async fn handle_incoming_data(
             writer.write_all(&data).await?;
             writer.flush().await?;
         }
+
+        debug!(
+            "Sent {:?}",
+            message_type.map(|t| MessageType::try_from(t).unwrap())
+        );
     }
 
     Ok(())

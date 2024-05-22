@@ -10,7 +10,7 @@ use std::path::Path;
 
 const DEVICE_ID_LEN: usize = 32;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct DeviceId {
     pub id: [u8; DEVICE_ID_LEN],
 }

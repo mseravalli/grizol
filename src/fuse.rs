@@ -499,7 +499,11 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             }
 
             state
-                .insert_file_info(dest_folder, &self.config.local_device_id, &[file.clone()])
+                .insert_file_info(
+                    dest_folder,
+                    &self.config.local_device_id,
+                    vec![file.clone()],
+                )
                 .await;
 
             state

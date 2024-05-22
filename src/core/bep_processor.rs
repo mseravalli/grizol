@@ -171,7 +171,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                 let diff = diff_indices(&folder, &received_index, &other_device_local_index)
                     .expect("Should pass the same folders");
                 state
-                    .rm_replace_file_info(&folder, &client_device_id, &diff.newly_added_files)
+                    .rm_replace_file_info(&folder, &client_device_id, diff.newly_added_files)
                     .await;
 
                 // Update the local index of the current device
@@ -189,7 +189,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     .rm_replace_file_info(
                         &folder,
                         &self.config.local_device_id,
-                        &diff.newly_added_files,
+                        diff.newly_added_files,
                     )
                     .await;
 
@@ -240,7 +240,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     .insert_file_info(
                         &folder,
                         &self.config.local_device_id,
-                        &diff.newly_added_files,
+                        diff.newly_added_files,
                     )
                     .await;
 
@@ -292,10 +292,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
             return vec![Err(BepProcessorError::ErrorInResponse(msg))];
         }
 
-        let res = {
-            let state = &mut self.state.lock().await;
-            self.store_response_data(state, response).await
-        };
+        let res = self.store_response_data(response).await;
 
         vec![res]
     }
@@ -358,37 +355,51 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
 
     async fn store_response_data(
         &self,
-        state: &mut BepState<TS>,
         response: Response,
     ) -> Result<GrizolEvent, BepProcessorError> {
-        if let Some(request) = state.get_request(&response.id) {
+        let request_opt: Option<Request> = {
+            let state = &mut self.state.lock().await;
+            state.get_request(&response.id).map(|x| x.clone())
+        };
+        if let Some(request) = request_opt {
             if let Err(e) = check_data(&response.data, &request.hash) {
                 let msg = format!("Wrong data received for request {:?}: {}", &request, e);
                 return Err(BepProcessorError::WrongDataInResponse(msg));
             }
+
             let weak_hash = compute_weak_hash(&response.data);
-            // TODO: check the weak hash against the hashes in other devices.
-            let file_size: u64 = state
-                .file_info(&request.folder, self.config.local_device_id, &request.name)
-                .await
-                .ok_or({
-                    let msg = format!(
-                        "Requesting a file not in the local index: {}",
-                        &request.name
-                    );
-                    BepProcessorError::FileNotInIndex(msg)
-                })?
-                .size
-                .try_into()
-                .unwrap();
+            let file_size: u64 = {
+                let state = &mut self.state.lock().await;
+                // TODO: check the weak hash against the hashes in other devices.
+                state
+                    .file_info(&request.folder, self.config.local_device_id, &request.name)
+                    .await
+                    .ok_or({
+                        let msg = format!(
+                            "Requesting a file not in the local index: {}",
+                            &request.name
+                        );
+                        BepProcessorError::FileNotInIndex(msg)
+                    })?
+                    .size
+                    .try_into()
+                    .unwrap()
+            };
             self.storage_manager
-                .store_block(response.data, request, file_size)
+                .store_block(response.data, &request, file_size)
                 .await
                 .map_err(|e| BepProcessorError::StorageError(e.to_string()))?;
-            let upload_status = state
-                .update_block_storage_state(&response.id, weak_hash, &self.config.local_device_id)
-                .await
-                .map_err(|e| BepProcessorError::StateError(e.to_string()))?;
+            let upload_status = {
+                let state = &mut self.state.lock().await;
+                state
+                    .update_block_storage_state(
+                        &response.id,
+                        weak_hash,
+                        &self.config.local_device_id,
+                    )
+                    .await
+                    .map_err(|e| BepProcessorError::StateError(e.to_string()))?
+            };
 
             // TODO: test behaviour with directory
             if upload_status == UploadStatus::AllBlocks {
@@ -400,25 +411,33 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                         .cp_local_to_remote(&request.folder, &request.name)
                         .await
                         .map_err(|e| BepProcessorError::StorageError(e.to_string()))?;
-                    state
-                        .update_file_locations(
-                            &request.folder,
-                            &self.config.local_device_id,
-                            &request.name,
-                            locations,
-                        )
-                        .await;
+
+                    {
+                        let state = &mut self.state.lock().await;
+                        state
+                            .update_file_locations(
+                                &request.folder,
+                                &self.config.local_device_id,
+                                &request.name,
+                                locations,
+                            )
+                            .await;
+                    }
                 }
 
                 if self.config.storage_strategy == StorageStrategy::Remote {
-                    state
-                        .remove_file_locations(
-                            &request.folder,
-                            &self.config.local_device_id,
-                            &request.name,
-                            vec!["local".to_string()],
-                        )
-                        .await;
+                    {
+                        let state = &mut self.state.lock().await;
+                        state
+                            .remove_file_locations(
+                                &request.folder,
+                                &self.config.local_device_id,
+                                &request.name,
+                                vec!["local".to_string()],
+                            )
+                            .await;
+                    }
+
                     self.storage_manager
                         .rm_local_file(&request.folder, &request.name)
                         .await
@@ -427,7 +446,10 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                 debug!("Stored whole file: {}", &request.name);
             }
 
-            state.remove_request(&response.id);
+            {
+                let state = &mut self.state.lock().await;
+                state.remove_request(&response.id);
+            }
         } else {
             let msg = format!(
                 "Response with id {} does not have a corresponding request",
