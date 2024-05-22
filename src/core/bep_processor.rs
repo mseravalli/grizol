@@ -205,6 +205,8 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         }
         .await;
 
+        debug!("Finished handling IndexUpdate");
+
         vec![Ok(GrizolEvent::RequestCreated)]
     }
 
@@ -513,7 +515,7 @@ fn diff_indices(
         _existing_conflicting_files: existing_conflicting_files,
     };
 
-    debug!("Diff: {:?}", &diff);
+    trace!("Diff: {:?}", &diff);
 
     Ok(diff)
 }

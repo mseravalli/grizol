@@ -7,6 +7,7 @@ use chrono::prelude::*;
 use chrono_timesource::TimeSource;
 use futures::future::try_join_all;
 use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
+use sqlx::{Execute, QueryBuilder, Sqlite};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -461,6 +462,11 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
     }
 
     pub async fn index(&self, folder: &str, device_id: &DeviceId) -> Option<Index> {
+        debug!(
+            "Started getting index for folder {} in device {}",
+            folder, device_id
+        );
+
         let mut transaction = self.db_pool_read.begin().await.unwrap();
 
         let device_id = device_id.to_string();
@@ -560,6 +566,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             files: existing_files.into_values().collect(),
         };
 
+        debug!("Finished getting index");
         trace!("The stored index is: {:?}", &index);
         Some(index)
     }
@@ -704,7 +711,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             })
             .collect();
 
-        debug!("Blocks to be requested: {:?}", blocks);
+        trace!("Blocks to be requested: {:?}", blocks);
 
         blocks
     }
@@ -1161,7 +1168,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         device_id: &DeviceId,
         file_info: &Vec<FileInfo>,
     ) {
-        debug!("About to remove files: {:?}", file_info);
+        trace!("About to remove files: {:?}", file_info);
         self.replace_file_info(folder, device_id, file_info, false)
             .await;
     }
@@ -1176,6 +1183,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         file_info: &[FileInfo],
         move_file: bool,
     ) -> HashMap<String, String> {
+        debug!("Replacing file info for {} files", file_info.len());
         let device_id = device_id.to_string();
 
         let mut file_dests: HashMap<String, String> = Default::default();
@@ -1234,7 +1242,8 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 .expect("Failed to execute query");
             }
 
-            debug!("Updating index, inserting file {:?}", &file);
+            debug!("Updating index");
+            trace!("Inserting file {:?}", &file);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
             let sequence = self.next_sequence_id().await;
             let _insert_res = sqlx::query!(
@@ -1328,35 +1337,90 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
             let not_stored: i32 = StorageStatus::NotStored.into();
 
-            for block in file.blocks.iter() {
-                let _insert_res = sqlx::query!(
-                    r#"
-                    INSERT INTO bep_block_info (
-                        file_name,
-                        file_folder,
-                        file_device,
-                        offset,
-                        bi_size,
-                        hash,
-                        weak_hash,
-                        storage_status
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(file_name, file_folder, file_device, offset, bi_size, hash) DO NOTHING
-                    "#,
-                    file.name,
-                    folder,
-                    device_id,
-                    block.offset,
-                    block.size,
-                    block.hash,
-                    block.weak_hash,
-                    not_stored,
-                )
+            if file.blocks.is_empty() {
+                continue;
+            }
+
+            let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
+                // Note the trailing space; most calls to `QueryBuilder` don't automatically insert
+                // spaces as that might interfere with identifiers or quoted strings where exact
+                // values may matter.
+                "INSERT INTO bep_block_info (
+                file_name, file_folder, file_device, offset, bi_size, hash, weak_hash, storage_status
+                ) ",
+            );
+
+            // Note that `.into_iter()` wasn't needed here since `users` is already an iterator.
+            query_builder.push_values(file.blocks.clone(), |mut b, block| {
+                // If you wanted to bind these by-reference instead of by-value,
+                // you'd need an iterator that yields references that live as long as `query_builder`,
+                // e.g. collect it to a `Vec` first.
+                b.push_bind(file.name.clone())
+                    .push_bind(folder)
+                    .push_bind(device_id.clone())
+                    .push_bind(block.offset)
+                    .push_bind(block.size)
+                    .push_bind(block.hash)
+                    .push_bind(block.weak_hash)
+                    .push_bind(not_stored);
+            });
+
+            let mut query = query_builder.build();
+
+            query
                 .execute(&mut *transaction)
                 .await
                 .expect("Failed to execute query");
-            }
+
+            // You can then call `query.execute()`, `.fetch_one()`, `.fetch_all()`, etc.
+            // For the sake of demonstration though, we're just going to assert the contents
+            // of the query.
+
+            // These are methods of the `Execute` trait, not normally meant to be called in user code.
+            // let sql = query.sql();
+            // let arguments = query.take_arguments().unwrap();
+
+            // assert!(sql.starts_with(
+            // "INSERT INTO users(id, username, email, password) VALUES (?, ?, ?, ?), (?, ?, ?, ?)"
+            // ));
+
+            // assert!(sql.ends_with("(?, ?, ?, ?)"));
+
+            // // Not a normally exposed function, only used for this doctest.
+            // // 65535 / 4 = 16383 (rounded down)
+            // // 16383 * 4 = 65532
+            // assert_eq!(arguments.len(), 65532);
+
+            // FIXME: this might help: https://docs.rs/sqlx-core/latest/sqlx_core/query_builder/struct.QueryBuilder.html#example-sqlite
+            // for block in file.blocks.iter() {
+            //     let _insert_res = sqlx::query!(
+            //         r#"
+            //         INSERT INTO bep_block_info (
+            //             file_name,
+            //             file_folder,
+            //             file_device,
+            //             offset,
+            //             bi_size,
+            //             hash,
+            //             weak_hash,
+            //             storage_status
+            //         )
+            //         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            //         ON CONFLICT(file_name, file_folder, file_device, offset, bi_size, hash) DO NOTHING
+            //         "#,
+            //         file.name,
+            //         folder,
+            //         device_id,
+            //         block.offset,
+            //         block.size,
+            //         block.hash,
+            //         block.weak_hash,
+            //         not_stored,
+            //     )
+            //     .execute(&mut *transaction)
+            //     .await
+            //     .expect("Failed to execute query");
+            // }
         }
 
         transaction.commit().await.unwrap();
