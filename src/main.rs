@@ -15,14 +15,16 @@ mod grizol {
 }
 
 use crate::connectivity::server_config;
-use crate::core::bep_data_parser::BepDataParser;
+use crate::core::bep_data_parser::{BepDataParser, CompleteMessage, MAGIC_NUMBER};
 use crate::core::bep_processor::BepProcessor;
 use crate::core::bep_state::BepState;
-use crate::core::{EncodedMessages, GrizolConfig};
+use crate::core::{EncodedMessages, GrizolConfig, GrizolEvent};
 use crate::device_id::DeviceId;
 use crate::fuse::GrizolFS;
+use crate::syncthing::{Header, Hello, MessageType, Ping};
 use chrono_timesource::UtcTimeSource;
 use clap::Parser;
+use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::Executor;
@@ -166,16 +168,17 @@ async fn handle_incoming_data(
     let (mut reader, mut writer) = split(tls_stream);
 
     let mut data_parser = BepDataParser::new();
-    // TODO: check if 1<<8 makes sense
-    let (em_sender, mut em_receiver) = mpsc::channel::<EncodedMessages>(1 << 8);
+    // TODO: check if 1<<13 (8192) makes sense
+    let (event_sender, mut event_receiver) = mpsc::channel::<GrizolEvent>(1 << 10);
 
     let bep_processor_clone = bep_processor.clone();
-    let em_sender_clone = em_sender.clone();
+    // let em_sender_clone = em_sender.clone();
+    let event_sender_clone = event_sender.clone();
     // FIXME: add a handle here and in case it is reached, return the error
     tokio::spawn(async move {
         let bep_processor = bep_processor_clone;
-        let em_sender = em_sender_clone;
-        // TODO: check if 1<<16 makes sense
+        let event_sender = event_sender_clone;
+        // TODO: check if 1<<16 (65536) makes sense
         let mut buf = [0u8; 1 << 16];
         loop {
             let n = reader.read(&mut buf[..]).await?;
@@ -190,10 +193,10 @@ async fn handle_incoming_data(
             let complete_messages = data_parser.parse_incoming_data(&buf[..n]).unwrap();
 
             for cm in complete_messages.into_iter() {
-                let ems = bep_processor.handle_complete_message(cm, cdid).await;
+                let events = bep_processor.handle_complete_message(cm, cdid).await;
 
-                for em in ems.into_iter() {
-                    let em = match em {
+                for event in events.into_iter() {
+                    let event = match event {
                         Ok(x) => x,
                         Err(e) => {
                             error!("Encountered error: {}", e);
@@ -201,12 +204,11 @@ async fn handle_incoming_data(
                         }
                     };
 
-                    if let Err(e) = em_sender.send(em).await {
+                    if let Err(e) = event_sender.send(event).await {
                         error!("Failed to send message due to {:?}", e);
-                        // FIXME: fail gracefully, send Close message etc..
                         return Err(io::Error::new(
                             io::ErrorKind::BrokenPipe,
-                            format!("Failed to send message due to {:?}", e),
+                            format!("Failed to send internal event due to {:?}", e),
                         )) as io::Result<()>;
                     }
                 }
@@ -220,9 +222,9 @@ async fn handle_incoming_data(
         loop {
             tokio::time::sleep(PING_INTERVAL).await;
 
-            let ping = bep_processor.ping().await;
+            let ping = GrizolEvent::Message(CompleteMessage::Ping(Ping {}));
 
-            if let Err(e) = em_sender.send(ping).await {
+            if let Err(e) = event_sender.send(ping).await {
                 error!("Failed to send message due to {:?}", e);
                 return Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
@@ -232,10 +234,91 @@ async fn handle_incoming_data(
         }
     });
 
-    while let Some(em) = em_receiver.recv().await {
-        writer.write_all(em.data()).await?;
-        writer.flush().await?;
+    while let Some(event) = event_receiver.recv().await {
+        match event {
+            GrizolEvent::Message(m) => {
+                // TODO: maybe use a macro here to ensure consitency
+                #[rustfmt::skip]
+                let (message_type, body): (Option<i32>, Vec<u8>) = match m {
+                    CompleteMessage::Hello(m)            => (None,                                       m.encode_to_vec()),
+                    CompleteMessage::ClusterConfig(m)    => (Some(MessageType::ClusterConfig.into()),    m.encode_to_vec()),
+                    CompleteMessage::Index(m)            => (Some(MessageType::Index.into()),            m.encode_to_vec()),
+                    CompleteMessage::IndexUpdate(m)      => (Some(MessageType::IndexUpdate.into()),      m.encode_to_vec()),
+                    CompleteMessage::Request(m)          => (Some(MessageType::Request.into()),          m.encode_to_vec()),
+                    CompleteMessage::Response(m)         => (Some(MessageType::Response.into()),         m.encode_to_vec()),
+                    CompleteMessage::DownloadProgress(m) => (Some(MessageType::DownloadProgress.into()), m.encode_to_vec()),
+                    CompleteMessage::Ping(m)             => (Some(MessageType::Ping.into()),             m.encode_to_vec()),
+                    CompleteMessage::Close(m)            => (Some(MessageType::Close.into()),            m.encode_to_vec()),
+                };
+
+                let message = if let Some(t) = message_type {
+                    let header = Header {
+                        compression: 0,
+                        r#type: t,
+                    };
+                    serialize_message(header, body)
+                } else {
+                    serialize_hello(body)
+                };
+
+                writer.write_all(&message).await?;
+                writer.flush().await?;
+            }
+            GrizolEvent::RequestProcessed => {
+                // FIXME
+                debug!("This should do something")
+            }
+        }
     }
 
     Ok(())
+}
+
+fn serialize_message(header: Header, message_bytes: Vec<u8>) -> Vec<u8> {
+    let header_bytes: Vec<u8> = header.encode_to_vec();
+    let header_len: u16 = header_bytes.len().try_into().unwrap();
+
+    // let message_bytes = message.encode_to_vec();
+    let message_len: u32 = message_bytes.len().try_into().unwrap();
+
+    trace!(
+        "Sending message with header len: {:?}, {:02x?}",
+        header_len,
+        header_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
+    );
+
+    let message: Vec<u8> = vec![]
+        .into_iter()
+        .chain(header_len.to_be_bytes())
+        .chain(header_bytes)
+        .chain(message_len.to_be_bytes())
+        .chain(message_bytes)
+        .collect();
+
+    trace!(
+        "Sending message with len: {:?}, {:02x?}",
+        message_len,
+        message_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
+    );
+    trace!(
+        // "Outgoing message: {:#04x?}",
+        // "Outgoing message: {:02x?}",
+        "Outgoing message: {:?}",
+        &message.clone().into_iter().collect::<Vec<u8>>()
+    );
+
+    message
+}
+
+fn serialize_hello(message_bytes: Vec<u8>) -> Vec<u8> {
+    let message_len: u16 = message_bytes.len().try_into().unwrap();
+
+    let message: Vec<u8> = vec![]
+        .into_iter()
+        .chain(MAGIC_NUMBER)
+        .chain(message_len.to_be_bytes())
+        .chain(message_bytes)
+        .collect();
+
+    message
 }
