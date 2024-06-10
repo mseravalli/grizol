@@ -18,11 +18,12 @@ use crate::connectivity::server_config;
 use crate::core::bep_data_parser::{BepDataParser, CompleteMessage, MAGIC_NUMBER};
 use crate::core::bep_processor::BepProcessor;
 use crate::core::bep_state::BepState;
-use crate::core::{EncodedMessages, GrizolConfig, GrizolEvent};
+use crate::core::{GrizolConfig, GrizolEvent};
 use crate::device_id::DeviceId;
 use crate::fuse::GrizolFS;
-use crate::syncthing::{Header, Hello, MessageType, Ping};
-use chrono_timesource::UtcTimeSource;
+use crate::syncthing::{Header, Hello, MessageType, Ping, Request};
+use chrono::prelude::*;
+use chrono_timesource::{TimeSource, UtcTimeSource};
 use clap::Parser;
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
@@ -172,7 +173,6 @@ async fn handle_incoming_data(
     let (event_sender, mut event_receiver) = mpsc::channel::<GrizolEvent>(1 << 10);
 
     let bep_processor_clone = bep_processor.clone();
-    // let em_sender_clone = em_sender.clone();
     let event_sender_clone = event_sender.clone();
     // FIXME: add a handle here and in case it is reached, return the error
     tokio::spawn(async move {
@@ -235,39 +235,57 @@ async fn handle_incoming_data(
     });
 
     while let Some(event) = event_receiver.recv().await {
-        match event {
+        let (message_type, serialized_bodies): (Option<i32>, Vec<Vec<u8>>) = match event {
+            #[rustfmt::skip]
             GrizolEvent::Message(m) => {
                 // TODO: maybe use a macro here to ensure consitency
-                #[rustfmt::skip]
-                let (message_type, body): (Option<i32>, Vec<u8>) = match m {
-                    CompleteMessage::Hello(m)            => (None,                                       m.encode_to_vec()),
-                    CompleteMessage::ClusterConfig(m)    => (Some(MessageType::ClusterConfig.into()),    m.encode_to_vec()),
-                    CompleteMessage::Index(m)            => (Some(MessageType::Index.into()),            m.encode_to_vec()),
-                    CompleteMessage::IndexUpdate(m)      => (Some(MessageType::IndexUpdate.into()),      m.encode_to_vec()),
-                    CompleteMessage::Request(m)          => (Some(MessageType::Request.into()),          m.encode_to_vec()),
-                    CompleteMessage::Response(m)         => (Some(MessageType::Response.into()),         m.encode_to_vec()),
-                    CompleteMessage::DownloadProgress(m) => (Some(MessageType::DownloadProgress.into()), m.encode_to_vec()),
-                    CompleteMessage::Ping(m)             => (Some(MessageType::Ping.into()),             m.encode_to_vec()),
-                    CompleteMessage::Close(m)            => (Some(MessageType::Close.into()),            m.encode_to_vec()),
-                };
-
-                let message = if let Some(t) = message_type {
-                    let header = Header {
-                        compression: 0,
-                        r#type: t,
-                    };
-                    serialize_message(header, body)
-                } else {
-                    serialize_hello(body)
-                };
-
-                writer.write_all(&message).await?;
-                writer.flush().await?;
+                match m {
+                    CompleteMessage::Hello(m)            => (None,                                       vec![m.encode_to_vec()] ),
+                    CompleteMessage::ClusterConfig(m)    => (Some(MessageType::ClusterConfig.into()),    vec![m.encode_to_vec()] ),
+                    CompleteMessage::Index(m)            => (Some(MessageType::Index.into()),            vec![m.encode_to_vec()] ),
+                    CompleteMessage::IndexUpdate(m)      => (Some(MessageType::IndexUpdate.into()),      vec![m.encode_to_vec()] ),
+                    CompleteMessage::Response(m)         => (Some(MessageType::Response.into()),         vec![m.encode_to_vec()] ),
+                    CompleteMessage::DownloadProgress(m) => (Some(MessageType::DownloadProgress.into()), vec![m.encode_to_vec()] ),
+                    CompleteMessage::Ping(m)             => (Some(MessageType::Ping.into()),             vec![m.encode_to_vec()] ),
+                    CompleteMessage::Close(m)            => (Some(MessageType::Close.into()),            vec![m.encode_to_vec()] ),
+                    CompleteMessage::Request(m)          => panic!("Requests should be handled through RequestCreated events"),
+                }
             }
-            GrizolEvent::RequestProcessed => {
-                // FIXME
-                debug!("This should do something")
+            GrizolEvent::RequestProcessed | GrizolEvent::RequestCreated => {
+                let requests = bep_processor.throttled_requests().await;
+                (
+                    Some(MessageType::Request.into()),
+                    requests.into_iter().map(|r| r.encode_to_vec()).collect(),
+                )
             }
+        };
+
+        debug!(
+            "About to send {:?}",
+            message_type.map(|t| MessageType::try_from(t).unwrap())
+        );
+
+        let data: Vec<u8> = if let Some(t) = message_type {
+            let header = Header {
+                compression: 0,
+                r#type: t,
+            };
+            serialized_bodies
+                .into_iter()
+                .map(|body| serialize_message(header.clone(), body))
+                .flatten()
+                .collect()
+        } else {
+            let body = serialized_bodies
+                .into_iter()
+                .next()
+                .expect("There must be a body for Hello");
+            serialize_hello(body)
+        };
+
+        if !data.is_empty() {
+            writer.write_all(&data).await?;
+            writer.flush().await?;
         }
     }
 
@@ -278,7 +296,6 @@ fn serialize_message(header: Header, message_bytes: Vec<u8>) -> Vec<u8> {
     let header_bytes: Vec<u8> = header.encode_to_vec();
     let header_len: u16 = header_bytes.len().try_into().unwrap();
 
-    // let message_bytes = message.encode_to_vec();
     let message_len: u32 = message_bytes.len().try_into().unwrap();
 
     trace!(

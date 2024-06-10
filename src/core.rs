@@ -4,6 +4,7 @@
 pub mod bep_data_parser;
 pub mod bep_processor;
 pub mod bep_state;
+pub mod outgoing_requests;
 
 use crate::core::bep_data_parser::CompleteMessage;
 use crate::device_id::DeviceId;
@@ -20,31 +21,7 @@ use std::time::Duration;
 pub enum GrizolEvent {
     Message(CompleteMessage),
     RequestProcessed,
-}
-
-// TODO: rethink this structure, e.g. if we should store CompleteMessages and encode them at the
-// time of reading.
-#[derive(Debug, Clone)]
-pub struct EncodedMessages {
-    data: Vec<u8>,
-}
-
-impl EncodedMessages {
-    pub fn new(data: Vec<u8>) -> Self {
-        EncodedMessages { data }
-    }
-
-    pub fn empty() -> Self {
-        EncodedMessages { data: vec![] }
-    }
-
-    fn append(&mut self, em: Self) {
-        self.data.extend_from_slice(em.data())
-    }
-
-    pub fn data(&self) -> &[u8] {
-        &self.data[..]
-    }
+    RequestCreated,
 }
 
 // This struct allows us to include additional implementation specific information.
@@ -99,6 +76,8 @@ pub struct GrizolConfig {
     pub fuse_refresh_rate: Duration,
     pub uid: u32,
     pub gid: u32,
+    pub max_pending_requests: usize,
+    pub max_total_pending_requests_size: usize,
 }
 
 impl From<grizol::Config> for GrizolConfig {
@@ -177,6 +156,27 @@ impl From<grizol::Config> for GrizolConfig {
         let uid = unsafe { libc::geteuid() };
         let gid = unsafe { libc::getegid() };
 
+        let max_pending_requests = if let Some(x) = grizol_proto_config.max_pending_requests {
+            x.try_into().unwrap()
+        } else {
+            10_000
+        };
+
+        let max_total_pending_requests_size = if grizol_proto_config
+            .max_total_pending_requests_size
+            .is_empty()
+        {
+            1_000_000_000 // 1GB
+        } else {
+            match parse_size(grizol_proto_config.max_total_pending_requests_size.clone()) {
+                Ok(size) => size.try_into().unwrap(),
+                Err(e) => panic!(
+                    "Cannot convert '{}' to bytes: {}",
+                    grizol_proto_config.max_total_pending_requests_size, e
+                ),
+            }
+        };
+
         GrizolConfig {
             local_device_id: DeviceId::from(Path::new(grizol_proto_config.cert.as_str())),
             name,
@@ -197,6 +197,8 @@ impl From<grizol::Config> for GrizolConfig {
             fuse_refresh_rate,
             uid,
             gid,
+            max_pending_requests,
+            max_total_pending_requests_size,
         }
     }
 }

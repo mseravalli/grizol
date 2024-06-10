@@ -43,5 +43,7 @@ message Config {
     // set, it will default to 0ms. When set to 0ms, the reload will be
     // performed for every operation.
     optional uint32 fuse_refresh_rate_ms = 14;
-// next 15
+    optional uint32 max_pending_requests = 15;
+    string max_total_pending_requests_size = 16;
+// next 17
 }

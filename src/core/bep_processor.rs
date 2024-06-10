@@ -1,6 +1,6 @@
 use crate::core::bep_data_parser::{CompleteMessage, MAGIC_NUMBER};
 use crate::core::bep_state::{BepState, BlockInfoExt, StorageStatus};
-use crate::core::{EncodedMessages, GrizolConfig, UploadStatus};
+use crate::core::{GrizolConfig, UploadStatus};
 use crate::device_id::DeviceId;
 use crate::grizol::StorageStrategy;
 use crate::storage::StorageManager;
@@ -202,15 +202,10 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                 let state = &mut self.state.lock().await;
                 store_outgoing_requests(state, unstored_blocks).await
             };
-
-            file_requests
-                .into_iter()
-                .map(|x| Ok(GrizolEvent::Message(CompleteMessage::Request(x))))
-                .collect()
         }
         .await;
 
-        file_requests
+        vec![Ok(GrizolEvent::RequestCreated)]
     }
 
     async fn handle_index(
@@ -222,7 +217,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         trace!("Received Index: {:#?}", &received_index);
         let folder = received_index.folder.clone();
 
-        let file_requests = async move {
+        async move {
             let unstored_blocks = {
                 let state = &mut self.state.lock().await;
 
@@ -256,15 +251,10 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                 let state = &mut self.state.lock().await;
                 store_outgoing_requests(state, unstored_blocks).await
             };
-
-            file_requests
-                .into_iter()
-                .map(|x| Ok(GrizolEvent::Message(CompleteMessage::Request(x))))
-                .collect()
         }
         .await;
 
-        file_requests
+        vec![Ok(GrizolEvent::RequestCreated)]
     }
 
     async fn handle_request(
@@ -446,6 +436,15 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
 
         Ok(GrizolEvent::RequestProcessed)
     }
+
+    /// Enqueues the requests and up to []
+    pub async fn throttled_requests(&self) -> Vec<Request> {
+        let mut state = self.state.lock().await;
+        state.update_pending_requests(
+            self.config.max_pending_requests,
+            self.config.max_total_pending_requests_size,
+        )
+    }
 }
 
 async fn store_outgoing_requests<TS: TimeSource<Utc>>(
@@ -457,45 +456,6 @@ async fn store_outgoing_requests<TS: TimeSource<Utc>>(
     let max_req_id = requests.iter().map(|x| x.id).max().unwrap_or(base_req_id);
     state.fetch_add_request_id(max_req_id - base_req_id);
     state.insert_requests(requests)
-}
-
-fn encode_message<T: prost::Message>(
-    header: Header,
-    message: T,
-) -> Result<EncodedMessages, String> {
-    let header_bytes: Vec<u8> = header.encode_to_vec();
-    let header_len: u16 = header_bytes.len().try_into().unwrap();
-
-    let message_bytes = message.encode_to_vec();
-    let message_len: u32 = message_bytes.len().try_into().unwrap();
-
-    trace!(
-        "Sending message with header len: {:?}, {:02x?}",
-        header_len,
-        header_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
-    );
-
-    let message: Vec<u8> = vec![]
-        .into_iter()
-        .chain(header_len.to_be_bytes())
-        .chain(header_bytes)
-        .chain(message_len.to_be_bytes())
-        .chain(message_bytes)
-        .collect();
-
-    trace!(
-        "Sending message with len: {:?}, {:02x?}",
-        message_len,
-        message_len.to_be_bytes().into_iter().collect::<Vec<u8>>()
-    );
-    trace!(
-        // "Outgoing message: {:#04x?}",
-        // "Outgoing message: {:02x?}",
-        "Outgoing message: {:?}",
-        &message.clone().into_iter().collect::<Vec<u8>>()
-    );
-
-    Ok(EncodedMessages { data: message })
 }
 
 #[derive(Debug)]
