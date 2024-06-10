@@ -139,7 +139,7 @@ impl OutgoingRequests {
             .collect();
         // The files are retrieved in alphabetic order.
         for (outgoing_request, (id, _)) in self.requests_by_request.iter() {
-            if file_names.len() >= max_files {
+            if file_names.len() >= max_files && !file_names.contains(&outgoing_request.name) {
                 break;
             }
             if processed_requests.len() >= free_slots {

@@ -42,17 +42,19 @@ impl From<StorageStatus> for i32 {
 #[derive(Debug)]
 pub struct BepState<TS: TimeSource<Utc>> {
     clock: Arc<Mutex<TS>>,
-    db_pool: SqlitePool,
+    db_pool_read: SqlitePool,
+    db_pool_write: SqlitePool,
     sequence: Option<i64>,
     request_id: i32,
     outgoing_requests: OutgoingRequests,
 }
 
 impl<TS: TimeSource<Utc>> BepState<TS> {
-    pub fn new(db_pool: SqlitePool, clock: Arc<Mutex<TS>>) -> Self {
+    pub fn new(db_pool_read: SqlitePool, db_pool_write: SqlitePool, clock: Arc<Mutex<TS>>) -> Self {
         BepState {
             clock,
-            db_pool,
+            db_pool_read,
+            db_pool_write,
             sequence: None,
             request_id: 0,
             outgoing_requests: Default::default(),
@@ -66,7 +68,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 SELECT MAX(sequence) as max_seq FROM bep_file_info;
                 "#,
             )
-            .fetch_optional(&self.db_pool)
+            .fetch_optional(&self.db_pool_read)
             .await;
             match max_sequence_record {
                 Ok(record) => {
@@ -93,6 +95,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
     pub async fn init_index(&self, folder: &str, device_id: &DeviceId) {
         let device_id = device_id.to_string();
+        let mut transaction = self.db_pool_write.begin().await.unwrap();
         let _insert_res = sqlx::query!(
             "
         INSERT INTO bep_index (
@@ -107,18 +110,17 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             device_id,
             folder,
         )
-        .execute(&self.db_pool)
+        .execute(&mut *transaction)
         .await
         .expect("Failed to execute query");
+        transaction.commit().await.unwrap();
     }
 
     /// Remove index with same id and replace all the info associated.
     pub async fn replace_index(&mut self, index: Index, device_id: &DeviceId) {
+        debug!("Replacing index");
         let device_id = device_id.to_string();
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        let mut transaction = self.db_pool_write.begin().await.unwrap();
 
         // We have a cascading removal.
         let _insert_res = sqlx::query!(
@@ -129,7 +131,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             index.folder,
             device_id,
         )
-        .execute(&self.db_pool)
+        .execute(&mut *transaction)
         .await
         .expect("Failed to execute query");
 
@@ -190,7 +192,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 file.block_size,
                 file.symlink_target,
             )
-            .execute(&self.db_pool)
+            .execute(&mut *transaction)
             .await
             .expect("Failed to execute query");
 
@@ -221,7 +223,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     short_id,
                     version_value,
                 )
-                .execute(&self.db_pool)
+                .execute(&mut *transaction)
                 .await
                 .expect("Failed to execute query");
             }
@@ -254,15 +256,14 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     block.weak_hash,
                     not_stored,
                 )
-                .execute(&self.db_pool)
+                .execute(&mut *transaction)
                 .await
                 .expect("Failed to execute query");
             }
         }
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        debug!("about to commit");
+        transaction.commit().await.unwrap();
+        debug!("committed");
     }
 
     pub async fn update_cluster_config(
@@ -272,10 +273,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
     ) -> Vec<SqliteQueryResult> {
         let mut insert_results: Vec<SqliteQueryResult> = vec![];
 
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        let mut transaction = self.db_pool_write.begin().await.unwrap();
 
         for other_folder in other.folders.iter() {
             // FIXME: recover from error and rollback transaction
@@ -308,7 +306,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 other_folder.disable_temp_indexes,
                 other_folder.paused,
             )
-            .execute(&self.db_pool)
+            .execute(&mut *transaction)
             .await
             .expect("Failed to execute query");
 
@@ -368,7 +366,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     device.skip_introduction_removals,
                     device.encryption_password_token,
                 )
-                .execute(&self.db_pool)
+                .execute(&mut *transaction)
                 .await
                 .expect("Failed to execute query");
             }
@@ -376,10 +374,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             insert_results.push(insert_res);
         }
 
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        transaction.commit().await.unwrap();
 
         debug!("Updated internal tracked folders");
 
@@ -422,7 +417,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 ;"#,
                 f,
             )
-            .fetch_all(&self.db_pool)
+            .fetch_all(&self.db_pool_read)
             .await
             .expect("Error occurred")
             .iter()
@@ -444,7 +439,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 id,
                 client_device_id,
             )
-            .fetch_all(&self.db_pool)
+            .fetch_all(&self.db_pool_read)
             .await
             .expect("Error occurred")
             .into_iter()
@@ -466,10 +461,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
     }
 
     pub async fn index(&self, folder: &str, device_id: &DeviceId) -> Option<Index> {
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        let mut transaction = self.db_pool_read.begin().await.unwrap();
 
         let device_id = device_id.to_string();
 
@@ -483,7 +475,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             folder,
             device_id,
         )
-        .fetch_all(&self.db_pool);
+        .fetch_all(&mut *transaction).await;
 
         let file_versions = sqlx::query!(
             r#"
@@ -495,11 +487,13 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             folder,
             device_id,
         )
-        .fetch_all(&self.db_pool);
+        .fetch_all(&mut *transaction).await;
+
+        transaction.commit().await.unwrap();
 
         let mut existing_files = HashMap::<String, FileInfo>::new();
 
-        for file in file_blocks.await.unwrap() {
+        for file in file_blocks.unwrap() {
             if existing_files.contains_key(&file.name) {
                 if file.offset.is_some() {
                     let bi = BlockInfo {
@@ -548,7 +542,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             }
         }
 
-        for version in file_versions.await.unwrap() {
+        for version in file_versions.unwrap() {
             if let Some(f) = existing_files.get_mut(&version.name) {
                 let mut short_id: [u8; 8] = [0; 8];
                 for (i, x) in version.id.iter().enumerate() {
@@ -566,11 +560,6 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             files: existing_files.into_values().collect(),
         };
 
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
-
         trace!("The stored index is: {:?}", &index);
         Some(index)
     }
@@ -585,10 +574,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         let request: &Request = self.outgoing_requests.get(request_id).unwrap();
         debug!("Previously sent request: {:?}", request);
 
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        let mut transaction = self.db_pool_write.begin().await.unwrap();
 
         let stored_locally: i32 = StorageStatus::StoredLocally.into();
         let block_hash = request.hash.clone();
@@ -604,7 +590,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             device_id,
             block_hash,
         )
-        .execute(&self.db_pool)
+        .execute(&mut *transaction)
         .await
         .expect("Failed to execute query");
 
@@ -622,7 +608,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             request.folder,
             device_id,
         )
-        .fetch_one(&self.db_pool)
+        .fetch_one(&mut *transaction)
         .await
         .expect("Failed to execute query");
 
@@ -668,15 +654,12 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 storage_backend,
                 request.name,
             )
-            .execute(&self.db_pool)
+            .execute(&mut *transaction)
             .await
             .expect("Failed to execute query");
         }
 
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        transaction.commit().await.unwrap();
 
         file_state
     }
@@ -691,10 +674,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         let device_id_str = device_id.to_string();
         let storage_status: i32 = storage_status.into();
 
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        let mut transaction = self.db_pool_read.begin().await.unwrap();
 
         let file_blocks = sqlx::query!(
             r#"
@@ -706,13 +686,10 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             device_id_str,
             storage_status
         )
-        .fetch_all(&self.db_pool)
+        .fetch_all(&mut *transaction)
         .await;
 
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        transaction.commit().await.unwrap();
 
         let blocks: Vec<BlockInfoExt> = file_blocks
             .unwrap()
@@ -739,10 +716,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
     pub async fn top_folders_fuse(&self, device_id: DeviceId) -> Vec<GrizolFolder> {
         let device_id = device_id.to_string();
 
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        let mut transaction = self.db_pool_read.begin().await.unwrap();
 
         let folders = sqlx::query!(
             r#"
@@ -752,13 +726,10 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             ;"#,
             device_id,
         )
-        .fetch_all(&self.db_pool)
+        .fetch_all(&mut *transaction)
         .await;
 
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        transaction.commit().await.unwrap();
 
         folders
             .unwrap()
@@ -790,10 +761,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
     pub async fn files_fuse(&self, device_id: DeviceId) -> Vec<GrizolFileInfo> {
         let device_id = device_id.to_string();
 
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        let mut transaction = self.db_pool_read.begin().await.unwrap();
 
         let files = sqlx::query!(
             r#"
@@ -804,12 +772,9 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             ;"#,
             device_id,
         )
-        .fetch_all(&self.db_pool).await;
+        .fetch_all(&mut *transaction).await;
 
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        transaction.commit().await.unwrap();
 
         // This type is used only within this method
         let mut files_fuse: HashMap<(String, String, String), GrizolFileInfo> = Default::default();
@@ -863,10 +828,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         // TODO: test if it is faster to run 3 queries 1 for the file, 1 for the blocks 1 for the
         // versions
 
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        let mut transaction = self.db_pool_read.begin().await.unwrap();
 
         let device_id = device_id.to_string();
 
@@ -880,7 +842,8 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             folder_name,
             device_id,
         )
-        .fetch_optional(&self.db_pool);
+        .fetch_optional(&mut *transaction)
+        .await;
 
         let file_blocks = sqlx::query!(
             r#"
@@ -892,7 +855,8 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             folder_name,
             device_id,
         )
-        .fetch_all(&self.db_pool);
+        .fetch_all(&mut *transaction)
+        .await;
 
         let file_versions = sqlx::query!(
             r#"
@@ -904,10 +868,12 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             folder_name,
             device_id,
         )
-        .fetch_all(&self.db_pool);
+        .fetch_all(&mut *transaction)
+        .await;
+
+        transaction.commit().await.unwrap();
 
         let blocks: Vec<BlockInfo> = file_blocks
-            .await
             .unwrap()
             .into_iter()
             .map(|bi| BlockInfo {
@@ -919,7 +885,6 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .collect();
 
         let versions: Vec<Counter> = file_versions
-            .await
             .unwrap()
             .into_iter()
             .map(|v| {
@@ -934,7 +899,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             })
             .collect();
 
-        let file = file.await.unwrap()?;
+        let file = file.unwrap()?;
         trace!("file {:?}", &file);
         let mut short_id: [u8; 8] = [0; 8];
         for (i, x) in file.modified_by.iter().enumerate() {
@@ -958,11 +923,6 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             symlink_target: file.symlink_target,
         };
 
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
-
         Some(fi)
     }
 
@@ -975,10 +935,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         let client_device_id = client_device_id.to_string();
 
         // TODO: measure if it's better to join or have separate queries
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        let mut transaction = self.db_pool_read.begin().await.unwrap();
 
         let devices = sqlx::query!(
             r#"
@@ -989,7 +946,8 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             local_device_id,
             client_device_id
         )
-        .fetch_all(&self.db_pool);
+        .fetch_all(&mut *transaction)
+        .await;
 
         let folders = sqlx::query!(
             r#"
@@ -998,10 +956,12 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             WHERE de.id = ? ;"#,
             client_device_id
         )
-        .fetch_all(&self.db_pool);
+        .fetch_all(&mut *transaction)
+        .await;
+
+        transaction.commit().await.unwrap();
 
         let devices: Vec<(String, syncthing::Device)> = devices
-            .await
             .expect("Error occured")
             .into_iter()
             .map(|x| {
@@ -1028,7 +988,6 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .collect();
 
         let folders: Vec<syncthing::Folder> = folders
-            .await
             .expect("Error occured")
             .into_iter()
             .map(|x| {
@@ -1050,11 +1009,6 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             })
             .collect();
 
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
-
         Ok(ClusterConfig { folders })
     }
 
@@ -1067,10 +1021,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         file_info: &[FileInfo],
     ) {
         let device_id = device_id.to_string();
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        let mut transaction = self.db_pool_write.begin().await.unwrap();
 
         for file in file_info.iter() {
             debug!("Updating index, inserting file {}", &file.name);
@@ -1129,7 +1080,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 file.block_size,
                 file.symlink_target,
             )
-            .execute(&self.db_pool)
+            .execute(&mut *transaction)
             .await
             .expect("Failed to execute query");
 
@@ -1160,7 +1111,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     short_id,
                     version_value,
                 )
-                .execute(&self.db_pool)
+                .execute(&mut *transaction)
                 .await
                 .expect("Failed to execute query");
             }
@@ -1193,15 +1144,13 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     block.weak_hash,
                     not_stored,
                 )
-                .execute(&self.db_pool)
+                .execute(&mut *transaction)
                 .await
                 .expect("Failed to execute query");
             }
         }
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+
+        transaction.commit().await.unwrap();
     }
 
     // TODO: This should remove directly the file
@@ -1230,10 +1179,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         let device_id = device_id.to_string();
 
         let mut file_dests: HashMap<String, String> = Default::default();
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        let mut transaction = self.db_pool_write.begin().await.unwrap();
 
         for file in file_info.iter() {
             if file.deleted {
@@ -1265,7 +1211,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     device_id,
                     file.name,
                 )
-                .execute(&self.db_pool)
+                .execute(&mut *transaction)
                 .await
                 .expect("Failed to execute query");
 
@@ -1283,7 +1229,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     device_id,
                     file.name,
                 )
-                .execute(&self.db_pool)
+                .execute(&mut *transaction)
                 .await
                 .expect("Failed to execute query");
             }
@@ -1344,7 +1290,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 file.block_size,
                 file.symlink_target,
             )
-            .execute(&self.db_pool)
+            .execute(&mut *transaction)
             .await
             .expect("Failed to execute query");
 
@@ -1375,7 +1321,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     short_id,
                     version_value,
                 )
-                .execute(&self.db_pool)
+                .execute(&mut *transaction)
                 .await
                 .expect("Failed to execute query");
             }
@@ -1407,16 +1353,13 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     block.weak_hash,
                     not_stored,
                 )
-                .execute(&self.db_pool)
+                .execute(&mut *transaction)
                 .await
                 .expect("Failed to execute query");
             }
         }
 
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        transaction.commit().await.unwrap();
 
         debug!("File destinations: {:?}", file_dests);
         file_dests
@@ -1426,10 +1369,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         let device_id = device_id.to_string();
         debug!("Deleting file: {}", file_name);
 
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        let mut transaction = self.db_pool_write.begin().await.unwrap();
 
         // We have a cascading removal.
         let _delete_res = sqlx::query!(
@@ -1442,14 +1382,11 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             device_id,
             file_name,
         )
-        .execute(&self.db_pool)
+        .execute(&mut *transaction)
         .await
         .expect("Failed to execute query");
 
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        transaction.commit().await.unwrap();
     }
 
     pub async fn update_file_locations(
@@ -1461,10 +1398,8 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
     ) {
         let device_id = device_id.to_string();
         let file_name = file_name.to_string();
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        let mut transaction = self.db_pool_write.begin().await.unwrap();
+
         for location in locations.into_iter() {
             let _insert_res = sqlx::query!(
                 "
@@ -1489,14 +1424,11 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 location.0,
                 location.1
             )
-            .execute(&self.db_pool)
+            .execute(&mut *transaction)
             .await
             .expect("Failed to execute query");
         }
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        transaction.commit().await.unwrap();
     }
 
     pub async fn remove_file_locations(
@@ -1508,10 +1440,8 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
     ) {
         let device_id = device_id.to_string();
         let file_name = file_name.to_string();
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        let mut transaction = self.db_pool_write.begin().await.unwrap();
+
         for storage_backend in storage_backends.into_iter() {
             let _insert_res = sqlx::query!(
                 "
@@ -1527,14 +1457,12 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 file_name,
                 storage_backend,
             )
-            .execute(&self.db_pool)
+            .execute(&mut *transaction)
             .await
             .expect("Failed to execute query");
         }
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+
+        transaction.commit().await.unwrap();
     }
 
     /// Returns the inserted requests
@@ -1588,7 +1516,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             device_id,
             file,
         )
-        .fetch_optional(&self.db_pool)
+        .fetch_optional(&self.db_pool_read)
         .await
         .expect("Failed to execute query")
         .map(|fc| fc.c);
@@ -1614,10 +1542,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         cache_size: u64,
         needed_bytes: u64,
     ) -> Result<Vec<(String, String)>, String> {
-        sqlx::query!("BEGIN TRANSACTION;")
-            .execute(&self.db_pool)
-            .await
-            .unwrap();
+        let mut transaction = self.db_pool_write.begin().await.unwrap();
 
         // TODO: deal with symlinks
         let files = sqlx::query!(
@@ -1631,7 +1556,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             ORDER BY lc.timestamp_added ASC
         ;"#
         )
-        .fetch_all(&self.db_pool)
+        .fetch_all(&mut *transaction)
         .await
         .expect("Error occurred");
 
@@ -1647,7 +1572,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         }
 
         // TODO: do this in a SQL single statement if possible
-        let rm_ops = removed_files.iter().map(|removed_file| {
+        for removed_file in removed_files.iter() {
             // We have cascading removal.
             sqlx::query!(
                 "
@@ -1660,17 +1585,12 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 removed_file.cache_folder,
                 removed_file.cache_file_name,
             )
-            .execute(&self.db_pool)
-        });
-
-        try_join_all(rm_ops)
-            .await
-            .map_err(|e| format!("Failed to execute query: {:?}", e))?;
-
-        sqlx::query!("END TRANSACTION;")
-            .execute(&self.db_pool)
+            .execute(&mut *transaction)
             .await
             .unwrap();
+        }
+
+        transaction.commit().await.unwrap();
 
         let res = removed_files
             .iter()
@@ -1690,6 +1610,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 .unwrap_or(0)
         };
 
+        let mut transaction = self.db_pool_write.begin().await.unwrap();
         let _insert_res = sqlx::query!(
             "
                 INSERT INTO bep_local_cache (
@@ -1709,9 +1630,11 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             file,
             now
         )
-        .execute(&self.db_pool)
+        .execute(&mut *transaction)
         .await
         .expect("Failed to execute query");
+
+        transaction.commit().await.unwrap();
     }
 }
 
