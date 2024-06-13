@@ -147,7 +147,7 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
             flags: 0,
             blksize: file.block_size as u32,
         };
-        debug!("attr: {:?}", res);
+        trace!("attr: {:?}", res);
         res
     }
 }
@@ -226,6 +226,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         offset: i64,
         mut reply: fuser::ReplyDirectory,
     ) {
+        debug!("Start reading dir {}", ino);
         let offset = offset as usize;
 
         self.refresh_expired_folders_files();
@@ -251,7 +252,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
 
                 if is_buffer_full {
                     debug!("The buffer is full");
-                    reply.error(ENOBUFS);
+                    reply.ok();
                     return;
                 }
             }
@@ -298,7 +299,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
 
             if is_buffer_full {
                 debug!("The buffer is full");
-                reply.error(ENOBUFS);
+                reply.ok();
                 return;
             }
         }
