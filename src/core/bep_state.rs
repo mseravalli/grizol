@@ -1,3 +1,4 @@
+use crate::core::indices::FolderDevice;
 use crate::core::{
     outgoing_requests::OutgoingRequests, GrizolFileInfo, GrizolFolder, UploadStatus,
 };
@@ -15,6 +16,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use syncthing::{BlockInfo, ClusterConfig, Counter, FileInfo, Index, Request};
 use tokio::sync::Mutex;
+
+use super::indices::GrizolIndices;
+use super::GrizolConfig;
 
 /// Stores BlockInfo and addtitional data to simplify processing.
 #[derive(Hash, Clone, Debug, Eq, PartialEq)]
@@ -48,6 +52,7 @@ pub struct BepState<TS: TimeSource<Utc>> {
     sequence: Option<i64>,
     request_id: i32,
     outgoing_requests: OutgoingRequests,
+    indices: GrizolIndices,
 }
 
 impl<TS: TimeSource<Utc>> BepState<TS> {
@@ -59,6 +64,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             sequence: None,
             request_id: 0,
             outgoing_requests: Default::default(),
+            indices: Default::default(),
         }
     }
 
@@ -118,9 +124,9 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
     }
 
     /// Remove index with same id and replace all the info associated.
-    pub async fn replace_index(&mut self, index: Index, device_id: &DeviceId) {
+    pub async fn replace_index(&mut self, mut index: Index, device_id: &DeviceId) {
         debug!("Replacing index");
-        let device_id = device_id.to_string();
+        let device_id_str = device_id.to_string();
         let mut transaction = self.db_pool_write.begin().await.unwrap();
 
         // We have a cascading removal.
@@ -130,16 +136,19 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 WHERE folder = ? AND device = ?;
             ",
             index.folder,
-            device_id,
+            device_id_str,
         )
         .execute(&mut *transaction)
         .await
         .expect("Failed to execute query");
 
-        for file in index.files.into_iter() {
+        for file in index.files.iter_mut() {
+            file.sequence = self.next_sequence_id().await;
+        }
+
+        for file in index.files.clone().into_iter() {
             trace!("Updating index, inserting file {}", &file.name);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
-            let sequence = self.next_sequence_id().await;
             let _insert_res = sqlx::query!(
                 r#"
             INSERT INTO bep_file_info (
@@ -178,7 +187,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 symlink_target = excluded.symlink_target  
             "#,
                 index.folder,
-                device_id,
+                device_id_str,
                 file.name,
                 file.r#type,
                 file.size,
@@ -189,7 +198,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 file.deleted,
                 file.invalid,
                 file.no_permissions,
-                sequence,
+                file.sequence,
                 file.block_size,
                 file.symlink_target,
             )
@@ -219,7 +228,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     ON CONFLICT(file_folder, file_device, file_name, id, value) DO NOTHING
                     "#,
                     index.folder,
-                    device_id,
+                    device_id_str,
                     file.name,
                     short_id,
                     version_value,
@@ -250,7 +259,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     "#,
                     file.name,
                     index.folder,
-                    device_id,
+                    device_id_str,
                     block.offset,
                     block.size,
                     block.hash,
@@ -265,10 +274,12 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         debug!("about to commit");
         transaction.commit().await.unwrap();
         debug!("committed");
+
+        self.indices.insert(*device_id, index);
     }
 
     pub async fn update_cluster_config(
-        &mut self,
+        &self,
         other: &ClusterConfig,
         local_device_id: &DeviceId,
     ) -> Vec<SqliteQueryResult> {
@@ -394,7 +405,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
     }
 
     pub async fn indices(
-        &self,
+        &mut self,
         folder: Option<&String>,
         device_id: Option<&DeviceId>,
         client_device_id: DeviceId,
@@ -461,15 +472,24 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         res
     }
 
-    pub async fn index(&self, folder: &str, device_id: &DeviceId) -> Option<Index> {
+    pub async fn index(&mut self, folder: &str, device_id: &DeviceId) -> Option<Index> {
         debug!(
             "Started getting index for folder {} in device {}",
             folder, device_id
         );
 
+        let folder_device = FolderDevice {
+            folder: folder.to_string(),
+            device_id: *device_id,
+        };
+        if let Some(i) = self.indices.index(&folder_device) {
+            trace!("index from memory: {:?}", &i);
+            return Some(i);
+        };
+
         let mut transaction = self.db_pool_read.begin().await.unwrap();
 
-        let device_id = device_id.to_string();
+        let device_id_str = device_id.to_string();
 
         let file_blocks = sqlx::query!(
             r#"
@@ -479,7 +499,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             WHERE f.folder = ? AND f.device = ?
             ;"#,
             folder,
-            device_id,
+            device_id_str,
         )
         .fetch_all(&mut *transaction).await;
 
@@ -491,7 +511,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             WHERE f.folder = ? and f.device = ?
             ;"#,
             folder,
-            device_id,
+            device_id_str,
         )
         .fetch_all(&mut *transaction).await;
 
@@ -566,8 +586,27 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             files: existing_files.into_values().collect(),
         };
 
+        trace!("index from storage: {:?}", &index);
+
+        // if let Some(i_f_m) = index_from_memory {
+        //     assert_eq!(
+        //         i_f_m
+        //             .files
+        //             .iter()
+        //             .map(|f| (f.name.clone(), f.clone()))
+        //             .collect::<HashMap<String, FileInfo>>(),
+        //         index
+        //             .files
+        //             .iter()
+        //             .map(|f| (f.name.clone(), f.clone()))
+        //             .collect::<HashMap<String, FileInfo>>()
+        //     );
+        // }
         debug!("Finished getting index");
         trace!("The stored index is: {:?}", &index);
+
+        self.indices.insert(*device_id, index.clone());
+
         Some(index)
     }
 
@@ -674,7 +713,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
     /// Returns a list of [BlockInfo] filtered by the provided parameters
     // TODO: provide a better way to filter rather than passing a parameter
     pub async fn blocks_info(
-        &mut self,
+        &self,
         device_id: &DeviceId,
         storage_status: StorageStatus,
     ) -> Vec<BlockInfoExt> {
@@ -1025,15 +1064,18 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         &mut self,
         folder: &str,
         device_id: &DeviceId,
-        file_info: &[FileInfo],
+        mut file_info: Vec<FileInfo>,
     ) {
-        let device_id = device_id.to_string();
+        let device_id_str = device_id.to_string();
         let mut transaction = self.db_pool_write.begin().await.unwrap();
+
+        for file in file_info.iter_mut() {
+            file.sequence = self.next_sequence_id().await;
+        }
 
         for file in file_info.iter() {
             debug!("Updating index, inserting file {}", &file.name);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
-            let sequence = self.next_sequence_id().await;
             let _insert_res = sqlx::query!(
                 r#"
             INSERT INTO bep_file_info (
@@ -1072,7 +1114,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 symlink_target = excluded.symlink_target  
             "#,
                 folder,
-                device_id,
+                device_id_str,
                 file.name,
                 file.r#type,
                 file.size,
@@ -1083,7 +1125,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 file.deleted,
                 file.invalid,
                 file.no_permissions,
-                sequence,
+                file.sequence,
                 file.block_size,
                 file.symlink_target,
             )
@@ -1113,7 +1155,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     ON CONFLICT(file_folder, file_device, file_name, id, value) DO NOTHING
                     "#,
                     folder,
-                    device_id,
+                    device_id_str,
                     file.name,
                     short_id,
                     version_value,
@@ -1144,7 +1186,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     "#,
                     file.name,
                     folder,
-                    device_id,
+                    device_id_str,
                     block.offset,
                     block.size,
                     block.hash,
@@ -1158,6 +1200,8 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         }
 
         transaction.commit().await.unwrap();
+
+        self.indices.insert_file_info(folder, device_id, file_info);
     }
 
     // TODO: This should remove directly the file
@@ -1166,7 +1210,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         &mut self,
         folder: &str,
         device_id: &DeviceId,
-        file_info: &Vec<FileInfo>,
+        file_info: Vec<FileInfo>,
     ) {
         trace!("About to remove files: {:?}", file_info);
         self.replace_file_info(folder, device_id, file_info, false)
@@ -1180,31 +1224,37 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         &mut self,
         folder: &str,
         device_id: &DeviceId,
-        file_info: &[FileInfo],
+        mut file_info: Vec<FileInfo>,
         move_file: bool,
     ) -> HashMap<String, String> {
         debug!("Replacing file info for {} files", file_info.len());
-        let device_id = device_id.to_string();
+        let device_id_str = device_id.to_string();
 
         let mut file_dests: HashMap<String, String> = Default::default();
         let mut transaction = self.db_pool_write.begin().await.unwrap();
 
+        for file in file_info.iter_mut() {
+            file.sequence = self.next_sequence_id().await;
+        }
+
+        file_info.iter().filter(|f| f.deleted).for_each(|f| {
+            debug!(
+                "File '{}' was deleted on device '{}', it will not be deleted here ",
+                &f.name, device_id_str
+            );
+        });
+
+        let file_info: Vec<FileInfo> = file_info.into_iter().filter(|f| !f.deleted).collect();
+
         for file in file_info.iter() {
-            if file.deleted {
-                // Load baring debug statement for the integration tests
-                debug!(
-                    "File '{}' was deleted on device '{}', it will not be deleted here ",
-                    &file.name, device_id
-                );
-                continue;
-            }
             // Rename according to
             // https://docs.syncthing.net/users/syncing.html#conflicting-changes
             if move_file {
+                todo!("This should be better implemented (and tested) also for the in memory data structure");
                 debug!("Moving file: {}", file.name);
                 let new_path = {
                     let clock = self.clock.lock().await;
-                    new_file_path(&file.name, &device_id, clock.now().unwrap())
+                    new_file_path(&file.name, &device_id_str, clock.now().unwrap())
                 };
                 // We have a cascading updates.
                 let _update_res = sqlx::query!(
@@ -1216,7 +1266,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     ",
                     new_path,
                     folder,
-                    device_id,
+                    device_id_str,
                     file.name,
                 )
                 .execute(&mut *transaction)
@@ -1234,7 +1284,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     WHERE folder = ? AND device = ? AND name = ?; 
                     ",
                     folder,
-                    device_id,
+                    device_id_str,
                     file.name,
                 )
                 .execute(&mut *transaction)
@@ -1245,7 +1295,6 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             debug!("Updating index");
             trace!("Inserting file {:?}", &file);
             let modified_by: Vec<u8> = file.modified_by.to_be_bytes().into();
-            let sequence = self.next_sequence_id().await;
             let _insert_res = sqlx::query!(
                 r#"
             INSERT INTO bep_file_info (
@@ -1284,7 +1333,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 symlink_target = excluded.symlink_target
             "#,
                 folder,
-                device_id,
+                device_id_str,
                 file.name,
                 file.r#type,
                 file.size,
@@ -1295,7 +1344,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 file.deleted,
                 file.invalid,
                 file.no_permissions,
-                sequence,
+                file.sequence,
                 file.block_size,
                 file.symlink_target,
             )
@@ -1325,7 +1374,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     ON CONFLICT(file_folder, file_device, file_name, id, value) DO NOTHING
                     "#,
                     folder,
-                    device_id,
+                    device_id_str,
                     file.name,
                     short_id,
                     version_value,
@@ -1357,7 +1406,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 // e.g. collect it to a `Vec` first.
                 b.push_bind(file.name.clone())
                     .push_bind(folder)
-                    .push_bind(device_id.clone())
+                    .push_bind(device_id_str.clone())
                     .push_bind(block.offset)
                     .push_bind(block.size)
                     .push_bind(block.hash)
@@ -1375,12 +1424,14 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
 
         transaction.commit().await.unwrap();
 
+        self.indices.insert_file_info(folder, &device_id, file_info);
+
         debug!("File destinations: {:?}", file_dests);
         file_dests
     }
 
-    pub async fn rm_file_info(&self, folder: &str, device_id: &DeviceId, file_name: &str) {
-        let device_id = device_id.to_string();
+    pub async fn rm_file_info(&mut self, folder: &str, device_id: &DeviceId, file_name: &str) {
+        let device_id_str = device_id.to_string();
         debug!("Deleting file: {}", file_name);
 
         let mut transaction = self.db_pool_write.begin().await.unwrap();
@@ -1393,7 +1444,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 WHERE folder = ? AND device = ? AND name = ?; 
             ",
             folder,
-            device_id,
+            device_id_str,
             file_name,
         )
         .execute(&mut *transaction)
@@ -1401,6 +1452,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         .expect("Failed to execute query");
 
         transaction.commit().await.unwrap();
+        self.indices.remove_file_info(folder, device_id, file_name);
     }
 
     pub async fn update_file_locations(

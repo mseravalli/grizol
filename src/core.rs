@@ -4,6 +4,7 @@
 pub mod bep_data_parser;
 pub mod bep_processor;
 pub mod bep_state;
+pub mod indices;
 pub mod outgoing_requests;
 
 use crate::core::bep_data_parser::CompleteMessage;
