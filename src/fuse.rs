@@ -8,7 +8,10 @@ use fuser::{
     ReplyEmpty, Request, FUSE_ROOT_ID,
 };
 use libc::{EFBIG, EISDIR, ENOBUFS, ENOENT, ENOSYS};
+use std::cell::Ref;
+use std::cell::RefCell;
 use std::ffi::OsStr;
+use std::ops::Deref;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -35,9 +38,9 @@ pub struct GrizolFS<TS: TimeSource<Utc>> {
     config: GrizolConfig,
     // TODO: see if one of the other solutions is better in this case: https://tokio.rs/tokio/topics/bridging
     rt: Runtime,
-    last_folders_files: Instant,
-    folders: Vec<GrizolFolder>,
-    files: Vec<GrizolFileInfo>,
+    last_folders_files: RefCell<Instant>,
+    folders: RefCell<Vec<GrizolFolder>>,
+    files: RefCell<Vec<GrizolFileInfo>>,
     storage_manager: StorageManager,
 }
 
@@ -55,14 +58,16 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
             rt,
             // We set the instant to a point in time in the past to guarantee that the first time
             // this will be called it will be refreshed. Maybe there is a better way.
-            last_folders_files: Instant::now().checked_sub(Duration::from_secs(10)).unwrap(),
+            last_folders_files: RefCell::new(
+                Instant::now().checked_sub(Duration::from_secs(10)).unwrap(),
+            ),
             folders: Default::default(),
             files: Default::default(),
         }
     }
 
-    fn refresh_expired_folders_files(&mut self) {
-        if self.last_folders_files.elapsed() >= self.config.fuse_refresh_rate {
+    fn refresh_expired_folders_files(&self) {
+        if self.last_folders_files.borrow().elapsed() >= self.config.fuse_refresh_rate {
             let (folders, files) = self.rt.block_on(async {
                 let state = self.state.lock().await;
 
@@ -71,16 +76,15 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
                 (folders, files)
             });
 
-            self.folders = folders;
-            self.files = files;
-            self.last_folders_files = Instant::now();
+            self.folders.replace(folders);
+            self.files.replace(files);
+            self.last_folders_files.replace(Instant::now());
         }
     }
 
-    // This MUST be used in combination with refresh_expired_folders_files, the methods at the
-    // moment are separated because there are issues with the borrow checker and I haven't found a better way to deal with this for now (https://stackoverflow.com/questions/78157006/rust-return-immutable-borrow-after-modifying) .
-    fn folders_files(&self) -> (&[GrizolFolder], &[GrizolFileInfo]) {
-        (&self.folders, &self.files)
+    fn folders_files(&self) -> (Ref<'_, Vec<GrizolFolder>>, Ref<'_, Vec<GrizolFileInfo>>) {
+        self.refresh_expired_folders_files();
+        (self.folders.borrow(), self.files.borrow())
     }
 
     fn root_dir_attr(&self) -> FileAttr {
@@ -159,7 +163,6 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             return;
         }
 
-        self.refresh_expired_folders_files();
         let (folders, files) = self.folders_files();
 
         let attr = if ino < ENTRIES_START {
@@ -188,7 +191,6 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         name: &std::ffi::OsStr,
         reply: fuser::ReplyEntry,
     ) {
-        self.refresh_expired_folders_files();
         let (folders, files) = self.folders_files();
 
         let attr = if parent_ino == FUSE_ROOT_ID {
@@ -197,7 +199,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
                 .find(|f| f.folder.id == name.to_str().unwrap())
                 .map(|f| self.attr_from_folder(f))
         } else {
-            let parent_dir = parent_dir(files, parent_ino);
+            let parent_dir = parent_dir(&files, parent_ino);
 
             files
                 .iter()
@@ -229,7 +231,6 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         debug!("Start reading dir {}", ino);
         let offset = offset as usize;
 
-        self.refresh_expired_folders_files();
         let (folders, files) = self.folders_files();
 
         if ino == FUSE_ROOT_ID {
@@ -261,8 +262,8 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             return;
         }
 
-        let top_folder = top_folder(ino, folders, files);
-        let base_dir = base_dir(ino, files);
+        let top_folder = top_folder(ino, &folders, &files);
+        let base_dir = base_dir(ino, &files);
 
         if top_folder.as_ref().and(base_dir.as_ref()).is_none() {
             reply.error(ENOENT);
@@ -322,7 +323,6 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
             &orig_parent_dir_ino, orig_name, &dest_parent_dir_ino, dest_name
         );
 
-        self.refresh_expired_folders_files();
         let (folders, files) = self.folders_files();
 
         struct Dirs {
@@ -540,7 +540,6 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
-        self.refresh_expired_folders_files();
         let (_folders, files) = self.folders_files();
 
         if ino < ENTRIES_START {
