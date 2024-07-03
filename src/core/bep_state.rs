@@ -767,8 +767,8 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         let folders = sqlx::query!(
             r#"
             SELECT DISTINCT(f.rowid) AS f_id, f.*
-            FROM bep_folders f JOIN bep_devices d ON f.id = d.folder
-            WHERE d.id = ?
+            FROM bep_folders f JOIN bep_index i ON f.id = i.folder
+            WHERE i.device = ?
             ;"#,
             device_id,
         )
