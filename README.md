@@ -8,8 +8,8 @@ Grizol allows to automatically sync your data to multiple
 resiliency. The data can be also accessed locally through a FUSE filesystem for
 lower latency. This combination allows to store large amounts of data at a
 lower cost than it would require if the data was stored purely on disk: 1TB of
-S3 compatible storage costs around 7$/month, while 1TB for a HDD on a cloud
-provider starts around 40$/month.
+S3 compatible storage costs around 7 dollars/month, while 1TB for a HDD on a cloud
+provider starts around 40 dollars/month.
 
 ## Development
 
