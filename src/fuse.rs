@@ -1,36 +1,154 @@
 use crate::core::bep_state::BepState;
 use crate::core::{GrizolConfig, GrizolFileInfo, GrizolFolder};
 use crate::storage::StorageManager;
+use crate::syncthing::Folder;
 use chrono::prelude::*;
 use chrono_timesource::TimeSource;
 use fuser::{
-    BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData,
-    ReplyEmpty, Request, FUSE_ROOT_ID,
+    FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyEmpty, Request,
+    FUSE_ROOT_ID,
 };
-use libc::{EFBIG, EISDIR, ENOENT, ENOSYS};
+use libc::{EFAULT, EFBIG, EISDIR, ENOENT, ENOSYS};
 use std::cell::Ref;
 use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::OsStr;
+use std::ops::Deref;
 
 use std::path::Path;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
+
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
+#[derive(Debug)]
+enum GrizolFSErr {
+    NoParent(GrizolFileInfo),
+}
+
+#[derive(Debug)]
+enum GrizolFSFileType {
+    File(GrizolFileInfo),
+    Folder(GrizolFolder),
+}
+
 // We allow 2^32 - 10 operations to be performed on the top dirs.
 const ENTRIES_START: u64 = 1 << 32;
-fn entry_id(e_id: i64) -> u64 {
+const fn entry_id(e_id: i64) -> u64 {
     e_id as u64 + ENTRIES_START
 }
 
 const TOP_DIRS_START: u64 = 10;
-fn top_dir_id(d_id: i64) -> u64 {
+const fn top_dir_id(d_id: i64) -> u64 {
     let res = d_id as u64 + TOP_DIRS_START;
     if res >= ENTRIES_START {
         panic!("Too many operations performed on the top level dirs");
     }
     res
+}
+
+type WeakFsNode = Weak<RefCell<FsNode>>;
+type RcFsNode = Rc<RefCell<FsNode>>;
+
+#[derive(Debug)]
+struct FsNode {
+    id: u64,
+    file_type: GrizolFSFileType,
+    _parent: Option<WeakFsNode>,
+    children: HashMap<String, RcFsNode>,
+}
+
+struct GrizolFsMem {
+    root: RcFsNode,
+    nodes: HashMap<u64, WeakFsNode>,
+}
+
+impl GrizolFsMem {
+    fn new() -> Self {
+        let folder = Folder::default();
+        let g_folder = GrizolFolder { folder, id: 1 };
+
+        let root_node = FsNode {
+            id: 1,
+            file_type: GrizolFSFileType::Folder(g_folder),
+            _parent: None,
+            children: Default::default(),
+        };
+
+        let root = Rc::new(RefCell::new(root_node));
+        let mut nodes: HashMap<u64, WeakFsNode> = Default::default();
+        nodes.insert(1, Rc::downgrade(&root));
+
+        GrizolFsMem { root, nodes }
+    }
+
+    /// Insert top folder
+    pub fn insert_folder(&mut self, folder: GrizolFolder) {
+        let root = self.root();
+        let folder_id = top_dir_id(folder.id);
+
+        let node = FsNode {
+            id: folder_id,
+            file_type: GrizolFSFileType::Folder(folder.clone()),
+            _parent: Some(Rc::downgrade(&root)),
+            children: Default::default(),
+        };
+
+        let ref_node = Rc::new(RefCell::new(node));
+        root.borrow_mut()
+            .children
+            .insert(folder.folder.id, ref_node.clone());
+
+        self.nodes.insert(folder_id, Rc::downgrade(&ref_node));
+    }
+
+    pub fn insert_file(&mut self, file: GrizolFileInfo) -> Result<(), GrizolFSErr> {
+        let split_path: Vec<&str> = vec![file.folder.as_str()]
+            .into_iter()
+            .chain(file.file_info.name.split("/"))
+            .collect();
+
+        let mut parent_node = self.root();
+        for node_name in split_path.iter().take(split_path.len() - 1) {
+            let node = if let Some(n) = parent_node.deref().borrow().children.get(*node_name) {
+                n.clone()
+            } else {
+                return Err(GrizolFSErr::NoParent(file));
+            };
+            parent_node = node;
+        }
+
+        let node_id = entry_id(file.id);
+        // Safe to unwrap as there are at least 2 elements
+        let node_name = split_path.last().unwrap().to_string();
+        let node = FsNode {
+            id: node_id,
+            file_type: GrizolFSFileType::File(file),
+            _parent: Some(Rc::downgrade(&parent_node)),
+            children: Default::default(),
+        };
+
+        let ref_node = Rc::new(RefCell::new(node));
+
+        parent_node
+            .borrow_mut()
+            .children
+            .insert(node_name, ref_node.clone());
+
+        self.nodes.insert(node_id, Rc::downgrade(&ref_node));
+
+        Ok(())
+    }
+
+    // async fn _insert_node(&mut self, _parent_id: u64, _node: FsNode) -> Result<(), String> {
+    //     todo!("see if we can merge file and folder");
+    // }
+
+    fn root(&self) -> RcFsNode {
+        self.root.clone()
+    }
 }
 
 pub struct GrizolFS<TS: TimeSource<Utc>> {
@@ -42,6 +160,7 @@ pub struct GrizolFS<TS: TimeSource<Utc>> {
     folders: RefCell<Vec<GrizolFolder>>,
     files: RefCell<Vec<GrizolFileInfo>>,
     storage_manager: StorageManager,
+    fs_mem: RefCell<GrizolFsMem>,
 }
 
 impl<TS: TimeSource<Utc>> GrizolFS<TS> {
@@ -63,9 +182,11 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
             ),
             folders: Default::default(),
             files: Default::default(),
+            fs_mem: RefCell::new(GrizolFsMem::new()),
         }
     }
 
+    /// Adds the data from the database to the in memory datastructure.
     fn refresh_expired_folders_files(&self) {
         if self.last_folders_files.borrow().elapsed() >= self.config.fuse_refresh_rate {
             let (folders, files) = self.rt.block_on(async {
@@ -79,6 +200,32 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
             self.folders.replace(folders);
             self.files.replace(files);
             self.last_folders_files.replace(Instant::now());
+
+            for folder in self.folders.borrow().clone().into_iter() {
+                self.fs_mem.borrow_mut().insert_folder(folder);
+            }
+
+            let mut files: VecDeque<GrizolFileInfo> =
+                self.files.borrow().clone().into_iter().collect();
+
+            // TODO: this can potentially loop forever if for some reason a parent is not present.
+            // Add a way to log an error and continue the operations without looping forever, e.g.
+            // we will perform at most n^2 operations (ARGHH) if we reach that continue.
+            // TODO: to avoid O(n^2) we might sort by number of '/' in the filename so that this
+            // operation will be done in linear time?
+            while !files.is_empty() {
+                let file = if let Some(f) = files.pop_front() {
+                    f
+                } else {
+                    break;
+                };
+                match self.fs_mem.borrow_mut().insert_file(file) {
+                    Ok(_) => {}
+                    Err(GrizolFSErr::NoParent(f)) => {
+                        files.push_back(f);
+                    }
+                }
+            }
         }
     }
 
@@ -154,73 +301,8 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
         trace!("attr: {:?}", res);
         res
     }
-}
 
-impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
-    fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
-        if ino == FUSE_ROOT_ID {
-            reply.attr(&self.config.fuse_refresh_rate, &self.root_dir_attr());
-            return;
-        }
-
-        let (folders, files) = self.folders_files();
-
-        let attr = if ino < ENTRIES_START {
-            folders
-                .iter()
-                .find(|&f| top_dir_id(f.id) == ino)
-                .map(|f| self.attr_from_folder(f))
-        } else {
-            files
-                .iter()
-                .find(|&f| entry_id(f.id) == ino)
-                .map(|f| self.attr_from_file(f))
-        };
-
-        if let Some(a) = attr {
-            reply.attr(&self.config.fuse_refresh_rate, &a);
-        } else {
-            reply.error(ENOENT);
-        }
-    }
-
-    fn lookup(
-        &mut self,
-        _req: &Request<'_>,
-        parent_ino: u64,
-        name: &std::ffi::OsStr,
-        reply: fuser::ReplyEntry,
-    ) {
-        let (folders, files) = self.folders_files();
-
-        let attr = if parent_ino == FUSE_ROOT_ID {
-            folders
-                .iter()
-                .find(|f| f.folder.id == name.to_str().unwrap())
-                .map(|f| self.attr_from_folder(f))
-        } else {
-            let parent_dir = parent_dir(&files, parent_ino);
-
-            files
-                .iter()
-                .filter(|f| {
-                    Path::new(&f.file_info.name)
-                        .file_name()
-                        .map(|f| f == name)
-                        .unwrap_or(false)
-                })
-                .find(|&f| is_file_in_current_dir(&parent_dir, f))
-                .map(|f| self.attr_from_file(f))
-        };
-
-        if let Some(a) = attr {
-            reply.entry(&self.config.fuse_refresh_rate, &a, 1);
-        } else {
-            reply.error(ENOENT);
-        }
-    }
-
-    fn readdir(
+    fn readdir_mem(
         &mut self,
         _req: &Request<'_>,
         ino: u64,
@@ -228,7 +310,48 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         offset: i64,
         mut reply: fuser::ReplyDirectory,
     ) {
-        debug!("Start reading dir with ino {}", ino);
+        debug!("Start readdir (from mem) with ino {}", ino,);
+        // This is needed to populate the cache
+        // TODO: improve
+        let (_folders, _files) = self.folders_files();
+        let offset = offset as usize;
+
+        let dir = if let Some(d) = self.fs_mem.borrow().nodes.get(&ino) {
+            d.clone()
+        } else {
+            reply.error(ENOENT);
+            return;
+        };
+
+        // Safe to unwrap, the reference must always be valid.
+        let binding = dir.upgrade().unwrap();
+        let children = &binding.deref().borrow().children;
+
+        for (i, (name, node)) in children.iter().enumerate().skip(offset) {
+            let file_type = match &node.deref().borrow().file_type {
+                GrizolFSFileType::Folder(_) => FileType::Directory,
+                GrizolFSFileType::File(f) => file_type(f.file_info.r#type),
+            };
+            let is_buffer_full =
+                reply.add(node.deref().borrow().id, (i + 1) as i64, file_type, name);
+            if is_buffer_full {
+                trace!("The buffer is full");
+                reply.ok();
+                return;
+            }
+        }
+        reply.ok();
+    }
+
+    fn readdir_db(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        _fh: u64,
+        offset: i64,
+        mut reply: fuser::ReplyDirectory,
+    ) {
+        trace!("Start reading dir (from db) with ino {}", ino);
         let offset = offset as usize;
 
         let (folders, files) = self.folders_files();
@@ -252,7 +375,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
                 );
 
                 if is_buffer_full {
-                    debug!("The buffer is full");
+                    trace!("The buffer is full");
                     reply.ok();
                     return;
                 }
@@ -306,6 +429,142 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         }
 
         reply.ok();
+    }
+
+    fn lookup_mem(
+        &mut self,
+        _req: &Request<'_>,
+        parent_ino: u64,
+        name: &std::ffi::OsStr,
+        reply: fuser::ReplyEntry,
+    ) {
+        debug!("Start lookup (from mem) for {:?}", &name);
+        // This is needed to populate the cache
+        // TODO: improve
+        let (_folders, _files) = self.folders_files();
+
+        let name = if let Some(n) = name.to_str() {
+            n
+        } else {
+            reply.error(EFAULT);
+            return;
+        };
+
+        if let Some(parent) = self.fs_mem.borrow().nodes.get(&parent_ino) {
+            // Safe to unwrap, the reference must always be valid.
+            if let Some(node) = parent
+                .upgrade()
+                .unwrap()
+                .deref()
+                .borrow()
+                .children
+                .get(name)
+            {
+                let attribute = match &node.deref().borrow().file_type {
+                    GrizolFSFileType::Folder(f) => self.attr_from_folder(&f),
+                    GrizolFSFileType::File(f) => self.attr_from_file(&f),
+                };
+
+                reply.entry(&self.config.fuse_refresh_rate, &attribute, 1);
+                return;
+            }
+        }
+
+        reply.error(ENOENT);
+    }
+
+    fn lookup_db(
+        &mut self,
+        _req: &Request<'_>,
+        parent_ino: u64,
+        name: &std::ffi::OsStr,
+        reply: fuser::ReplyEntry,
+    ) {
+        let (folders, files) = self.folders_files();
+
+        let attr = if parent_ino == FUSE_ROOT_ID {
+            folders
+                .iter()
+                .find(|f| f.folder.id == name.to_str().unwrap())
+                .map(|f| self.attr_from_folder(f))
+        } else {
+            let parent_dir = parent_dir(&files, parent_ino);
+
+            files
+                .iter()
+                .filter(|f| {
+                    Path::new(&f.file_info.name)
+                        .file_name()
+                        .map(|f| f == name)
+                        .unwrap_or(false)
+                })
+                .find(|&f| is_file_in_current_dir(&parent_dir, f))
+                .map(|f| self.attr_from_file(f))
+        };
+
+        if let Some(a) = attr {
+            reply.entry(&self.config.fuse_refresh_rate, &a, 1);
+        } else {
+            reply.error(ENOENT);
+        }
+    }
+}
+
+impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
+    fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
+        if ino == FUSE_ROOT_ID {
+            reply.attr(&self.config.fuse_refresh_rate, &self.root_dir_attr());
+            return;
+        }
+
+        let (folders, files) = self.folders_files();
+
+        let attr = if ino < ENTRIES_START {
+            folders
+                .iter()
+                .find(|&f| top_dir_id(f.id) == ino)
+                .map(|f| self.attr_from_folder(f))
+        } else {
+            files
+                .iter()
+                .find(|&f| entry_id(f.id) == ino)
+                .map(|f| self.attr_from_file(f))
+        };
+
+        if let Some(a) = attr {
+            reply.attr(&self.config.fuse_refresh_rate, &a);
+        } else {
+            reply.error(ENOENT);
+        }
+    }
+
+    fn lookup(
+        &mut self,
+        _req: &Request<'_>,
+        parent_ino: u64,
+        name: &std::ffi::OsStr,
+        reply: fuser::ReplyEntry,
+    ) {
+        if self.config.fuse_inmem {
+            self.lookup_mem(_req, parent_ino, name, reply)
+        } else {
+            self.lookup_db(_req, parent_ino, name, reply);
+        }
+    }
+
+    fn readdir(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        _fh: u64,
+        offset: i64,
+        reply: fuser::ReplyDirectory,
+    ) {
+        if self.config.fuse_inmem {
+            self.readdir_mem(_req, ino, _fh, offset, reply)
+        } else {
+            self.readdir_db(_req, ino, _fh, offset, reply)
+        }
     }
 
     fn rename(
@@ -589,6 +848,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
                     .await
                     .expect("Failed to remove from database");
                 debug!("removed_files: {:?}", removed_files);
+                // TODO: this can fail e.g. if the file is not there anymore
                 self.storage_manager
                     .free_read_cache(removed_files)
                     .await
@@ -614,14 +874,15 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
 pub fn mount<TS: TimeSource<Utc> + 'static>(
     mountpoint: &Path,
     fs: GrizolFS<TS>,
-) -> BackgroundSession {
-    let session = fuser::Session::new(
+    // ) -> BackgroundSession {
+) {
+    let mut session = fuser::Session::new(
         fs,
         mountpoint,
         &[MountOption::AllowRoot, MountOption::AutoUnmount],
     )
     .unwrap();
-    session.spawn().unwrap()
+    session.run().unwrap();
 }
 
 fn top_folder(ino: u64, folders: &[GrizolFolder], files: &[GrizolFileInfo]) -> Option<String> {
