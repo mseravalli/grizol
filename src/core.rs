@@ -160,7 +160,7 @@ impl From<grizol::Config> for GrizolConfig {
         let max_pending_requests = if let Some(x) = grizol_proto_config.max_pending_requests {
             x.try_into().unwrap()
         } else {
-            10_000
+            30_000
         };
 
         let max_total_pending_requests_size = if grizol_proto_config

@@ -14,4 +14,4 @@ remote_base_dir: "seravalli-grizol-testing"
 mountpoint: "tests/util/fuse_mountpoint"
 read_cache_dir: "tests/util/read_cache_dir"
 read_cache_size: "100Mb"
-fuse_refresh_rate_ms: 0
+fuse_refresh_rate_ms: 10000
