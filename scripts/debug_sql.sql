@@ -46,6 +46,8 @@
 -- FROM bep_folders f JOIN bep_devices d ON f.id = d.folder
 -- WHERE d.id = 'QS2CM5G-P6P6WZC-2SOA2PW-NTDTTAY-PM4GUXW-KA3BW6B-6WXPNLA-LDDEYAJ'
 
-SELECT DISTINCT(f.rowid) AS f_id, f.*
-FROM bep_folders f JOIN bep_index i ON f.id = i.folder
-WHERE i.device = 'QS2CM5G-P6P6WZC-2SOA2PW-NTDTTAY-PM4GUXW-KA3BW6B-6WXPNLA-LDDEYAJ'
+-- SELECT DISTINCT(f.rowid) AS f_id, f.*
+-- FROM bep_folders f JOIN bep_index i ON f.id = i.folder
+-- WHERE i.device = 'QS2CM5G-P6P6WZC-2SOA2PW-NTDTTAY-PM4GUXW-KA3BW6B-6WXPNLA-LDDEYAJ'
+
+select * from bep_file_info limit 10;

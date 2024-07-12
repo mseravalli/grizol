@@ -9,4 +9,6 @@ tests/util/fuse_mountpoint
 tests/util/syncthing
 tests/util/rclone
 tests/util/syncthing_home
+tests/util
 perf
+bench

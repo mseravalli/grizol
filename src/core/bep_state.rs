@@ -1627,6 +1627,10 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         .expect("Error occurred");
 
         let used_bytes: u64 = files.iter().map(|f| u64::try_from(f.size).unwrap()).sum();
+        // TODO: there is a logic error somehere: this underflows
+        // reproduce it by reading large files not fitting in cache first and then a small one
+        // cat tests/util/fuse_mountpoint/tv_shows/30-rock/01/30.Rock.S01E01.Pilot.avi
+        // cat tests/util/fuse_mountpoint/tv_shows/30-rock/nohup.out
         let mut available_bytes = cache_size - used_bytes;
         let mut removed_files = vec![];
         for file in files.iter() {

@@ -11,7 +11,7 @@ if [[ ${cmd} == "check" ]]; then
 elif [[ ${cmd} == "run" ]]; then
   cargo watch -x "run -- --config tests/util/config.textproto 2>&1 | tee /tmp/grizol_log"
 else
-  echo "Allowed values are only 'watch' and 'run', but '${cmd}' was provided instead"
+  echo "Allowed values are only 'check' and 'run', but '${cmd}' was provided instead"
 fi
 
 
