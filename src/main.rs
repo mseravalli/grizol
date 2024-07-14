@@ -147,12 +147,15 @@ async fn main() -> io::Result<()> {
     // sigle client at a time.
     let device_id_assigner: Arc<tokio::sync::Mutex<bool>> = Arc::new(tokio::sync::Mutex::new(true));
 
-    let _bg = if let Some(m) = grizol_config.mountpoint.as_ref() {
-        let fs = GrizolFS::new(grizol_config.clone(), bep_state.clone());
-        Some(fuse::mount(m, fs))
-    } else {
-        None
-    };
+    if let Some(m) = grizol_config.mountpoint.as_ref() {
+        let gc = grizol_config.clone();
+        let bs = bep_state.clone();
+        let m = m.clone();
+        std::thread::spawn(move || {
+            let fs = GrizolFS::new(gc, bs);
+            fuse::mount(&m, fs);
+        });
+    }
 
     loop {
         debug!("Wating for a new connection on {}", &addr);
