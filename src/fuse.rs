@@ -228,7 +228,7 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
         offset: i64,
         mut reply: fuser::ReplyDirectory,
     ) {
-        debug!("Start reading dir {}", ino);
+        debug!("Start reading dir with ino {}", ino);
         let offset = offset as usize;
 
         let (folders, files) = self.folders_files();

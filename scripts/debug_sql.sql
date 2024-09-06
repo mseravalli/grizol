@@ -34,10 +34,18 @@
 -- order by fin.name
 -- ;
 
-SELECT lc.cache_folder, lc.cache_file_name, lc.cache_device, lc.timestamp_added, fi.size
-FROM bep_local_cache lc JOIN bep_file_info fi ON TRUE
-  AND lc.cache_folder = fi.folder
-  AND lc.cache_file_name = fi.name
-  AND lc.cache_device = fi.device
-WHERE fi.type = 0
-;
+-- SELECT lc.cache_folder, lc.cache_file_name, lc.cache_device, lc.timestamp_added, fi.size
+-- FROM bep_local_cache lc JOIN bep_file_info fi ON TRUE
+--   AND lc.cache_folder = fi.folder
+--   AND lc.cache_file_name = fi.name
+--   AND lc.cache_device = fi.device
+-- WHERE fi.type = 0
+-- ;
+
+-- SELECT DISTINCT(f.rowid) AS f_id, f.*
+-- FROM bep_folders f JOIN bep_devices d ON f.id = d.folder
+-- WHERE d.id = 'QS2CM5G-P6P6WZC-2SOA2PW-NTDTTAY-PM4GUXW-KA3BW6B-6WXPNLA-LDDEYAJ'
+
+SELECT DISTINCT(f.rowid) AS f_id, f.*
+FROM bep_folders f JOIN bep_index i ON f.id = i.folder
+WHERE i.device = 'QS2CM5G-P6P6WZC-2SOA2PW-NTDTTAY-PM4GUXW-KA3BW6B-6WXPNLA-LDDEYAJ'
