@@ -1,0 +1,13 @@
+cert: "tests/util/config/cert-prod.pem.key"
+key: "tests/util/config/key-prod.pem.key"
+trusted_peers: [
+]
+base_dir: "tests/util/dest_dir"
+db_url: "sqlite:tests/util/grizol.db"
+storage_strategy: 1
+rclone_config: "tests/util/config/rclone-prod.conf.key"
+remote_base_dir: "seravalli-grizol"
+mountpoint: "tests/util/fuse_mountpoint"
+read_cache_dir: "tests/util/read_cache_dir"
+read_cache_size: "2000Mb"
+fuse_refresh_rate_ms: 10000
