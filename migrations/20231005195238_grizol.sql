@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS bep_compression
 
 CREATE TABLE IF NOT EXISTS bep_devices
 (
+    -- TODO: this should be removed so that the NxM is expressed in the index
     folder                     TEXT    NOT NULL,
 
     id                         TEXT    NOT NULL,
