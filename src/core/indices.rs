@@ -1,8 +1,8 @@
 use crate::{
     device_id::DeviceId,
-    syncthing::{BlockInfo, ClusterConfig, Counter, FileInfo, Index, Request},
+    syncthing::{FileInfo, Index},
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap};
 
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct FolderDevice {
@@ -77,7 +77,7 @@ impl GrizolIndices {
             device_id: *device_id,
         };
 
-        let mut index_files = &mut self
+        let index_files = &mut self
             .indices
             .entry(folder_device)
             .or_insert(Default::default())

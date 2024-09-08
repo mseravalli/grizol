@@ -7,11 +7,11 @@ use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData,
     ReplyEmpty, Request, FUSE_ROOT_ID,
 };
-use libc::{EFBIG, EISDIR, ENOBUFS, ENOENT, ENOSYS};
+use libc::{EFBIG, EISDIR, ENOENT, ENOSYS};
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::ffi::OsStr;
-use std::ops::Deref;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
