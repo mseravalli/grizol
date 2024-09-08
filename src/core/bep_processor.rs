@@ -1,4 +1,4 @@
-use crate::core::bep_data_parser::{CompleteMessage, MAGIC_NUMBER};
+use crate::core::bep_data_parser::{CompleteMessage};
 use crate::core::bep_state::{BepState, BlockInfoExt, StorageStatus};
 use crate::core::{GrizolConfig, UploadStatus};
 use crate::device_id::DeviceId;
@@ -7,7 +7,7 @@ use crate::storage::StorageManager;
 use crate::syncthing;
 use chrono::prelude::*;
 use chrono_timesource::TimeSource;
-use prost::Message;
+
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -107,7 +107,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
         debug!("Handling Cluster Config");
         trace!("Received Cluster Config: {:#?}", &cluster_config);
         {
-            let mut state = self.state.lock().await;
+            let state = self.state.lock().await;
             state
                 .update_cluster_config(&cluster_config, &self.config.local_device_id)
                 .await;
@@ -131,7 +131,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
             }
         }
 
-        let mut indices: Vec<Result<GrizolEvent, BepProcessorError>> = self
+        let indices: Vec<Result<GrizolEvent, BepProcessorError>> = self
             .indices(client_device_id)
             .await
             .into_iter()
@@ -159,7 +159,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
 
         let folder = received_index.folder.clone();
 
-        let file_requests = async move {
+        let _file_requests = async move {
             let unstored_blocks = {
                 let state = &mut self.state.lock().await;
 
@@ -198,7 +198,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     .await
             };
 
-            let file_requests = {
+            let _file_requests = {
                 let state = &mut self.state.lock().await;
                 store_outgoing_requests(state, unstored_blocks).await
             };
@@ -249,7 +249,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                     .await
             };
 
-            let file_requests = {
+            let _file_requests = {
                 let state = &mut self.state.lock().await;
                 store_outgoing_requests(state, unstored_blocks).await
             };
@@ -319,7 +319,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
 
     // TODO: read this from the last state and add additional information from the config.
     async fn cluster_config(&self, client_device_id: DeviceId) -> CompleteMessage {
-        let header = Header {
+        let _header = Header {
             compression: 0,
             r#type: MessageType::ClusterConfig.into(),
         };
