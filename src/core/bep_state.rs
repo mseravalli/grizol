@@ -6,19 +6,18 @@ use crate::device_id::DeviceId;
 use crate::syncthing::{self, Folder};
 use chrono::prelude::*;
 use chrono_timesource::TimeSource;
-use futures::future::try_join_all;
+
 use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
-use sqlx::{Execute, QueryBuilder, Sqlite};
+use sqlx::{QueryBuilder, Sqlite};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+
 use syncthing::{BlockInfo, ClusterConfig, Counter, FileInfo, Index, Request};
 use tokio::sync::Mutex;
 
 use super::indices::GrizolIndices;
-use super::GrizolConfig;
 
 /// Stores BlockInfo and addtitional data to simplify processing.
 #[derive(Hash, Clone, Debug, Eq, PartialEq)]
@@ -1250,7 +1249,8 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             // Rename according to
             // https://docs.syncthing.net/users/syncing.html#conflicting-changes
             if move_file {
-                todo!("This should be better implemented (and tested) also for the in memory data structure");
+                // TODO This should be better implemented (and tested) also for the in memory data structure;
+                assert!("we want to fail here" == "because it's not safe yet");
                 debug!("Moving file: {}", file.name);
                 let new_path = {
                     let clock = self.clock.lock().await;
@@ -1414,7 +1414,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     .push_bind(not_stored);
             });
 
-            let mut query = query_builder.build();
+            let query = query_builder.build();
 
             query
                 .execute(&mut *transaction)

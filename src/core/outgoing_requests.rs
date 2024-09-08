@@ -1,4 +1,4 @@
-use crate::syncthing::{BlockInfo, ClusterConfig, Counter, FileInfo, Index, Request};
+use crate::syncthing::Request;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -68,8 +68,8 @@ impl OutgoingRequests {
 
             let pending_removed = self.pending_requests.remove(&outgoing_request);
             assert!(pending_removed);
+            assert!(self.requested_size >= outgoing_request.size as usize);
             self.requested_size -= outgoing_request.size as usize;
-            assert!(self.requested_size >= 0);
         };
         request
     }
@@ -115,8 +115,8 @@ impl OutgoingRequests {
             .filter(|request| !self.requests_by_request.contains_key(*request))
             .map(|r| r.size as usize)
             .sum();
+        assert!(self.requested_size >= size_to_remove);
         self.requested_size -= size_to_remove;
-        assert!(self.requested_size >= 0);
         self.pending_requests
             .retain(|request| self.requests_by_request.contains_key(request));
     }
@@ -151,7 +151,7 @@ impl OutgoingRequests {
             if !self.pending_requests.contains(outgoing_request) {
                 processed_requests.push(self.requests_by_id.get(id).unwrap().clone());
                 self.pending_requests.insert(outgoing_request.clone());
-                self.requested_size += (outgoing_request.size as usize);
+                self.requested_size += outgoing_request.size as usize;
                 file_names.insert(outgoing_request.name.clone());
             }
         }

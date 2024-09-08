@@ -21,9 +21,8 @@ use crate::core::bep_state::BepState;
 use crate::core::{GrizolConfig, GrizolEvent};
 use crate::device_id::DeviceId;
 use crate::fuse::GrizolFS;
-use crate::syncthing::{Header, Hello, MessageType, Ping, Request};
-use chrono::prelude::*;
-use chrono_timesource::{TimeSource, UtcTimeSource};
+use crate::syncthing::{Header, MessageType, Ping};
+use chrono_timesource::UtcTimeSource;
 use clap::Parser;
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
@@ -271,7 +270,7 @@ async fn handle_incoming_data(
                     CompleteMessage::DownloadProgress(m) => (Some(MessageType::DownloadProgress.into()), vec![m.encode_to_vec()] ),
                     CompleteMessage::Ping(m)             => (Some(MessageType::Ping.into()),             vec![m.encode_to_vec()] ),
                     CompleteMessage::Close(m)            => (Some(MessageType::Close.into()),            vec![m.encode_to_vec()] ),
-                    CompleteMessage::Request(m)          => panic!("Requests should be handled through RequestCreated events"),
+                    CompleteMessage::Request(_m)          => panic!("Requests should be handled through RequestCreated events"),
                 }
             }
             GrizolEvent::RequestProcessed | GrizolEvent::RequestCreated => {
