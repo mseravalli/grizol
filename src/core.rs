@@ -79,6 +79,7 @@ pub struct GrizolConfig {
     pub gid: u32,
     pub max_pending_requests: usize,
     pub max_total_pending_requests_size: usize,
+    pub fuse_inmem: bool,
 }
 
 impl From<grizol::Config> for GrizolConfig {
@@ -200,6 +201,7 @@ impl From<grizol::Config> for GrizolConfig {
             gid,
             max_pending_requests,
             max_total_pending_requests_size,
+            fuse_inmem: grizol_proto_config.fuse_inmem,
         }
     }
 }

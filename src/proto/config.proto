@@ -45,5 +45,6 @@ message Config {
     optional uint32 fuse_refresh_rate_ms = 14;
     optional uint32 max_pending_requests = 15;
     string max_total_pending_requests_size = 16;
-// next 17
+    bool fuse_inmem = 17;
+// next 18
 }
