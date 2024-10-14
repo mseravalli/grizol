@@ -9,6 +9,7 @@ use fuser::{
     FUSE_ROOT_ID,
 };
 use libc::{EFAULT, EFBIG, EISDIR, ENOENT, ENOSYS};
+use std::borrow::Borrow;
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -508,10 +509,34 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
             reply.error(ENOENT);
         }
     }
-}
 
-impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
-    fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
+    fn getattr_mem(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
+        debug!("Start lookup (from mem) for {:?}", &ino);
+        // This is needed to populate the cache
+        // TODO: improve
+        let (_folders, _files) = self.folders_files();
+
+        if ino == FUSE_ROOT_ID {
+            reply.attr(&self.config.fuse_refresh_rate, &self.root_dir_attr());
+            return;
+        }
+
+        if let Some(node) = self.fs_mem.borrow().nodes.get(&ino) {
+            let n = node.upgrade().unwrap();
+            let attr = match &n.deref().borrow().file_type {
+                GrizolFSFileType::Folder(f) => self.attr_from_folder(&f),
+                GrizolFSFileType::File(f) => self.attr_from_file(&f),
+            };
+
+            debug!("Adding attr: {:?}", &attr);
+            reply.attr(&self.config.fuse_refresh_rate, &attr);
+            return;
+        }
+
+        reply.error(ENOENT);
+    }
+
+    fn getattr_db(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
         if ino == FUSE_ROOT_ID {
             reply.attr(&self.config.fuse_refresh_rate, &self.root_dir_attr());
             return;
@@ -531,10 +556,21 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
                 .map(|f| self.attr_from_file(f))
         };
 
+        debug!("Adding attr: {:?}", &attr);
         if let Some(a) = attr {
             reply.attr(&self.config.fuse_refresh_rate, &a);
         } else {
             reply.error(ENOENT);
+        }
+    }
+}
+
+impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
+    fn getattr(&mut self, req: &Request, ino: u64, reply: ReplyAttr) {
+        if self.config.fuse_inmem {
+            self.getattr_mem(req, ino, reply);
+        } else {
+            self.getattr_db(req, ino, reply);
         }
     }
 
@@ -554,16 +590,16 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
 
     fn readdir(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         ino: u64,
         _fh: u64,
         offset: i64,
         reply: fuser::ReplyDirectory,
     ) {
         if self.config.fuse_inmem {
-            self.readdir_mem(_req, ino, _fh, offset, reply)
+            self.readdir_mem(req, ino, _fh, offset, reply)
         } else {
-            self.readdir_db(_req, ino, _fh, offset, reply)
+            self.readdir_db(req, ino, _fh, offset, reply)
         }
     }
 
