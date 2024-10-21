@@ -263,6 +263,7 @@ impl StorageManager {
         size: u32,
     ) -> Result<Vec<u8>, String> {
         let file_path = format!("{}/{}/{}", self.config.read_cache_dir, folder, name);
+        // TODO: better handle this failure
         let mut f = File::open(file_path).await.expect("Cannot open file");
         let mut buffer = vec![0; size.try_into().unwrap()];
 
