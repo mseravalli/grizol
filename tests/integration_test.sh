@@ -27,7 +27,7 @@ setup_file() {
 
   yes z | xargs echo -n 2>/dev/null | head -c 900 | fmt > ${ORIG_DIR}/z.txt
 
-  tests/util/grizol --config tests/util/config.textproto > ${GRIZOL_LOG} 2>&1 &
+  tests/util/grizol --config tests/util/config/config-test.textproto > ${GRIZOL_LOG} 2>&1 &
   export GRIZOL_PID=$!
   echo "Started grizol with pid ${GRIZOL_PID}"
 
