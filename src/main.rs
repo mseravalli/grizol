@@ -4,6 +4,7 @@ extern crate log;
 mod connectivity;
 mod core;
 mod device_id;
+mod file_writer;
 mod fuse;
 mod storage;
 
