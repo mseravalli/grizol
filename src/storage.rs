@@ -553,8 +553,8 @@ mod test {
     #[tokio::test]
     async fn store_block_new_file_succeeds() {
         let config = grizol::Config {
-            cert: "tests/util/cert.pem".to_string(),
-            key: "tests/util/key.pem".to_string(),
+            cert: "tests/util/config/cert-test.pem.key".to_string(),
+            key: "tests/util/config/key-test.pem.key".to_string(),
             ..Default::default()
         };
         let bep_config = GrizolConfig::from(config);
