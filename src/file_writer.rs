@@ -2,6 +2,7 @@ use futures::io::Flush;
 use rand::distributions::{Alphanumeric, DistString};
 use rand::{thread_rng, Rng};
 use std::borrow::BorrowMut;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::DerefMut;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -11,7 +12,7 @@ use std::{
     os::unix::fs::FileExt,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum FileWriterState {
     WritingChunks(usize),
     Consolidating,
@@ -35,9 +36,11 @@ unsafe impl std::marker::Send for FileWriter {}
 impl FileWriter {
     fn new(file_path: String, file_size: usize, chunk_size: usize) -> Self {
         let n_of_chunks = (file_size + chunk_size - 1) / chunk_size;
-        // The probability of hitting a match should be 1/(62^8).
-        // TODO: use the hash of the filename
-        let suffix = Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
+        let mut hasher = DefaultHasher::new();
+        file_path.hash(&mut hasher);
+        file_size.hash(&mut hasher);
+        chunk_size.hash(&mut hasher);
+        let suffix = hasher.finish().to_string();
 
         let mut writing_chunk: Vec<AtomicBool> = Default::default();
         for i in (0..n_of_chunks) {
@@ -115,7 +118,7 @@ impl FileWriter {
             .read(true)
             .write(true)
             .create(true)
-            .truncate(false)
+            .truncate(true)
             .open(&self.chunk_path(chunk_pos));
         let mut chunk = match chunk {
             Ok(x) => x,
@@ -129,8 +132,8 @@ impl FileWriter {
         };
 
         chunk.set_len(data.len() as u64);
-        chunk.write_all(data);
-        chunk.flush();
+        chunk.write_all(data).unwrap();
+        chunk.sync_all().unwrap();
 
         self.writing_chunk[chunk_pos].store(false, Ordering::Relaxed);
 
@@ -156,6 +159,7 @@ impl FileWriter {
                 .state
                 .lock()
                 .map_err(|x| format!("Error getting the lock: {}", x))?;
+
             match *s {
                 FileWriterState::Consolidating => {
                     return Err("Currently consolidating cannot further consolidate".to_string())
@@ -179,7 +183,7 @@ impl FileWriter {
                 .create(true)
                 .truncate(true)
                 .open(&self.file_path)
-                .map_err(|x| format!("Error opening the file: {}", x))?;
+                .map_err(|x| format!("Error opening the file {}: {}", &self.file_path, x))?;
             for i in (0..self.writing_chunk.len()) {
                 {
                     let mut chunk = OpenOptions::new()
@@ -188,10 +192,14 @@ impl FileWriter {
                         .create(false)
                         .truncate(false)
                         .open(&self.chunk_path(i))
-                        .map_err(|x| format!("Error opening the file: {}", x))?;
+                        .map_err(|x| {
+                            format!("Error opening the file {}: {}", &self.chunk_path(i), x)
+                        })?;
                     let mut buf: Vec<u8> = Vec::new();
-                    chunk.read_to_end(&mut buf);
-                    file.write_all_at(&buf, (i * self.chunk_size) as u64);
+                    chunk.read_to_end(&mut buf).unwrap();
+                    file.write_all_at(&buf, (i * self.chunk_size) as u64)
+                        .unwrap();
+                    file.sync_all().unwrap();
                 }
                 std::fs::remove_file(&self.chunk_path(i))
                     .map_err(|x| format!("Error removing the file: {}", x))?;
@@ -236,12 +244,11 @@ mod test {
             file_writer.write_chunk(&data, chunk_size * i);
         }
 
-        file_writer.consolidate();
+        file_writer.consolidate().unwrap();
 
         let mut f = File::open(file_name.as_str()).unwrap();
         let mut buf = String::default();
         f.read_to_string(&mut buf);
-        println!("{}", buf);
         assert_eq!(
             buf.as_str(),
             "AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPQQRRSSTTUUVVWWXXYYZZ"
@@ -254,7 +261,7 @@ mod test {
     fn write_chunk__valid_input_parallel__succeeds() {
         let chunk_size = 2;
         let chunk_num = 26;
-        let file_name = "/tmp/mynewfile".to_string();
+        let file_name = "/tmp/mynewfile_parallel".to_string();
         let mut file_writer: FileWriter =
             FileWriter::new(file_name.clone(), chunk_num * chunk_size, chunk_size);
 
@@ -275,16 +282,15 @@ mod test {
         }
 
         // Wait for other threads to finish.
-        for handle in handles {
+        for handle in handles.into_iter() {
             handle.join().unwrap();
         }
 
-        fw.consolidate();
+        fw.consolidate().unwrap();
 
         let mut f = File::open(file_name.as_str()).unwrap();
         let mut buf = String::default();
         f.read_to_string(&mut buf);
-        println!("{}", buf);
         assert_eq!(
             buf.as_str(),
             "AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPQQRRSSTTUUVVWWXXYYZZ"
