@@ -367,10 +367,10 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
             }
 
             let weak_hash = compute_weak_hash(&response.data);
-            let file_size: u64 = {
+            let (file_size, block_size) = {
                 let state = &mut self.state.lock().await;
                 // TODO: check the weak hash against the hashes in other devices.
-                state
+                let file_info = state
                     .file_info(&request.folder, self.config.local_device_id, &request.name)
                     .await
                     .ok_or({
@@ -379,15 +379,16 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
                             &request.name
                         );
                         BepProcessorError::FileNotInIndex(msg)
-                    })?
-                    .size
-                    .try_into()
-                    .unwrap()
+                    })?;
+                let file_size: u64 = file_info.size.try_into().unwrap();
+                let block_size: u64 = file_info.block_size.try_into().unwrap();
+                (file_size, block_size)
             };
             self.storage_manager
-                .store_block(response.data, &request, file_size)
+                // .store_block(response.data, &request, file_size)
+                .store_block_concurrently(response.data, &request, file_size, block_size)
                 .await
-                .map_err(|e| BepProcessorError::StorageError(e.to_string()))?;
+                .map_err(|e| BepProcessorError::StorageError(format!("Storing Block: {}", e)))?;
             let upload_status = {
                 let state = &mut self.state.lock().await;
                 state
@@ -402,6 +403,14 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
 
             // TODO: test behaviour with directory
             if upload_status == UploadStatus::AllBlocks {
+                // needed due to the concurrent writes
+                self.storage_manager
+                    .conclude_block_storage(&request, file_size, block_size)
+                    .await
+                    .map_err(|e| {
+                        BepProcessorError::StorageError(format!("Concluding Block Storage: {}", e))
+                    })?;
+
                 if self.config.storage_strategy == StorageStrategy::Remote
                     || self.config.storage_strategy == StorageStrategy::LocalRemote
                 {

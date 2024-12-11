@@ -2,12 +2,14 @@ use futures::io::Flush;
 use rand::distributions::{Alphanumeric, DistString};
 use rand::{thread_rng, Rng};
 use std::borrow::BorrowMut;
+
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::DerefMut;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::{
     fs::{File, OpenOptions},
+    io,
     io::{Read, Write},
     os::unix::fs::FileExt,
 };
@@ -18,9 +20,12 @@ enum FileWriterState {
     Consolidating,
 }
 
-struct FileWriter {
+// This is thread safe.
+pub struct FileWriter {
     file_path: String,
+    // TODO: should this be a u64?
     file_size: usize,
+    // TODO: should this be a u64?
     chunk_size: usize,
     // use an atomic bool or something
     writing_chunk: Vec<AtomicBool>,
@@ -34,7 +39,7 @@ unsafe impl std::marker::Sync for FileWriter {}
 unsafe impl std::marker::Send for FileWriter {}
 
 impl FileWriter {
-    fn new(file_path: String, file_size: usize, chunk_size: usize) -> Self {
+    pub fn new(file_path: String, file_size: usize, chunk_size: usize) -> Self {
         let n_of_chunks = (file_size + chunk_size - 1) / chunk_size;
         let mut hasher = DefaultHasher::new();
         file_path.hash(&mut hasher);
@@ -61,40 +66,46 @@ impl FileWriter {
         format!("{}.part_{}.{}", self.file_path, chunk_pos, self.suffix)
     }
 
-    fn write_chunk(&self, data: &[u8], offset: usize) -> Result<(), String> {
+    // Writes only the file the caller must ensure that the dir is valid.
+    pub fn write_chunk(&self, data: &[u8], offset: usize) -> io::Result<()> {
         if offset % self.chunk_size != 0 {
-            return Err(format!(
+            let msg = format!(
                 "Alignment is at multiples of {}, trying to write unaligned chunk at offset {} for file {}",
                 self.chunk_size, offset, &self.file_path,
-            ));
+            );
+            return Err(io::Error::new(io::ErrorKind::InvalidData, msg.as_str()));
         }
 
         if offset >= self.file_size {
-            return Err(format!(
+            let msg = format!(
                 "Trying to write at position {}, which is larger then the file {}",
                 offset, self.file_size
-            ));
+            );
+            return Err(io::Error::new(io::ErrorKind::InvalidData, msg.as_str()));
         }
 
-        if data.len() != self.chunk_size
-            && !(data.len() < self.chunk_size && offset == self.file_size / self.chunk_size)
+        let last_offset = (self.file_size / self.chunk_size) * self.chunk_size;
+        if data.len() != self.chunk_size && !(data.len() < self.chunk_size && offset == last_offset)
         {
-            return Err(format!(
+            let msg = format!(
                 "Wrong chunk size {} for file {} at offset {}",
                 data.len(),
                 self.file_path,
                 offset
-            ));
+            );
+            return Err(io::Error::new(io::ErrorKind::InvalidData, msg.as_str()));
         }
 
         {
-            let mut s = self
-                .state
-                .lock()
-                .map_err(|x| format!("Error getting the lock: {}", x))?;
+            // This is expected to succeed
+            let mut s = self.state.lock().unwrap();
             match *s {
                 FileWriterState::Consolidating => {
-                    return Err("Currently consolidating cannot write data".to_string())
+                    let msg = format!(
+                        "Trying to write at position {}, which is larger then the file {}",
+                        offset, self.file_size
+                    );
+                    return Err(io::Error::new(io::ErrorKind::Other, msg.as_str()));
                 }
                 FileWriterState::WritingChunks(x) => *s = FileWriterState::WritingChunks(x + 1),
             }
@@ -108,10 +119,11 @@ impl FileWriter {
             Ordering::Acquire,
             Ordering::Relaxed,
         ) {
-            return Err(format!(
+            let msg = format!(
                 "chunk_pos {} for file {} was already written",
                 chunk_pos, self.file_path
-            ));
+            );
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, msg.as_str()));
         }
 
         let chunk = OpenOptions::new()
@@ -124,10 +136,8 @@ impl FileWriter {
             Ok(x) => x,
             Err(e) => {
                 self.writing_chunk[chunk_pos].store(false, Ordering::Relaxed);
-                return Err(format!(
-                    "Could not write chunk at offset {} for file {}",
-                    offset, &self.file_path
-                ));
+                debug!("Error while writing {}", &self.chunk_path(chunk_pos));
+                return Err(e);
             }
         };
 
@@ -138,34 +148,38 @@ impl FileWriter {
         self.writing_chunk[chunk_pos].store(false, Ordering::Relaxed);
 
         {
-            let mut s = self
-                .state
-                .lock()
-                .map_err(|x| format!("Error getting the lock: {}", x))?;
+            // This is expect to succeed
+            let mut s = self.state.lock().unwrap();
             if let FileWriterState::WritingChunks(x) = *s {
                 *s = FileWriterState::WritingChunks(x - 1);
             } else {
-                return Err("This should never happen, famous last words".to_string());
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "This should never happen, famous last words",
+                ));
             }
         }
 
         Ok(())
     }
 
-    // consolidate the chunks into a single file
-    fn consolidate(&self) -> Result<(), String> {
+    // Consolidate the chunks into a single file
+    pub fn consolidate(&self) -> io::Result<()> {
         {
-            let mut s = self
-                .state
-                .lock()
-                .map_err(|x| format!("Error getting the lock: {}", x))?;
+            let mut s = self.state.lock().unwrap();
 
             match *s {
                 FileWriterState::Consolidating => {
-                    return Err("Currently consolidating cannot further consolidate".to_string())
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "Currently consolidating cannot further consolidate",
+                    ))
                 }
                 FileWriterState::WritingChunks(1..) => {
-                    return Err("Currently writing cannot consolidate".to_string())
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "Currently writing cannot consolidate",
+                    ))
                 }
                 FileWriterState::WritingChunks(0) => *s = FileWriterState::Consolidating,
             }
@@ -182,8 +196,7 @@ impl FileWriter {
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .open(&self.file_path)
-                .map_err(|x| format!("Error opening the file {}: {}", &self.file_path, x))?;
+                .open(&self.file_path)?;
             for i in (0..self.writing_chunk.len()) {
                 {
                     let mut chunk = OpenOptions::new()
@@ -191,26 +204,19 @@ impl FileWriter {
                         .write(false)
                         .create(false)
                         .truncate(false)
-                        .open(&self.chunk_path(i))
-                        .map_err(|x| {
-                            format!("Error opening the file {}: {}", &self.chunk_path(i), x)
-                        })?;
+                        .open(&self.chunk_path(i))?;
                     let mut buf: Vec<u8> = Vec::new();
                     chunk.read_to_end(&mut buf).unwrap();
                     file.write_all_at(&buf, (i * self.chunk_size) as u64)
                         .unwrap();
                     file.sync_all().unwrap();
                 }
-                std::fs::remove_file(&self.chunk_path(i))
-                    .map_err(|x| format!("Error removing the file: {}", x))?;
+                std::fs::remove_file(&self.chunk_path(i))?;
             }
         }
 
         {
-            let mut s = self
-                .state
-                .lock()
-                .map_err(|x| format!("Error getting the lock: {}", x))?;
+            let mut s = self.state.lock().unwrap();
             *s = FileWriterState::WritingChunks(0)
         }
 

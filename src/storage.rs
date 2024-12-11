@@ -1,20 +1,21 @@
 use crate::syncthing::Request;
 
+use crate::file_writer::{self, FileWriter};
 use crate::GrizolConfig;
+use dashmap::DashMap;
 use futures::future::try_join_all;
 use regex::Regex;
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 use std::process::ExitStatus;
+use std::rc::Rc;
 use tokio::fs::{remove_file, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::process::Command;
-
-pub struct StorageManager {
-    config: GrizolConfig,
-    storage_backends: Vec<String>,
-}
+use tokio::sync::Mutex;
 
 // This should *not* be async, we want to wait for this to finish and then process the result.
 fn storage_backends_from_conf(rclone_config: &Option<String>) -> Vec<String> {
@@ -42,13 +43,67 @@ fn storage_backends_from_conf(rclone_config: &Option<String>) -> Vec<String> {
     res
 }
 
+pub struct StorageManager {
+    config: GrizolConfig,
+    storage_backends: Vec<String>,
+    // TODO: make this thread safe
+    file_writers: DashMap<String, FileWriter>,
+}
+
 impl StorageManager {
     pub fn new(config: GrizolConfig) -> Self {
         let storage_backends = storage_backends_from_conf(&config.rclone_config);
         StorageManager {
             config,
             storage_backends,
+            file_writers: Default::default(),
         }
+    }
+    pub async fn store_block_concurrently(
+        &self,
+        data: Vec<u8>,
+        request: &Request,
+        file_size: u64,
+        chunk_size: u64,
+    ) -> io::Result<()> {
+        let file_rel_path = format!("{}/{}", &request.folder, &request.name);
+        let abs_path = format!("{}/{}", self.config.local_base_dir, file_rel_path);
+        let parent = Path::new(&abs_path).parent().unwrap();
+        debug!("parent: {:?}", parent);
+        tokio::fs::create_dir_all(parent).await?;
+
+        let file_writer =
+            self.file_writers
+                .entry(file_rel_path.clone())
+                .or_insert(FileWriter::new(
+                    abs_path,
+                    file_size as usize,
+                    chunk_size as usize,
+                ));
+
+        let offset = request.offset.try_into().unwrap();
+        file_writer.write_chunk(&data, offset)
+    }
+
+    pub async fn conclude_block_storage(
+        &self,
+        request: &Request,
+        file_size: u64,
+        chunk_size: u64,
+    ) -> io::Result<()> {
+        let file_rel_path = format!("{}/{}", &request.folder, &request.name);
+        // In theory it could happen that all the blocks are written, but the program crashes
+        // before the consolidation, therefore we recreate the writer. If the blocks are not there
+        // the consolidate step will fail.
+        let file_writer =
+            self.file_writers
+                .entry(file_rel_path.clone())
+                .or_insert(FileWriter::new(
+                    file_rel_path,
+                    file_size as usize,
+                    chunk_size as usize,
+                ));
+        file_writer.consolidate()
     }
 
     pub async fn store_block(
@@ -63,9 +118,6 @@ impl StorageManager {
         let mut file = self.create_empty_file(&file_rel_path, file_size).await?;
 
         let offset = request.offset.try_into().unwrap();
-
-        trace!("offset: {}", &offset);
-        trace!("block {:?}", &data);
 
         file.seek(SeekFrom::Start(offset)).await?;
 
