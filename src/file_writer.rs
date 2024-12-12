@@ -6,13 +6,14 @@ use std::borrow::BorrowMut;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::DerefMut;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 use std::{
-    fs::{File, OpenOptions},
     io,
     io::{Read, Write},
     os::unix::fs::FileExt,
 };
+use tokio::fs::{remove_file, File, OpenOptions};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
+use tokio::sync::Mutex;
 
 #[derive(Clone, Copy, Debug)]
 enum FileWriterState {
@@ -67,7 +68,11 @@ impl FileWriter {
     }
 
     // Writes only the file the caller must ensure that the dir is valid.
-    pub fn write_chunk(&self, data: &[u8], offset: usize) -> io::Result<()> {
+    pub async fn write_chunk(&self, data: &[u8], offset: usize) -> io::Result<()> {
+        debug!(
+            "Start writing chunk for file {} at offset {}",
+            &self.file_path, offset
+        );
         if offset % self.chunk_size != 0 {
             let msg = format!(
                 "Alignment is at multiples of {}, trying to write unaligned chunk at offset {} for file {}",
@@ -98,7 +103,7 @@ impl FileWriter {
 
         {
             // This is expected to succeed
-            let mut s = self.state.lock().unwrap();
+            let mut s = self.state.lock().await;
             match *s {
                 FileWriterState::Consolidating => {
                     let msg = format!(
@@ -131,7 +136,8 @@ impl FileWriter {
             .write(true)
             .create(true)
             .truncate(true)
-            .open(&self.chunk_path(chunk_pos));
+            .open(&self.chunk_path(chunk_pos))
+            .await;
         let mut chunk = match chunk {
             Ok(x) => x,
             Err(e) => {
@@ -142,14 +148,14 @@ impl FileWriter {
         };
 
         chunk.set_len(data.len() as u64);
-        chunk.write_all(data).unwrap();
-        chunk.sync_all().unwrap();
+        chunk.write_all(data).await?;
+        chunk.sync_all().await?;
 
         self.writing_chunk[chunk_pos].store(false, Ordering::Relaxed);
 
         {
             // This is expect to succeed
-            let mut s = self.state.lock().unwrap();
+            let mut s = self.state.lock().await;
             if let FileWriterState::WritingChunks(x) = *s {
                 *s = FileWriterState::WritingChunks(x - 1);
             } else {
@@ -164,9 +170,9 @@ impl FileWriter {
     }
 
     // Consolidate the chunks into a single file
-    pub fn consolidate(&self) -> io::Result<()> {
+    pub async fn consolidate(&self) -> io::Result<()> {
         {
-            let mut s = self.state.lock().unwrap();
+            let mut s = self.state.lock().await;
 
             match *s {
                 FileWriterState::Consolidating => {
@@ -196,7 +202,8 @@ impl FileWriter {
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .open(&self.file_path)?;
+                .open(&self.file_path)
+                .await?;
             for i in (0..self.writing_chunk.len()) {
                 {
                     let mut chunk = OpenOptions::new()
@@ -204,19 +211,21 @@ impl FileWriter {
                         .write(false)
                         .create(false)
                         .truncate(false)
-                        .open(&self.chunk_path(i))?;
+                        .open(&self.chunk_path(i))
+                        .await?;
                     let mut buf: Vec<u8> = Vec::new();
-                    chunk.read_to_end(&mut buf).unwrap();
-                    file.write_all_at(&buf, (i * self.chunk_size) as u64)
-                        .unwrap();
-                    file.sync_all().unwrap();
+                    chunk.read_to_end(&mut buf).await?;
+                    file.seek(SeekFrom::Start((i * self.chunk_size) as u64))
+                        .await?;
+                    file.write_all(&buf).await?;
+                    file.sync_all().await?;
                 }
-                std::fs::remove_file(&self.chunk_path(i))?;
+                remove_file(&self.chunk_path(i)).await?;
             }
         }
 
         {
-            let mut s = self.state.lock().unwrap();
+            let mut s = self.state.lock().await;
             *s = FileWriterState::WritingChunks(0)
         }
 
@@ -230,13 +239,12 @@ mod test {
     use rand::prelude::SliceRandom;
     use rand::{thread_rng, Rng};
     use std::borrow::BorrowMut;
-    use std::fs;
     use std::sync::Arc;
     use std::thread;
 
-    #[test]
+    #[tokio::test]
     #[allow(clippy::non_snake_case)]
-    fn write_chunk__valid_input__succeeds() {
+    async fn write_chunk__valid_input__succeeds() {
         let chunk_size = 2;
         let chunk_num = 26;
         let file_name = "/tmp/mynewfile".to_string();
@@ -247,24 +255,27 @@ mod test {
         chunks.shuffle(&mut thread_rng());
         for i in chunks.iter() {
             let data: Vec<u8> = vec![65 + (*i as u8); chunk_size];
-            file_writer.write_chunk(&data, chunk_size * i);
+            file_writer
+                .write_chunk(&data, chunk_size * i)
+                .await
+                .unwrap();
         }
 
-        file_writer.consolidate().unwrap();
+        file_writer.consolidate().await.unwrap();
 
-        let mut f = File::open(file_name.as_str()).unwrap();
+        let mut f = File::open(file_name.as_str()).await.unwrap();
         let mut buf = String::default();
-        f.read_to_string(&mut buf);
+        f.read_to_string(&mut buf).await.unwrap();
         assert_eq!(
             buf.as_str(),
             "AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPQQRRSSTTUUVVWWXXYYZZ"
         );
-        fs::remove_file(file_name).unwrap();
+        remove_file(file_name).await.unwrap();
     }
 
-    #[test]
+    #[tokio::test]
     #[allow(clippy::non_snake_case)]
-    fn write_chunk__valid_input_parallel__succeeds() {
+    async fn write_chunk__valid_input_parallel__succeeds() {
         let chunk_size = 2;
         let chunk_num = 26;
         let file_name = "/tmp/mynewfile_parallel".to_string();
@@ -280,8 +291,8 @@ mod test {
             let data: Vec<u8> = vec![65 + (i as u8); chunk_size];
 
             let mut tmp = fw.clone();
-            let handle = thread::spawn(move || {
-                tmp.write_chunk(&data, chunk_size * i);
+            let handle = tokio::spawn(async move {
+                tmp.write_chunk(&data, chunk_size * i).await.unwrap();
             });
 
             handles.push(handle);
@@ -289,18 +300,18 @@ mod test {
 
         // Wait for other threads to finish.
         for handle in handles.into_iter() {
-            handle.join().unwrap();
+            handle.await.unwrap();
         }
 
-        fw.consolidate().unwrap();
+        fw.consolidate().await.unwrap();
 
-        let mut f = File::open(file_name.as_str()).unwrap();
+        let mut f = File::open(file_name.as_str()).await.unwrap();
         let mut buf = String::default();
-        f.read_to_string(&mut buf);
+        f.read_to_string(&mut buf).await.unwrap();
         assert_eq!(
             buf.as_str(),
             "AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPQQRRSSTTUUVVWWXXYYZZ"
         );
-        fs::remove_file(file_name).unwrap();
+        remove_file(file_name).await.unwrap();
     }
 }

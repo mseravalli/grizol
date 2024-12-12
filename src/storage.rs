@@ -59,6 +59,7 @@ impl StorageManager {
             file_writers: Default::default(),
         }
     }
+
     pub async fn store_block_concurrently(
         &self,
         data: Vec<u8>,
@@ -82,7 +83,7 @@ impl StorageManager {
                 ));
 
         let offset = request.offset.try_into().unwrap();
-        file_writer.write_chunk(&data, offset)
+        file_writer.write_chunk(&data, offset).await
     }
 
     pub async fn conclude_block_storage(
@@ -103,7 +104,7 @@ impl StorageManager {
                     file_size as usize,
                     chunk_size as usize,
                 ));
-        file_writer.consolidate()
+        file_writer.consolidate().await
     }
 
     pub async fn store_block(
