@@ -73,6 +73,19 @@ impl FileWriter {
             "Start writing chunk for file {} at offset {}",
             &self.file_path, offset
         );
+
+        // In case the file has zero size we just create it and we rely on the OS for syncing.
+        if (offset == 0 && self.file_size == 0) {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&self.chunk_path(0))
+                .await?;
+            return Ok(());
+        }
+
         if offset % self.chunk_size != 0 {
             let msg = format!(
                 "Alignment is at multiples of {}, trying to write unaligned chunk at offset {} for file {}",
@@ -125,7 +138,7 @@ impl FileWriter {
             Ordering::Relaxed,
         ) {
             let msg = format!(
-                "chunk_pos {} for file {} was already written",
+                "chunk_pos {} for file {} is currently being written",
                 chunk_pos, self.file_path
             );
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, msg.as_str()));
@@ -154,7 +167,7 @@ impl FileWriter {
         self.writing_chunk[chunk_pos].store(false, Ordering::Relaxed);
 
         {
-            // This is expect to succeed
+            // This is expected to succeed
             let mut s = self.state.lock().await;
             if let FileWriterState::WritingChunks(x) = *s {
                 *s = FileWriterState::WritingChunks(x - 1);
@@ -165,6 +178,11 @@ impl FileWriter {
                 ));
             }
         }
+
+        debug!(
+            "Finished writing chunk for file {} at offset {}",
+            &self.file_path, offset
+        );
 
         Ok(())
     }
