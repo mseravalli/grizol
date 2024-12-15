@@ -207,6 +207,7 @@ async fn handle_incoming_data(
         // TODO: check if 1<<16 (65536) makes sense
         let mut buf = [0u8; 1 << 16];
         loop {
+            // TODO: spawn a new thread for every new message
             let n = reader.read(&mut buf[..]).await?;
 
             if n == 0 {
@@ -215,30 +216,36 @@ async fn handle_incoming_data(
                     "Unexpectedly reached end of the stream",
                 )) as io::Result<()>;
             }
+
             // TODO: remove unwrap
             let complete_messages = data_parser.parse_incoming_data(&buf[..n]).unwrap();
 
-            for cm in complete_messages.into_iter() {
-                let events = bep_processor.handle_complete_message(cm, cdid).await;
+            let event_sender_thread = event_sender.clone();
+            let bep_processor_thread = bep_processor.clone();
+            tokio::spawn(async move {
+                for cm in complete_messages.into_iter() {
+                    let events = bep_processor_thread.handle_complete_message(cm, cdid).await;
 
-                for event in events.into_iter() {
-                    let event = match event {
-                        Ok(x) => x,
-                        Err(e) => {
-                            error!("Encountered error: {}", e);
-                            continue;
+                    for event in events.into_iter() {
+                        let event = match event {
+                            Ok(x) => x,
+                            Err(e) => {
+                                error!("Encountered error: {}", e);
+                                continue;
+                            }
+                        };
+
+                        if let Err(e) = event_sender_thread.send(event).await {
+                            error!("Failed to send message due to {:?}", e);
+                            return Err(io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                format!("Failed to send internal event due to {:?}", e),
+                            )) as io::Result<()>;
                         }
-                    };
-
-                    if let Err(e) = event_sender.send(event).await {
-                        error!("Failed to send message due to {:?}", e);
-                        return Err(io::Error::new(
-                            io::ErrorKind::BrokenPipe,
-                            format!("Failed to send internal event due to {:?}", e),
-                        )) as io::Result<()>;
                     }
                 }
-            }
+                Ok(())
+            });
         }
     });
 
