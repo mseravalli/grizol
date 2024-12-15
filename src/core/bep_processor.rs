@@ -291,7 +291,7 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
             return vec![Err(BepProcessorError::ErrorInResponse(msg))];
         }
 
-        let res = self.store_response_data(response).await;
+        let res = self.process_response(response).await;
 
         vec![res]
     }
@@ -351,104 +351,118 @@ impl<TS: TimeSource<Utc>> BepProcessor<TS> {
             .map(|i| CompleteMessage::Index(i))
             .collect()
     }
-
     async fn store_response_data(
         &self,
+        request: Request,
         response: Response,
-    ) -> Result<GrizolEvent, BepProcessorError> {
+    ) -> Result<(), BepProcessorError> {
+        if let Err(e) = check_data(&response.data, &request.hash) {
+            let msg = format!("Wrong data received for request {:?}: {}", &request, e);
+            return Err(BepProcessorError::WrongDataInResponse(msg));
+        }
+
+        let weak_hash = compute_weak_hash(&response.data);
+        let (file_size, block_size) = {
+            let state = &mut self.state.lock().await;
+            // TODO: check the weak hash against the hashes in other devices.
+            let file_info = state
+                .file_info(&request.folder, self.config.local_device_id, &request.name)
+                .await
+                .ok_or({
+                    let msg = format!(
+                        "Requesting a file not in the local index: {}",
+                        &request.name
+                    );
+                    BepProcessorError::FileNotInIndex(msg)
+                })?;
+            let file_size: u64 = file_info.size.try_into().unwrap();
+            let block_size: u64 = file_info.block_size.try_into().unwrap();
+            (file_size, block_size)
+        };
+        self.storage_manager
+            .store_block_concurrently(response.data, &request, file_size, block_size)
+            .await
+            .map_err(|e| BepProcessorError::StorageError(format!("Storing Block: {}", e)))?;
+        let upload_status = {
+            let state = &mut self.state.lock().await;
+            state
+                .update_block_storage_state(&response.id, weak_hash, &self.config.local_device_id)
+                .await
+                .map_err(|e| BepProcessorError::StateError(e.to_string()))?
+        };
+
+        // TODO: test behaviour with directory
+        if upload_status == UploadStatus::AllBlocks {
+            // needed due to the concurrent writes
+            self.storage_manager
+                .conclude_block_storage(&request, file_size, block_size)
+                .await
+                .map_err(|e| {
+                    BepProcessorError::StorageError(format!("Concluding Block Storage: {}", e))
+                })?;
+
+            if self.config.storage_strategy == StorageStrategy::Remote
+                || self.config.storage_strategy == StorageStrategy::LocalRemote
+            {
+                let locations = self
+                    .storage_manager
+                    .cp_local_to_remote(&request.folder, &request.name)
+                    .await
+                    .map_err(|e| BepProcessorError::StorageError(e.to_string()))?;
+
+                {
+                    let state = &mut self.state.lock().await;
+                    state
+                        .update_file_locations(
+                            &request.folder,
+                            &self.config.local_device_id,
+                            &request.name,
+                            locations,
+                        )
+                        .await;
+                }
+            }
+
+            if self.config.storage_strategy == StorageStrategy::Remote {
+                {
+                    let state = &mut self.state.lock().await;
+                    state
+                        .remove_file_locations(
+                            &request.folder,
+                            &self.config.local_device_id,
+                            &request.name,
+                            vec!["local".to_string()],
+                        )
+                        .await;
+                }
+
+                self.storage_manager
+                    .rm_local_file(&request.folder, &request.name)
+                    .await
+                    .map_err(|e| BepProcessorError::StorageError(e.to_string()))?;
+            }
+            debug!("Stored whole file: {}", &request.name);
+        }
+
+        Ok(())
+    }
+
+    async fn process_response(&self, response: Response) -> Result<GrizolEvent, BepProcessorError> {
         let request_opt: Option<Request> = {
             let state = &mut self.state.lock().await;
             state.get_request(&response.id).map(|x| x.clone())
         };
         if let Some(request) = request_opt {
-            if let Err(e) = check_data(&response.data, &request.hash) {
-                let msg = format!("Wrong data received for request {:?}: {}", &request, e);
-                return Err(BepProcessorError::WrongDataInResponse(msg));
-            }
+            let response_id = response.id;
+            let stored = self.store_response_data(request, response).await;
 
-            let weak_hash = compute_weak_hash(&response.data);
-            let file_size: u64 = {
-                let state = &mut self.state.lock().await;
-                // TODO: check the weak hash against the hashes in other devices.
-                state
-                    .file_info(&request.folder, self.config.local_device_id, &request.name)
-                    .await
-                    .ok_or({
-                        let msg = format!(
-                            "Requesting a file not in the local index: {}",
-                            &request.name
-                        );
-                        BepProcessorError::FileNotInIndex(msg)
-                    })?
-                    .size
-                    .try_into()
-                    .unwrap()
-            };
-            self.storage_manager
-                .store_block(response.data, &request, file_size)
-                .await
-                .map_err(|e| BepProcessorError::StorageError(e.to_string()))?;
-            let upload_status = {
-                let state = &mut self.state.lock().await;
-                state
-                    .update_block_storage_state(
-                        &response.id,
-                        weak_hash,
-                        &self.config.local_device_id,
-                    )
-                    .await
-                    .map_err(|e| BepProcessorError::StateError(e.to_string()))?
-            };
-
-            // TODO: test behaviour with directory
-            if upload_status == UploadStatus::AllBlocks {
-                if self.config.storage_strategy == StorageStrategy::Remote
-                    || self.config.storage_strategy == StorageStrategy::LocalRemote
-                {
-                    let locations = self
-                        .storage_manager
-                        .cp_local_to_remote(&request.folder, &request.name)
-                        .await
-                        .map_err(|e| BepProcessorError::StorageError(e.to_string()))?;
-
-                    {
-                        let state = &mut self.state.lock().await;
-                        state
-                            .update_file_locations(
-                                &request.folder,
-                                &self.config.local_device_id,
-                                &request.name,
-                                locations,
-                            )
-                            .await;
-                    }
-                }
-
-                if self.config.storage_strategy == StorageStrategy::Remote {
-                    {
-                        let state = &mut self.state.lock().await;
-                        state
-                            .remove_file_locations(
-                                &request.folder,
-                                &self.config.local_device_id,
-                                &request.name,
-                                vec!["local".to_string()],
-                            )
-                            .await;
-                    }
-
-                    self.storage_manager
-                        .rm_local_file(&request.folder, &request.name)
-                        .await
-                        .map_err(|e| BepProcessorError::StorageError(e.to_string()))?;
-                }
-                debug!("Stored whole file: {}", &request.name);
-            }
-
+            // We remove the request even when something fails, because we processed it.
             {
                 let state = &mut self.state.lock().await;
-                state.remove_request(&response.id);
+                state.remove_request(&response_id);
             }
+
+            stored?;
         } else {
             let msg = format!(
                 "Response with id {} does not have a corresponding request",
