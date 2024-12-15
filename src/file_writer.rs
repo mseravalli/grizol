@@ -14,9 +14,7 @@ enum FileWriterState {
 // This is thread safe.
 pub struct FileWriter {
     file_path: String,
-    // TODO: should this be a u64?
     file_size: usize,
-    // TODO: should this be a u64?
     chunk_size: usize,
     // use an atomic bool or something
     writing_chunk: Vec<AtomicBool>,

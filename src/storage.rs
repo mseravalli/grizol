@@ -41,7 +41,6 @@ fn storage_backends_from_conf(rclone_config: &Option<String>) -> Vec<String> {
 pub struct StorageManager {
     config: GrizolConfig,
     storage_backends: Vec<String>,
-    // TODO: make this thread safe
     file_writers: DashMap<String, FileWriter>,
 }
 
