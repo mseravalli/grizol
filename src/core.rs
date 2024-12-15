@@ -33,13 +33,17 @@ pub struct GrizolFolder {
 }
 
 #[derive(Clone, Debug)]
+pub enum StorageBackend {
+    // FIXME: ensure that we don't ever use Local for now
+    // Local means that the file is stored on the local device.
+    // Local,
+    Remote(String),
+}
+
+#[derive(Clone, Debug)]
 pub struct FileLocation {
-    // TODO: remove allow(dead_code) once we start using this field in the fuse
-    #[allow(dead_code)]
-    location: String,
-    // TODO: remove allow(dead_code) once we start using this field in the fuse
-    #[allow(dead_code)]
-    storage_backend: String,
+    pub location: String,
+    pub storage_backend: StorageBackend,
 }
 
 // This struct allows us to include additional implementation specific information.

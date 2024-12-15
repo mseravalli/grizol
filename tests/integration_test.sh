@@ -6,7 +6,7 @@ GRIZOL_LOG="/tmp/grizol_log"
 SYNCTHING_LOG="/tmp/syncthing_log"
 
 setup_file() {
-  source scripts/env.sh
+  source scripts/dev_dbg.sh
   export RUST_LOG=info,grizol=debug
 
   cargo build --release
@@ -17,13 +17,13 @@ setup_file() {
   scripts/reset_db.sh
 
   export ORIG_DIR="tests/util/orig_dir"
-  export DEST_DIR="tests/util/dest_dir"
+  export STAGING_AREA="tests/util/dest_dir"
 
   rm -rf ${ORIG_DIR}
-  rm -rf ${DEST_DIR}
+  rm -rf ${STAGING_AREA}
 
   mkdir -p ${ORIG_DIR}
-  mkdir -p ${DEST_DIR}
+  mkdir -p ${STAGING_AREA}
 
   yes z | xargs echo -n 2>/dev/null | head -c 900 | fmt > ${ORIG_DIR}/z.txt
 
@@ -61,13 +61,13 @@ trigger_syncthing_rescan() {
 
 run_diff() {
   orig_dir=$1
-  dest_dir=$2
+  STAGING_AREA=$2
   res=""
   # check only the files not the directories 
   for f in $(fdfind ".*" ${orig_dir} | rg -v "/$"); do
     f=$(echo $f | sd "${orig_dir}/" "")
     orig_dir_name=$(echo "${orig_dir}" | rg -o "/([^/.]+)$" -r '$1')
-    d=$(diff "${orig_dir}/${f}" "${dest_dir}/${orig_dir_name}/${f}" 2>&1 || true)
+    d=$(diff "${orig_dir}/${f}" "${STAGING_AREA}/${orig_dir_name}/${f}" 2>&1 || true)
     if [[ ! -z "$d" ]]; then
       res="affected: ${f} - ${d}; ${res}"
     fi
@@ -83,18 +83,18 @@ run_diff() {
 }
 
 @test "Syncthing: add data" {
-while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do sleep 1; done
+  while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do sleep 1; done
 
-  yes a | xargs echo -n 2>/dev/null | head -c 900 | fmt > ${ORIG_DIR}/a.txt
-  yes b | xargs echo -n 2>/dev/null | head -c 90000 | fmt > ${ORIG_DIR}/b.txt
+  echo "aaaaaaaaaaaaaaaaaaaa" > ${ORIG_DIR}/a.txt
+  echo "bbbbbbbbbbbbbbbbbbbb" > ${ORIG_DIR}/b.txt
   mkdir ${ORIG_DIR}/c_dir
   yes c | xargs echo -n 2>/dev/null | head -c 9000000 | fmt > ${ORIG_DIR}/c_dir/c1.txt
-  yes c | xargs echo -n 2>/dev/null | head -c 9000000 | fmt > ${ORIG_DIR}/c_dir/c2.txt
+  echo "c2c2c2c2c2c2c2c2c2c2" > ${ORIG_DIR}/c_dir/c2.txt
 
   trigger_syncthing_rescan 2
   total_files=$(fdfind ".*" tests/util/orig_dir/ | rg -v "/$" | wc -l)
   while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne "${total_files}" ]]; do sleep 1; done
-  run run_diff ${ORIG_DIR} ${DEST_DIR}
+  run run_diff ${ORIG_DIR} ${STAGING_AREA}
   assert_success
 }
 
@@ -106,7 +106,7 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
   trigger_syncthing_rescan
   total_files=$(fdfind ".*" tests/util/orig_dir/ | rg -v "/$" | wc -l)
   while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne "${total_files}" ]]; do sleep 1; done
-  run run_diff ${ORIG_DIR} ${DEST_DIR}
+  run run_diff ${ORIG_DIR} ${STAGING_AREA}
   assert_success
 }
 
@@ -117,7 +117,7 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
   total_files=$(fdfind ".*" tests/util/orig_dir/ | rg -v "/$" | wc -l)
   # we have total_files + 1 because we performed 1 additional operation on the files
   while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne $(echo "${total_files} + 1" | bc) ]]; do sleep 1; done
-  run run_diff ${ORIG_DIR} ${DEST_DIR}
+  run run_diff ${ORIG_DIR} ${STAGING_AREA}
   assert_success
 }
 
@@ -128,7 +128,7 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
   total_files=$(fdfind ".*" tests/util/orig_dir/ | rg -v "/$" | wc -l)
   # we have total_files + 2 because we performed 2 additional operations on the files
   while [[ $(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l) -ne $(echo "${total_files} + 2" | bc) ]]; do sleep 1; done
-  run run_diff ${ORIG_DIR} ${DEST_DIR}
+  run run_diff ${ORIG_DIR} ${STAGING_AREA}
   assert_success
 }
 
@@ -137,10 +137,10 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
   rm "${ORIG_DIR}/${file_name}"
   trigger_syncthing_rescan
   while [[ $(rg 'File .* was deleted on device' ${GRIZOL_LOG} | wc -l) -ne 1 ]]; do sleep 1; done
-  if [[ ! -f ${ORIG_DIR}/{file_name} && -f ${DEST_DIR}/${file_name} ]]; then
+  if [[ ! -f ${ORIG_DIR}/{file_name} && -f ${STAGING_AREA}/${file_name} ]]; then
       echo "Success: file was deleted remotely but not locally"
   fi
-  run run_diff ${ORIG_DIR} ${DEST_DIR}
+  run run_diff ${ORIG_DIR} ${STAGING_AREA}
   assert_success
 }
 
@@ -151,41 +151,116 @@ while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do slee
   assert_success
 }
 
-@test "Fuse: mv files top dir to top dir" {
-  mv tests/util/fuse_mountpoint/orig_dir/a{,_moved}.txt
-  expected_ls="tests/util/fuse_mountpoint/orig_dir/a_moved.txt"
-  run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/a*) 
+@test "Syncthing: add data for mv" {
+  while [[ -z $(rg 'Ready to synchronize "orig_dir"' ${SYNCTHING_LOG}) ]]; do sleep 1; done
+
+  total_files_before=$(fdfind ".*" tests/util/orig_dir/ | rg -v "/$" | wc -l)
+  storage_triggers_before=$(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l)
+
+  # create several subdirectories to be able to better test mv
+  mkdir -p ${ORIG_DIR}/c_dir/c_dir_sub_1a/c_dir_sub_2a/c_dir_sub_3a
+  echo "1a_2a_3a_c" > ${ORIG_DIR}/c_dir/c_dir_sub_1a/c_dir_sub_2a/c_dir_sub_3a/c.txt
+  mkdir -p ${ORIG_DIR}/c_dir/c_dir_sub_1a/c_dir_sub_2a/c_dir_sub_3b
+  echo "1a_2a_3b_c" > ${ORIG_DIR}/c_dir/c_dir_sub_1a/c_dir_sub_2a/c_dir_sub_3b/c.txt
+  mkdir -p ${ORIG_DIR}/c_dir/c_dir_sub_1a/c_dir_sub_2b/c_dir_sub_3a
+  echo "1a_2b_3a_c" > ${ORIG_DIR}/c_dir/c_dir_sub_1a/c_dir_sub_2b/c_dir_sub_3a/c.txt
+  mkdir -p ${ORIG_DIR}/c_dir/c_dir_sub_1a/c_dir_sub_2b/c_dir_sub_3b
+  echo "1a_2b_3b_c" > ${ORIG_DIR}/c_dir/c_dir_sub_1a/c_dir_sub_2b/c_dir_sub_3b/c.txt
+  mkdir -p ${ORIG_DIR}/c_dir/c_dir_sub_1b/c_dir_sub_2a/c_dir_sub_3a
+  echo "1b_2a_3a_c" > ${ORIG_DIR}/c_dir/c_dir_sub_1b/c_dir_sub_2a/c_dir_sub_3a/c.txt
+  mkdir -p ${ORIG_DIR}/c_dir/c_dir_sub_1b/c_dir_sub_2a/c_dir_sub_3b
+  echo "1b_2a_3b_c" > ${ORIG_DIR}/c_dir/c_dir_sub_1b/c_dir_sub_2a/c_dir_sub_3b/c.txt
+  mkdir -p ${ORIG_DIR}/c_dir/c_dir_sub_1b/c_dir_sub_2b/c_dir_sub_3a
+  echo "1b_2b_3a_c" > ${ORIG_DIR}/c_dir/c_dir_sub_1b/c_dir_sub_2b/c_dir_sub_3a/c.txt
+  mkdir -p ${ORIG_DIR}/c_dir/c_dir_sub_1b/c_dir_sub_2b/c_dir_sub_3b
+  echo "1b_2b_3b_c" > ${ORIG_DIR}/c_dir/c_dir_sub_1b/c_dir_sub_2b/c_dir_sub_3b/c.txt
+
+  trigger_syncthing_rescan 2
+  total_files_after=$(fdfind ".*" tests/util/orig_dir/ | rg -v "/$" | wc -l)
+  while true; do
+    storage_triggers_after=$(rg 'Stored whole file' ${GRIZOL_LOG} | wc -l)
+    diff=$(echo "${total_files_after} - ${total_files_before} - (${storage_triggers_after} - ${storage_triggers_before})" | bc)
+    if [[ diff -eq "0" ]] ; then
+      break
+    fi
+    sleep 1;
+  done
+  run run_diff ${ORIG_DIR} ${STAGING_AREA}
   assert_success
 }
 
-@test "Fuse: mv files sub dir to sub dir" {
+@test "Fuse: mv file: rename in top dir" {
+  mv tests/util/fuse_mountpoint/orig_dir/b{,_moved}.txt
+  expected_ls="tests/util/fuse_mountpoint/orig_dir/b_moved.txt"
+  run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/b*) 
+  assert_success
+
+  have=$(cat tests/util/fuse_mountpoint/orig_dir/b_moved.txt)
+  want="bbbbbbbbbbbbbbbbbbbb"
+  assert_equal ${have} ${want}
+}
+
+@test "Fuse: mv file: rename in sub dir" {
   mv tests/util/fuse_mountpoint/orig_dir/c_dir/c1{,_moved}.txt
   expected_ls="tests/util/fuse_mountpoint/orig_dir/c_dir/c1_moved.txt"
   run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/c_dir/c1*) 
   assert_success
+
+  have=$(cat tests/util/fuse_mountpoint/orig_dir/c_dir/c1_moved.txt)
+  want="c2c2c2c2c2c2c2c2c2c2"
+  assert_equal ${have} ${want}
 }
 
-@test "Fuse: mv files sub dir to top dir" {
+@test "Fuse: mv file: sub dir to top dir" {
   mv tests/util/fuse_mountpoint/orig_dir/c_dir/c2.txt tests/util/fuse_mountpoint/orig_dir/c2.txt
-  expected_ls="c1_moved.txt"
+  expected_ls="c1_moved.txt c_dir_sub_1a c_dir_sub_1b"
   run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/c_dir/ | sort | paste -d ' ' -s) 
   assert_success
-  expected_ls="a_moved.txt b.txt c2.txt c_dir d.txt e.txt f_dir z.txt"
+  expected_ls="a.txt b_moved.txt c2.txt c_dir d.txt e.txt f_dir z.txt"
   run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/ | sort | paste -d ' ' -s) 
   assert_success
+
+  have=$(cat tests/util/fuse_mountpoint/orig_dir/c2.txt)
+  want="c2c2c2c2c2c2c2c2c2c2"
+  assert_equal ${have} ${want}
 }
 
-@test "Fuse: mv files top dir to sub dir" {
+@test "Fuse: mv file: top dir to sub dir" {
   mv tests/util/fuse_mountpoint/orig_dir/c2.txt tests/util/fuse_mountpoint/orig_dir/c_dir/c2.txt
-  expected_ls="c1_moved.txt c2.txt"
+  expected_ls="c1_moved.txt c2.txt c_dir_sub_1a c_dir_sub_1b"
   run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/c_dir/ | sort | paste -d ' ' -s) 
   assert_success
-  expected_ls="a_moved.txt b.txt c_dir d.txt e.txt f_dir z.txt"
+  expected_ls="a.txt b_moved.txt c_dir d.txt e.txt f_dir z.txt"
   run diff <(echo ${expected_ls}) <(ls tests/util/fuse_mountpoint/orig_dir/ | sort | paste -d ' ' -s) 
+  assert_success
+
+  have=$(cat tests/util/fuse_mountpoint/orig_dir/c_dir/c2.txt)
+  want="c2c2c2c2c2c2c2c2c2c2"
+  assert_equal ${have} ${want}
+}
+
+
+@test "Fuse: mv dir: top dir to top dir" {
+  want=$(fdfind ".*" tests/util/fuse_mountpoint/orig_dir/c_dir/ | sd "tests/util/fuse_mountpoint/orig_dir/c_dir/" "" | sort | paste -s -d ' ')
+  run mv tests/util/fuse_mountpoint/orig_dir/{c_dir,c_dir_moved}
+  assert_success
+
+  have=$(fdfind ".*" tests/util/fuse_mountpoint/orig_dir/c_dir_moved/ | sd "tests/util/fuse_mountpoint/orig_dir/c_dir_moved/" "" | sort | paste -s -d ' ')
+  assert_equal "${have}" "${want}"
+
+  want="1a_2b_3a_c"
+  have=$(cat tests/util/fuse_mountpoint/orig_dir/c_dir_moved/c_dir_sub_1a/c_dir_sub_2b/c_dir_sub_3a/c.txt)
+  assert_equal "${have}" "${want}"
+
+  want="1b_2b_3b_c"
+  have=$(cat tests/util/fuse_mountpoint/orig_dir/c_dir_moved/c_dir_sub_1b/c_dir_sub_2b/c_dir_sub_3b/c.txt)
+  assert_equal "${have}" "${want}"
+
+  run mv tests/util/fuse_mountpoint/orig_dir/{c_dir_moved,c_dir}
   assert_success
 }
 
-@test "Fuse: cat files" {
-  run cat tests/util/fuse_mountpoint/orig_dir/c_dir/c2.txt
-  assert_success
+@test "Fuse: mv dir: dir to new folder" {
+  assert_equal "todo" "todo"
 }
+

@@ -1,7 +1,7 @@
 use crate::core::bep_state::BepState;
-use crate::core::{GrizolConfig, GrizolFileInfo, GrizolFolder};
+use crate::core::{GrizolConfig, GrizolFileInfo, GrizolFolder, StorageBackend};
 use crate::storage::StorageManager;
-use crate::syncthing::Folder;
+use crate::syncthing::{Counter, Folder};
 use chrono::prelude::*;
 use chrono_timesource::TimeSource;
 use fuser::{
@@ -12,6 +12,7 @@ use libc::{EFAULT, EFBIG, EIO, EISDIR, ENOENT, ENOSYS};
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::error::Error;
 use std::ffi::OsStr;
 use std::ops::Deref;
 
@@ -63,6 +64,18 @@ struct FsNode {
 struct GrizolFsMem {
     root: RcFsNode,
     nodes: HashMap<u64, WeakFsNode>,
+}
+
+#[derive(Default)]
+struct Collector {
+    vec: Vec<WeakFsNode>,
+}
+
+impl Collector {
+    fn collect(&mut self, node: WeakFsNode) -> Result<(), String> {
+        self.vec.push(node);
+        Ok(())
+    }
 }
 
 impl GrizolFsMem {
@@ -150,7 +163,17 @@ impl GrizolFsMem {
         self.root.clone()
     }
 
-    async fn _folder_from_ino(&self, ino: u64) -> Option<String> {
+    // Traverse the file system from the given node in post order fashion and applies f.
+    // fn traverse_post<T, E>(node: &RcFsNode, f: fn(&RcFsNode) -> Result<T, E>) -> Result<T, E> {
+    fn traverse_post(node: &RcFsNode, mut collector: &mut Collector) -> Result<(), String> {
+        for (_, child) in node.deref().borrow().children.iter() {
+            Self::traverse_post(child, &mut collector)?;
+        }
+
+        collector.collect(Rc::<RefCell<FsNode>>::downgrade(node))
+    }
+
+    fn _folder_from_ino(&self, ino: u64) -> Option<String> {
         let mut folder: Option<String> = None;
 
         let mut traverse_ino = ino;
@@ -185,6 +208,7 @@ pub struct GrizolFS<TS: TimeSource<Utc>> {
     state: Arc<Mutex<BepState<TS>>>,
     config: GrizolConfig,
     // TODO: see if one of the other solutions is better in this case: https://tokio.rs/tokio/topics/bridging
+    // Runtime is used to allow running async functions.
     rt: Runtime,
     last_folders_files: RefCell<Instant>,
     folders: RefCell<Vec<GrizolFolder>>,
@@ -596,8 +620,13 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
         offset: i64,
         size: u32,
     ) -> Result<Vec<u8>, String> {
+        debug!("file to read: {:?}", &file);
+        debug!("file_locations: {:?}", &file.file_locations);
+
         let folder = &file.folder;
         let file_name = &file.file_info.name;
+
+        // TODO: handle the case where in file_locations there is already a Local storage_backend.
         let state = self.state.lock().await;
         if !state
             .is_file_in_read_cache(&self.config.local_device_id, &folder, &file_name)
@@ -620,17 +649,16 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
                         removed_files, e
                     )
                 })?;
-            self.storage_manager
-                .cp_remote_to_read_cache(&folder, &file_name)
-                .await
-                .expect("Failed to copy file");
+            let path_in_cache = self
+                .storage_manager
+                .cp_remote_to_read_cache(&file, &file.file_locations)
+                .await?;
         }
+
         state
             .update_read_cache(&self.config.local_device_id, &folder, &file_name)
             .await;
-        self.storage_manager
-            .read_cached(&folder, &file_name, offset, size)
-            .await
+        self.storage_manager.read_cached(&file, offset, size).await
     }
 
     fn read_mem(
@@ -702,117 +730,225 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
-        let (_folders, files) = self.folders_files();
+        todo!();
+        // let (_folders, files) = self.folders_files();
 
-        if ino < ENTRIES_START {
-            reply.error(EISDIR);
-            return;
-        };
+        // if ino < ENTRIES_START {
+        //     reply.error(EISDIR);
+        //     return;
+        // };
 
-        // TODO: extend to symlinks
-        let g_file = files
-            .iter()
-            .find(|&f| entry_id(f.id) == ino && f.file_info.r#type == 0);
+        // // TODO: extend to symlinks
+        // let g_file = files
+        //     .iter()
+        //     .find(|&f| entry_id(f.id) == ino && f.file_info.r#type == 0);
 
-        let g_file = if let Some(f) = g_file {
-            f
-        } else {
-            // TODO: better error handling, distingush e.g. folders
-            reply.error(EISDIR);
-            return;
-        };
+        // let g_file = if let Some(f) = g_file {
+        //     f
+        // } else {
+        //     // TODO: better error handling, distingush e.g. folders
+        //     reply.error(EISDIR);
+        //     return;
+        // };
 
-        if u64::try_from(g_file.file_info.size).unwrap() > self.config.read_cache_size {
-            reply.error(EFBIG);
-            return;
-        }
+        // if u64::try_from(g_file.file_info.size).unwrap() > self.config.read_cache_size {
+        //     reply.error(EFBIG);
+        //     return;
+        // }
 
-        debug!("file to be read: {:?}", g_file);
+        // debug!("file to be read: {:?}", g_file);
 
-        let (folder, file_name) = (g_file.folder.clone(), g_file.file_info.name.clone());
+        // let (folder, file_name) = (g_file.folder.clone(), g_file.file_info.name.clone());
 
-        let is_dir = false;
-        if is_dir {
-            reply.error(ENOSYS);
-            return;
-        }
+        // let is_dir = false;
+        // if is_dir {
+        //     reply.error(ENOSYS);
+        //     return;
+        // }
 
-        let data = self.rt.block_on(async {
-            let state = self.state.lock().await;
-            if !state
-                .is_file_in_read_cache(&self.config.local_device_id, &folder, &file_name)
-                .await
-            {
-                let removed_files = state
-                    .free_read_cache(
-                        self.config.read_cache_size,
-                        g_file.file_info.size.try_into().unwrap(),
-                    )
-                    .await
-                    .expect("Failed to remove from database");
-                debug!("removed_files: {:?}", removed_files);
-                // TODO: this can fail e.g. if the file is not there anymore
-                self.storage_manager
-                    .free_read_cache(&removed_files)
-                    .await
-                    .expect("Failed to remove files");
-                self.storage_manager
-                    .cp_remote_to_read_cache(&folder, &file_name)
-                    .await
-                    .expect("Failed to copy file");
-            }
-            state
-                .update_read_cache(&self.config.local_device_id, &folder, &file_name)
-                .await;
-            self.storage_manager
-                .read_cached(&folder, &file_name, offset, size)
-                .await
-                .expect("Failed to read data")
-        });
+        // let data = self.rt.block_on(async {
+        //     let state = self.state.lock().await;
+        //     if !state
+        //         .is_file_in_read_cache(&self.config.local_device_id, &folder, &file_name)
+        //         .await
+        //     {
+        //         let removed_files = state
+        //             .free_read_cache(
+        //                 self.config.read_cache_size,
+        //                 g_file.file_info.size.try_into().unwrap(),
+        //             )
+        //             .await
+        //             .expect("Failed to remove from database");
+        //         debug!("removed_files: {:?}", removed_files);
+        //         // TODO: this can fail e.g. if the file is not there anymore
+        //         self.storage_manager
+        //             .free_read_cache(&removed_files)
+        //             .await
+        //             .expect("Failed to remove files");
+        //         self.storage_manager
+        //             .cp_remote_to_read_cache(&folder, &file_name, &g_file.file_locations)
+        //             .await
+        //             .expect("Failed to copy file");
+        //     }
+        //     state
+        //         .update_read_cache(&self.config.local_device_id, &folder, &file_name)
+        //         .await;
+        //     self.storage_manager
+        //         .read_cached(&folder, &file_name, offset, size)
+        //         .await
+        //         .expect("Failed to read data")
+        // });
 
-        reply.data(&data);
-    }
-}
-
-impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
-    fn getattr(&mut self, req: &Request, ino: u64, reply: ReplyAttr) {
-        if self.config.fuse_inmem {
-            self.getattr_mem(req, ino, reply);
-        } else {
-            self.getattr_db(req, ino, reply);
-        }
+        // reply.data(&data);
     }
 
-    fn lookup(
+    fn rename_mem(
         &mut self,
         _req: &Request<'_>,
-        parent_ino: u64,
-        name: &std::ffi::OsStr,
-        reply: fuser::ReplyEntry,
+        orig_parent_dir_ino: u64,
+        orig_name: &OsStr,
+        dest_parent_dir_ino: u64,
+        dest_name: &OsStr,
+        _flags: u32,
+        reply: ReplyEmpty,
     ) {
-        if self.config.fuse_inmem {
-            self.lookup_mem(_req, parent_ino, name, reply)
-        } else {
-            self.lookup_db(_req, parent_ino, name, reply);
+        debug!(
+            "Start moving {} {:?} to {} {:?}",
+            &orig_parent_dir_ino, orig_name, &dest_parent_dir_ino, dest_name
+        );
+
+        // TODO: cannot rename the main folders, fail in that case
+
+        // This is needed to populate the cache
+        // TODO: improve
+        let (_folders, _files) = self.folders_files();
+
+        // FIXME: don't use unwrap
+        let orig_parent_dir = self
+            .fs_mem
+            .borrow()
+            .nodes
+            .get(&orig_parent_dir_ino)
+            .unwrap()
+            .upgrade()
+            .unwrap();
+        let dest_parent_dir = self
+            .fs_mem
+            .borrow()
+            .nodes
+            .get(&dest_parent_dir_ino)
+            .unwrap()
+            .upgrade()
+            .unwrap();
+
+        let (orig_parent_dir_name, orig_name_prefix) = match &orig_parent_dir.borrow().file_type {
+            GrizolFSFileType::File(f) => (
+                f.file_info.name.clone(),
+                format!("{}/{}", f.file_info.name, orig_name.to_str().unwrap()),
+            ),
+            GrizolFSFileType::Folder(f) => {
+                (f.folder.id.clone(), orig_name.to_str().unwrap().to_string())
+            }
+        };
+
+        let binding = orig_parent_dir.borrow();
+        let orig_file = binding
+            .children
+            .iter()
+            .find(|x| match &x.1.deref().borrow().file_type {
+                GrizolFSFileType::File(f) => {
+                    // TODO: Use os stuff
+                    // TODO: test also folder and other edge cases
+                    f.file_info.name == orig_name_prefix
+                }
+                GrizolFSFileType::Folder(f) => todo!(),
+            })
+            .unwrap(); // TODO recover from error
+
+        let mut collector: Collector = Default::default();
+        GrizolFsMem::traverse_post(orig_file.1, &mut collector);
+        let orig_files: Vec<String> = collector
+            .vec
+            .iter()
+            .map(|x| match &x.upgrade().unwrap().borrow().file_type {
+                GrizolFSFileType::File(f) => f.file_info.name.clone(),
+                GrizolFSFileType::Folder(f) => {
+                    error!("this should not happen: {}", f.folder.id);
+                    f.folder.id.clone()
+                }
+            })
+            .collect();
+
+        let (dest_parent_dir_name, dest_name_prefix) = match &dest_parent_dir.borrow().file_type {
+            GrizolFSFileType::File(f) => (
+                f.file_info.name.clone(),
+                format!("{}/{}", f.file_info.name, dest_name.to_str().unwrap()),
+            ),
+            GrizolFSFileType::Folder(f) => {
+                (f.folder.id.clone(), dest_name.to_str().unwrap().to_string())
+            }
+        };
+
+        debug!("dest_name_prefix: {}", &dest_name_prefix);
+
+        for orig_file in collector.vec.iter() {
+            match &orig_file.upgrade().unwrap().deref().borrow().file_type {
+                GrizolFSFileType::File(file) => {
+                    // TODO: path to join
+                    let orig_file_name = format!("{}", file.file_info.name);
+
+                    assert!(
+                        orig_file_name.starts_with(&orig_name_prefix),
+                        "'{}' does not start with '{}'",
+                        &orig_file_name,
+                        &orig_name_prefix
+                    );
+
+                    let dest_file_name =
+                        orig_file_name.replacen(&orig_name_prefix, &dest_name_prefix, 1);
+
+                    debug!("orig_file_name: {}", &orig_file_name);
+                    debug!("dest_file_name: {}", &dest_file_name);
+
+                    self.rt.block_on(async {
+                        // TODO: better handle errors
+                        let file_locations = self
+                            .storage_manager
+                            .cp_remote_to_remote(&file, &dest_file_name)
+                            .await
+                            .unwrap();
+
+                        let mut state = self.state.lock().await;
+                        state
+                            .mv_file_info(
+                                &file.folder,
+                                &self.config.local_device_id,
+                                &file.file_info,
+                                &dest_file_name,
+                                &file_locations,
+                            )
+                            .await;
+
+                        self.storage_manager
+                            .rm_remote(&file.folder, &file.file_info.name)
+                            .await
+                            .unwrap();
+                    });
+                }
+                _ => {
+                    assert!(
+                        false,
+                        "breaking an invariant, the file must be of type file"
+                    );
+                    return;
+                }
+            };
         }
+
+        reply.ok();
     }
 
-    fn readdir(
-        &mut self,
-        req: &Request<'_>,
-        ino: u64,
-        _fh: u64,
-        offset: i64,
-        reply: fuser::ReplyDirectory,
-    ) {
-        if self.config.fuse_inmem {
-            self.readdir_mem(req, ino, _fh, offset, reply)
-        } else {
-            self.readdir_db(req, ino, _fh, offset, reply)
-        }
-    }
-
-    fn rename(
+    fn rename_db(
         &mut self,
         _req: &Request<'_>,
         orig_parent_dir_ino: u64,
@@ -1025,12 +1161,84 @@ impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
                 .await;
 
             self.storage_manager
-                .rm(orig_folder, &orig_file_path)
+                .rm_remote(orig_folder, &orig_file_path)
                 .await
                 .expect("Failed to remove file");
         });
 
         reply.ok();
+    }
+}
+
+impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
+    fn getattr(&mut self, req: &Request, ino: u64, reply: ReplyAttr) {
+        if self.config.fuse_inmem {
+            self.getattr_mem(req, ino, reply);
+        } else {
+            self.getattr_db(req, ino, reply);
+        }
+    }
+
+    fn lookup(
+        &mut self,
+        _req: &Request<'_>,
+        parent_ino: u64,
+        name: &std::ffi::OsStr,
+        reply: fuser::ReplyEntry,
+    ) {
+        if self.config.fuse_inmem {
+            self.lookup_mem(_req, parent_ino, name, reply)
+        } else {
+            self.lookup_db(_req, parent_ino, name, reply);
+        }
+    }
+
+    fn readdir(
+        &mut self,
+        req: &Request<'_>,
+        ino: u64,
+        _fh: u64,
+        offset: i64,
+        reply: fuser::ReplyDirectory,
+    ) {
+        if self.config.fuse_inmem {
+            self.readdir_mem(req, ino, _fh, offset, reply)
+        } else {
+            self.readdir_db(req, ino, _fh, offset, reply)
+        }
+    }
+
+    fn rename(
+        &mut self,
+        _req: &Request<'_>,
+        orig_parent_dir_ino: u64,
+        orig_name: &OsStr,
+        dest_parent_dir_ino: u64,
+        dest_name: &OsStr,
+        _flags: u32,
+        reply: ReplyEmpty,
+    ) {
+        if self.config.fuse_inmem {
+            self.rename_mem(
+                _req,
+                orig_parent_dir_ino,
+                orig_name,
+                dest_parent_dir_ino,
+                dest_name,
+                _flags,
+                reply,
+            )
+        } else {
+            self.rename_db(
+                _req,
+                orig_parent_dir_ino,
+                orig_name,
+                dest_parent_dir_ino,
+                dest_name,
+                _flags,
+                reply,
+            )
+        }
     }
 
     fn read(

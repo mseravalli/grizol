@@ -1,13 +1,14 @@
 use crate::syncthing::Request;
 
+use crate::core::{FileLocation, GrizolFileInfo, StorageBackend};
 use crate::file_writer::FileWriter;
 use crate::GrizolConfig;
 use dashmap::DashMap;
 use futures::future::try_join_all;
 use regex::Regex;
 use std::io;
-use std::path::Path;
-use std::process::ExitStatus;
+use std::path::{Path, PathBuf};
+use std::process::{ExitStatus, Output};
 use tokio::fs::{remove_file, File};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::process::Command;
@@ -101,19 +102,81 @@ impl StorageManager {
         file_writer.consolidate().await
     }
 
-    // TODO: Consider using a struct instread of (String, String)
-    pub async fn cp_remote_to_read_cache(&self, folder: &str, name: &str) -> Result<(), String> {
+    pub async fn cp_remote_to_remote(
+        &self,
+        file: &GrizolFileInfo,
+        dest_file_name: &str,
+    ) -> Result<Vec<FileLocation>, String> {
+        let folder = &file.folder;
+        // TODO: ensure the bucket is the same for multiple storage backends
+        let bucket = self.config.remote_base_dir.clone();
+        let mut new_file_locations: Vec<FileLocation> = Default::default();
+        for file_location in file.file_locations.iter() {
+            match &file_location.storage_backend {
+                StorageBackend::Remote(storage_backend) => {
+                    let dest = format!("{storage_backend}:{bucket}/{folder}/{dest_file_name}");
+                    let rclone_command = &["copyto", &file_location.location, &dest];
+                    self.run_rclone(rclone_command)
+                        .await
+                        .map_err(|e| format!("Failed to run command: {:?}", e))?;
+                    new_file_locations.push(FileLocation {
+                        location: dest,
+                        storage_backend: StorageBackend::Remote(storage_backend.clone()),
+                    });
+                } //
+
+                  // StorageBackend::Local => {}
+
+                  //
+            }
+        }
+
+        Ok(new_file_locations)
+    }
+
+    pub async fn cp_remote_to_read_cache(
+        &self,
+        file: &GrizolFileInfo,
+        file_locations: &[FileLocation],
+    ) -> Result<PathBuf, String> {
+        let folder: &str = &file.folder;
+        let name: &str = &file.file_info.name;
+
         // FIXME: add a way to select preferred backend
-        let storage_backend = "gcs";
+        let preferred_storage_backend = "gcs";
+
+        let preferred_stg_found = file_locations
+            .iter()
+            .find(|x| matches!(&x.storage_backend, StorageBackend::Remote(x) if x == "gcs"));
+
+        let file_location = if let Some(x) = preferred_stg_found {
+            x
+        } else {
+            return Err(format!(
+                "Storage backend {} not found",
+                preferred_storage_backend
+            ));
+        };
 
         let bucket = self.config.remote_base_dir.clone();
-        let orig = format!("{storage_backend}:{bucket}/{folder}/{name}");
+        let orig = &file_location.location;
         let dest = format!("{}/{}/{}", self.config.read_cache_dir, folder, name);
+        let rclone_command = &["ls", orig.as_str()];
+        let output: Output = self
+            .run_rclone(rclone_command)
+            .await
+            .map_err(|e| format!("Failed to run command: {:?}", e))?;
+        if output.stdout.len() == 0 {
+            return Err(format!("No file present at {}", orig));
+        }
+
         let rclone_command = &["copyto", orig.as_str(), dest.as_str()];
         self.run_rclone(rclone_command)
             .await
             .map(|_| ())
-            .map_err(|e| format!("Failed to run command: {:?}", e))
+            .map_err(|e| format!("Failed to run command: {:?}", e))?;
+
+        Ok(Path::new(&dest).to_path_buf())
     }
 
     // TODO: Consider using a struct instread of (String, String)
@@ -182,7 +245,11 @@ impl StorageManager {
         Ok(res)
     }
 
-    pub async fn rm(&self, folder: &str, file_name: &str) -> Result<Vec<(String, String)>, String> {
+    pub async fn rm_remote(
+        &self,
+        folder: &str,
+        file_name: &str,
+    ) -> Result<Vec<(String, String)>, String> {
         let bucket = self.config.remote_base_dir.clone();
 
         let mut res = vec![];
@@ -240,12 +307,16 @@ impl StorageManager {
 
     pub async fn read_cached(
         &self,
-        folder: &str,
-        name: &str,
+        file: &GrizolFileInfo,
         base_offset: i64,
         size: u32,
     ) -> Result<Vec<u8>, String> {
-        let file_path = format!("{}/{}/{}", self.config.read_cache_dir, folder, name);
+        // TODO: see if we can do this in a different way
+        let file_path = format!(
+            "{}/{}/{}",
+            self.config.read_cache_dir, file.folder, file.file_info.name
+        );
+        debug!("file_path {}", &file_path);
         // TODO: better handle this failure
         let mut f = File::open(file_path).await.map_err(|e| e.to_string())?;
         let mut buffer = vec![0; size.try_into().unwrap()];
@@ -273,7 +344,7 @@ impl StorageManager {
         Ok(buffer)
     }
 
-    async fn run_rclone(&self, rclone_command: &[&str]) -> Result<ExitStatus, io::Error> {
+    async fn run_rclone(&self, rclone_command: &[&str]) -> Result<Output, io::Error> {
         let config_location = self
             .config
             .rclone_config
@@ -282,12 +353,7 @@ impl StorageManager {
             .unwrap_or("".to_string());
         let cmd = &[&["rclone", config_location.as_str()], rclone_command].concat();
         info!("Running: `{}`", cmd.join(" "));
-        Command::new(cmd[0])
-            .args(&cmd[1..])
-            .spawn()
-            .expect("command failed to start")
-            .wait()
-            .await
+        Command::new(cmd[0]).args(&cmd[1..]).output().await
     }
 }
 // pub fn data_from_file_block(
