@@ -1,21 +1,16 @@
 use crate::syncthing::Request;
 
-use crate::file_writer::{self, FileWriter};
+use crate::file_writer::FileWriter;
 use crate::GrizolConfig;
 use dashmap::DashMap;
 use futures::future::try_join_all;
 use regex::Regex;
-use sha2::{Digest, Sha256};
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 use std::process::ExitStatus;
-use std::rc::Rc;
-use tokio::fs::{remove_file, File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
+use tokio::fs::{remove_file, File};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::process::Command;
-use tokio::sync::Mutex;
 
 // This should *not* be async, we want to wait for this to finish and then process the result.
 fn storage_backends_from_conf(rclone_config: &Option<String>) -> Vec<String> {
@@ -105,70 +100,6 @@ impl StorageManager {
                     chunk_size as usize,
                 ));
         file_writer.consolidate().await
-    }
-
-    pub async fn store_block(
-        &self,
-        data: Vec<u8>,
-        request: &Request,
-        file_size: u64,
-    ) -> io::Result<()> {
-        debug!("Start storing block");
-        // TODO: the file should already be there
-        let file_rel_path = format!("{}/{}", &request.folder, &request.name);
-        let mut file = self.create_empty_file(&file_rel_path, file_size).await?;
-
-        let offset = request.offset.try_into().unwrap();
-
-        file.seek(SeekFrom::Start(offset)).await?;
-
-        file.write_all(&data).await?;
-        let res = file.flush().await;
-
-        // Compute hash of the written block to double check correctness.
-        file.seek(SeekFrom::Start(offset)).await?;
-        let mut buf: Vec<u8> = vec![0; data.len()];
-        buf.resize(data.len(), 0);
-        file.read_exact(&mut buf).await?;
-        let hasher_sha256 = Sha256::new_with_prefix(&buf);
-        let hash = hasher_sha256.finalize().to_vec();
-        if hash != request.hash {
-            error!(
-                "Hash of written data is different from the one requested in request '{}'.",
-                request.id
-            );
-            debug!("Data received: {:?}", &data);
-            debug!("Data written:  {:?}", &buf);
-            debug!("Request hash: {:?}", &request.hash);
-            debug!("Data hash:    {:?}", &hash);
-        }
-
-        debug!("Finished storing block");
-        res
-    }
-
-    // Always creates a new file if it does not exist
-    async fn create_empty_file(&self, rel_path: &str, file_size: u64) -> io::Result<File> {
-        let abs_path = format!("{}/{}", self.config.local_base_dir, rel_path);
-        let parent = Path::new(&abs_path).parent().unwrap();
-        debug!("parent: {:?}", parent);
-        tokio::fs::create_dir_all(parent).await?;
-        debug!(
-            "Creating new file of size {} under {}",
-            &file_size, rel_path
-        );
-        // TODO: create the folder first if that does not exist
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(abs_path)
-            .await?;
-
-        file.set_len(file_size).await?;
-
-        Ok(file)
     }
 
     // TODO: Consider using a struct instread of (String, String)
@@ -603,39 +534,39 @@ mod test {
     use crate::syncthing::Request;
     use crate::GrizolConfig;
 
-    #[tokio::test]
-    async fn store_block_new_file_succeeds() {
-        let config = grizol::Config {
-            cert: "tests/util/config/cert-test.pem.key".to_string(),
-            key: "tests/util/config/key-test.pem.key".to_string(),
-            ..Default::default()
-        };
-        let bep_config = GrizolConfig::from(config);
-        let storage_manager = StorageManager::new(bep_config);
+    // #[tokio::test]
+    // async fn store_block_new_file_succeeds() {
+    //     let config = grizol::Config {
+    //         cert: "tests/util/config/cert-test.pem.key".to_string(),
+    //         key: "tests/util/config/key-test.pem.key".to_string(),
+    //         ..Default::default()
+    //     };
+    //     let bep_config = GrizolConfig::from(config);
+    //     let storage_manager = StorageManager::new(bep_config);
 
-        let data = vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
-        let request = Request {
-            id: 0,
-            folder: "test_dir".to_string(),
-            name: "a_file".to_string(),
-            offset: 0,
-            size: data.len().try_into().unwrap(),
-            hash: vec![],
-            from_temporary: false,
-        };
+    //     let data = vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+    //     let request = Request {
+    //         id: 0,
+    //         folder: "test_dir".to_string(),
+    //         name: "a_file".to_string(),
+    //         offset: 0,
+    //         size: data.len().try_into().unwrap(),
+    //         hash: vec![],
+    //         from_temporary: false,
+    //     };
 
-        let block_size: u64 = data.len().try_into().unwrap();
-        let result = storage_manager
-            .store_block(data, &request, block_size)
-            .await;
+    //     let block_size: u64 = data.len().try_into().unwrap();
+    //     let result = storage_manager
+    //         .store_block(data, &request, block_size)
+    //         .await;
 
-        match result {
-            Ok(_x) => assert_eq!(0, 0),
-            Err(e) => {
-                assert_eq!("No error expected", format!("{}", e))
-            }
-        }
-    }
+    //     match result {
+    //         Ok(_x) => assert_eq!(0, 0),
+    //         Err(e) => {
+    //             assert_eq!("No error expected", format!("{}", e))
+    //         }
+    //     }
+    // }
 
     // #[tokio::test]
     // async fn create_emtpy_file__new_location__succeeds() {

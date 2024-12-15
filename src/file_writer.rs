@@ -1,17 +1,7 @@
-use futures::io::Flush;
-use rand::distributions::{Alphanumeric, DistString};
-use rand::{thread_rng, Rng};
-use std::borrow::BorrowMut;
-
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::ops::DerefMut;
+use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::{
-    io,
-    io::{Read, Write},
-    os::unix::fs::FileExt,
-};
-use tokio::fs::{remove_file, File, OpenOptions};
+use tokio::fs::{remove_file, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::Mutex;
 
@@ -49,7 +39,7 @@ impl FileWriter {
         let suffix = hasher.finish().to_string();
 
         let mut writing_chunk: Vec<AtomicBool> = Default::default();
-        for i in (0..n_of_chunks) {
+        for _ in 0..n_of_chunks {
             writing_chunk.push(AtomicBool::new(false))
         }
 
@@ -75,7 +65,7 @@ impl FileWriter {
         );
 
         // In case the file has zero size we just create it and we rely on the OS for syncing.
-        if (offset == 0 && self.file_size == 0) {
+        if offset == 0 && self.file_size == 0 {
             OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -131,7 +121,7 @@ impl FileWriter {
 
         let chunk_pos = offset / self.chunk_size;
         // TODO: improve error handling
-        if let (Ok(true)) = self.writing_chunk[chunk_pos].compare_exchange(
+        if let Ok(true) = self.writing_chunk[chunk_pos].compare_exchange(
             false,
             true,
             Ordering::Acquire,
@@ -160,7 +150,7 @@ impl FileWriter {
             }
         };
 
-        chunk.set_len(data.len() as u64);
+        chunk.set_len(data.len() as u64).await?;
         chunk.write_all(data).await?;
         chunk.sync_all().await?;
 
@@ -222,7 +212,7 @@ impl FileWriter {
                 .truncate(true)
                 .open(&self.file_path)
                 .await?;
-            for i in (0..self.writing_chunk.len()) {
+            for i in 0..self.writing_chunk.len() {
                 {
                     let mut chunk = OpenOptions::new()
                         .read(true)
