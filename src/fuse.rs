@@ -8,8 +8,7 @@ use fuser::{
     FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyEmpty, Request,
     FUSE_ROOT_ID,
 };
-use libc::{EFAULT, EFBIG, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR};
-use std::borrow::Borrow;
+use libc::{EFAULT, EFBIG, EIO, EISDIR, ENOENT, ENOSYS};
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -57,7 +56,7 @@ type RcFsNode = Rc<RefCell<FsNode>>;
 struct FsNode {
     id: u64,
     file_type: GrizolFSFileType,
-    parent: Option<WeakFsNode>,
+    _parent: Option<WeakFsNode>,
     children: HashMap<String, RcFsNode>,
 }
 
@@ -74,7 +73,7 @@ impl GrizolFsMem {
         let root_node = FsNode {
             id: 1,
             file_type: GrizolFSFileType::Folder(g_folder),
-            parent: None,
+            _parent: None,
             children: Default::default(),
         };
 
@@ -93,7 +92,7 @@ impl GrizolFsMem {
         let node = FsNode {
             id: folder_id,
             file_type: GrizolFSFileType::Folder(folder.clone()),
-            parent: Some(Rc::downgrade(&root)),
+            _parent: Some(Rc::downgrade(&root)),
             children: Default::default(),
         };
 
@@ -127,7 +126,7 @@ impl GrizolFsMem {
         let node = FsNode {
             id: node_id,
             file_type: GrizolFSFileType::File(file),
-            parent: Some(Rc::downgrade(&parent_node)),
+            _parent: Some(Rc::downgrade(&parent_node)),
             children: Default::default(),
         };
 
@@ -149,6 +148,36 @@ impl GrizolFsMem {
 
     fn root(&self) -> RcFsNode {
         self.root.clone()
+    }
+
+    async fn _folder_from_ino(&self, ino: u64) -> Option<String> {
+        let mut folder: Option<String> = None;
+
+        let mut traverse_ino = ino;
+
+        // Traverse the tree from the current file upwards until we find a folder.
+        // We track the ino to not to have to deal with the references.
+        while folder.is_none() {
+            let parent = self
+                .nodes
+                .get(&traverse_ino)
+                .unwrap()
+                .upgrade()
+                .unwrap()
+                .deref()
+                .borrow()
+                ._parent
+                .as_ref()
+                .unwrap()
+                .upgrade()
+                .unwrap();
+            traverse_ino = parent.deref().borrow().id;
+            folder = match &parent.deref().borrow().file_type {
+                GrizolFSFileType::Folder(f) => Some(f.folder.id.clone()),
+                _ => None,
+            };
+        }
+        folder
     }
 }
 
@@ -561,6 +590,49 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
         }
     }
 
+    async fn read_from_local_cache(
+        &self,
+        file: &GrizolFileInfo,
+        offset: i64,
+        size: u32,
+    ) -> Result<Vec<u8>, String> {
+        let folder = &file.folder;
+        let file_name = &file.file_info.name;
+        let state = self.state.lock().await;
+        if !state
+            .is_file_in_read_cache(&self.config.local_device_id, &folder, &file_name)
+            .await
+        {
+            let removed_files = state
+                .free_read_cache(
+                    self.config.read_cache_size,
+                    file.file_info.size.try_into().unwrap(),
+                )
+                .await
+                .expect("Failed to remove from database");
+            debug!("removed_files: {:?}", removed_files);
+            self.storage_manager
+                .free_read_cache(&removed_files)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Could not remove '{:?}' from the temporary storage due to: {}",
+                        removed_files, e
+                    )
+                })?;
+            self.storage_manager
+                .cp_remote_to_read_cache(&folder, &file_name)
+                .await
+                .expect("Failed to copy file");
+        }
+        state
+            .update_read_cache(&self.config.local_device_id, &folder, &file_name)
+            .await;
+        self.storage_manager
+            .read_cached(&folder, &file_name, offset, size)
+            .await
+    }
+
     fn read_mem(
         &mut self,
         _req: &Request<'_>,
@@ -597,35 +669,6 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
             GrizolFSFileType::File(f) => f,
         };
 
-        let mut folder: Option<String> = None;
-
-        let mut traverse_ino = ino;
-
-        // Traverse the tree from the current file upwards until we find a folder.
-        // We track the ino to not to have to deal with the references.
-        while folder.is_none() {
-            let parent = self
-                .fs_mem
-                .borrow()
-                .nodes
-                .get(&traverse_ino)
-                .unwrap()
-                .upgrade()
-                .unwrap()
-                .deref()
-                .borrow()
-                .parent
-                .as_ref()
-                .unwrap()
-                .upgrade()
-                .unwrap();
-            traverse_ino = parent.deref().borrow().id;
-            folder = match &parent.deref().borrow().file_type {
-                GrizolFSFileType::Folder(f) => Some(f.folder.id.clone()),
-                _ => None,
-            };
-        }
-
         if u64::try_from(file.file_info.size).unwrap() > self.config.read_cache_size {
             reply.error(EFBIG);
             return;
@@ -634,44 +677,10 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
         trace!("file to be read: {:?}", file);
 
         let file_name = &file.file_info.name;
-        let folder = folder.unwrap();
 
-        let data = self.rt.block_on(async {
-            let state = self.state.lock().await;
-            if !state
-                .is_file_in_read_cache(&self.config.local_device_id, &folder, &file_name)
-                .await
-            {
-                let removed_files = state
-                    .free_read_cache(
-                        self.config.read_cache_size,
-                        file.file_info.size.try_into().unwrap(),
-                    )
-                    .await
-                    .expect("Failed to remove from database");
-                debug!("removed_files: {:?}", removed_files);
-                // TODO: this can fail e.g. if the file is not there anymore
-                self.storage_manager
-                    .free_read_cache(&removed_files)
-                    .await
-                    .map_err(|e| {
-                        error!(
-                            "Could not remove '{:?}' from the temporary storage due to: {}",
-                            removed_files, e
-                        )
-                    });
-                self.storage_manager
-                    .cp_remote_to_read_cache(&folder, &file_name)
-                    .await
-                    .expect("Failed to copy file");
-            }
-            state
-                .update_read_cache(&self.config.local_device_id, &folder, &file_name)
-                .await;
-            self.storage_manager
-                .read_cached(&folder, &file_name, offset, size)
-                .await
-        });
+        let data = self
+            .rt
+            .block_on(async { self.read_from_local_cache(file, offset, size).await });
 
         match data {
             Ok(d) => reply.data(&d),

@@ -31,7 +31,7 @@ setup_file() {
   export GRIZOL_PID=$!
   echo "Started grizol with pid ${GRIZOL_PID}"
 
-  tests/util/syncthing --home tests/util/syncthing_home > ${SYNCTHING_LOG} 2>&1 &
+  tests/util/syncthing --no-upgrade --home tests/util/syncthing_home > ${SYNCTHING_LOG} 2>&1 &
   export SYNCTHING_PID=$!
   echo "Started syncthing with pid ${SYNCTHING_PID}" 
 }
