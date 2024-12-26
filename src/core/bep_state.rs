@@ -675,37 +675,6 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             }
         };
 
-        // FIXME: this should be removed or at least changed to staging_area
-        let storage_backend = "local".to_string();
-        if let Ok(UploadStatus::AllBlocks) = file_state {
-            let _insert_res = sqlx::query!(
-                "
-                INSERT INTO bep_file_location (
-                    loc_device,
-                    loc_folder,
-                    loc_name,
-                    storage_backend,
-                    location
-                )
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(loc_folder, loc_device, loc_name, storage_backend, location) DO UPDATE SET
-                    loc_device       = excluded.loc_device,
-                    loc_folder       = excluded.loc_folder,
-                    loc_name         = excluded.loc_name,
-                    storage_backend  = excluded.storage_backend,
-                    location         = excluded.location
-                ",
-                device_id,
-                request.folder,
-                request.name,
-                storage_backend,
-                request.name,
-            )
-            .execute(&mut *transaction)
-            .await
-            .expect("Failed to execute query");
-        }
-
         transaction.commit().await.unwrap();
 
         file_state
@@ -863,6 +832,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 .or_insert(g_fin);
 
             if let Some("local") = file.storage_backend.as_ref().map(|x| x.as_str()) {
+                warn!("Found local state for {}", file.name);
                 continue;
             }
 
@@ -883,7 +853,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                     files_fuse
                         .get_mut(&(file.folder, file.device, file.name))
                         .as_mut()
-                        .map(|mut x| x.file_locations.push(file_location));
+                        .map(|x| x.file_locations.push(file_location));
                 });
         }
 
@@ -1240,9 +1210,6 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
     ) {
         let device_id_str = device_id.to_string();
 
-        debug!("file to move {:?}", &orig_file_info);
-        debug!("dest to move to {:?}", &dest_file_name);
-
         let next_sequence_id = self.next_sequence_id().await;
 
         let mut transaction = self.db_pool_write.begin().await.unwrap();
@@ -1265,7 +1232,8 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         .await
         .expect("Failed to execute query");
 
-        // TODO: decide the best stategy for updating the location
+        // TODO: decide the best stategy for updating the location, at the moment we remove and
+        // then we re-insert, we could also rename?
         let _delete_res = sqlx::query!(
             "
             PRAGMA foreign_keys = ON;
@@ -1280,7 +1248,6 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         .await
         .expect("Failed to execute query");
 
-        // TODO: decide the best stategy for updating the location
         let _delete_res = sqlx::query!(
             "
             PRAGMA foreign_keys = ON;
@@ -1296,12 +1263,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         .expect("Failed to execute query");
 
         for file_location in dest_file_locations.iter() {
-            let storage_backend = if let StorageBackend::Remote(x) = &file_location.storage_backend
-            {
-                x
-            } else {
-                continue;
-            };
+            let StorageBackend::Remote(storage_backend) = &file_location.storage_backend;
 
             let _insert_res = sqlx::query!(
                 "
@@ -1331,36 +1293,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             .expect("Failed to execute query");
         }
 
-        // let device_id: u64 = device_id.into();
-        // let short_id: Vec<u8> = device_id.to_be_bytes().into();
-        // let version_value: i64 = 0;
-
-        // // TODO: ensure there is only this version for the new file
-        // let _insert_res = sqlx::query!(
-        //     r#"
-        //     INSERT INTO bep_file_version (
-        //         file_folder ,
-        //         file_device ,
-        //         file_name   ,
-        //         id          ,
-        //         value
-        //     )
-        //     VALUES (?, ?, ?, ?, ?)
-        //     ON CONFLICT(file_folder, file_device, file_name, id, value) DO NOTHING
-        //     "#,
-        //     folder,
-        //     device_id_str,
-        //     dest_file_name,
-        //     short_id,
-        //     version_value,
-        // )
-        // .execute(&mut *transaction)
-        // .await
-        // .expect("Failed to execute query");
-
-        // TODO: update the remote location
-
-        // TODO: re-insert the modified file with "deleted=true" ?
+        // TODO: re-insert the modified file with "deleted=true"
 
         transaction.commit().await.unwrap();
     }

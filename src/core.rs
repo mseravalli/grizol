@@ -34,7 +34,7 @@ pub struct GrizolFolder {
 
 #[derive(Clone, Debug)]
 pub enum StorageBackend {
-    // FIXME: ensure that we don't ever use Local for now
+    // TODO: include local
     // Local means that the file is stored on the local device.
     // Local,
     Remote(String),

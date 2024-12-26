@@ -8,7 +8,7 @@ use futures::future::try_join_all;
 use regex::Regex;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Output};
+use std::process::Output;
 use tokio::fs::{remove_file, File};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::process::Command;
@@ -123,11 +123,7 @@ impl StorageManager {
                         location: dest,
                         storage_backend: StorageBackend::Remote(storage_backend.clone()),
                     });
-                } //
-
-                  // StorageBackend::Local => {}
-
-                  //
+                }
             }
         }
 
@@ -158,9 +154,7 @@ impl StorageManager {
             ));
         };
 
-        let bucket = self.config.remote_base_dir.clone();
         let orig = &file_location.location;
-        let dest = format!("{}/{}/{}", self.config.read_cache_dir, folder, name);
         let rclone_command = &["ls", orig.as_str()];
         let output: Output = self
             .run_rclone(rclone_command)
@@ -170,6 +164,7 @@ impl StorageManager {
             return Err(format!("No file present at {}", orig));
         }
 
+        let dest = format!("{}/{}/{}", self.config.read_cache_dir, folder, name);
         let rclone_command = &["copyto", orig.as_str(), dest.as_str()];
         self.run_rclone(rclone_command)
             .await
