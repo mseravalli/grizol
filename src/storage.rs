@@ -306,12 +306,11 @@ impl StorageManager {
         base_offset: i64,
         size: u32,
     ) -> Result<Vec<u8>, String> {
-        // TODO: see if we can do this in a different way
+        // TODO: see if we can do this in a different way e.g. with path
         let file_path = format!(
             "{}/{}/{}",
             self.config.read_cache_dir, file.folder, file.file_info.name
         );
-        debug!("file_path {}", &file_path);
         // TODO: better handle this failure
         let mut f = File::open(file_path).await.map_err(|e| e.to_string())?;
         let mut buffer = vec![0; size.try_into().unwrap()];

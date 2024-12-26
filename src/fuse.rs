@@ -8,7 +8,7 @@ use fuser::{
     FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyEmpty, Request,
     FUSE_ROOT_ID,
 };
-use libc::{EFAULT, EFBIG, EIO, EISDIR, ENOENT, ENOSYS};
+use libc::{EFAULT, EFBIG, EIO, EISDIR, ENOENT, EPERM};
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -722,34 +722,47 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
         _flags: u32,
         reply: ReplyEmpty,
     ) {
-        debug!(
+        warn!(
             "Start moving {} {:?} to {} {:?}",
             &orig_parent_dir_ino, orig_name, &dest_parent_dir_ino, dest_name
         );
 
-        // TODO: cannot rename the main folders, fail in that case
+        if orig_parent_dir_ino == 1 {
+            reply.error(EPERM);
+            return;
+        }
 
         // This is needed to populate the cache
         // TODO: improve
         let (_folders, _files) = self.folders_files();
 
-        // FIXME: don't use unwrap
-        let orig_parent_dir = self
+        let orig_parent_dir = if let Some(x) = self
             .fs_mem
             .borrow()
             .nodes
             .get(&orig_parent_dir_ino)
             .unwrap()
             .upgrade()
-            .unwrap();
-        let dest_parent_dir = self
+        {
+            x
+        } else {
+            reply.error(EIO);
+            return;
+        };
+
+        let dest_parent_dir = if let Some(x) = self
             .fs_mem
             .borrow()
             .nodes
             .get(&dest_parent_dir_ino)
             .unwrap()
             .upgrade()
-            .unwrap();
+        {
+            x
+        } else {
+            reply.error(EIO);
+            return;
+        };
 
         let (_orig_parent_dir_name, orig_name_prefix) = match &orig_parent_dir.borrow().file_type {
             GrizolFSFileType::File(f) => (
@@ -762,39 +775,32 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
         };
 
         let binding = orig_parent_dir.borrow();
-        let orig_file = binding
-            .children
-            .iter()
-            .find(|x| match &x.1.deref().borrow().file_type {
-                GrizolFSFileType::File(f) => {
-                    // TODO: Use os stuff
-                    // TODO: test also folder and other edge cases
-                    f.file_info.name == orig_name_prefix
-                }
-                GrizolFSFileType::Folder(_f) => todo!(),
-            })
-            .unwrap(); // TODO recover from error
+        let orig_file = if let Some(x) =
+            binding
+                .children
+                .iter()
+                .find(|x| match &x.1.deref().borrow().file_type {
+                    GrizolFSFileType::File(f) => {
+                        // TODO: Use os stuff
+                        // TODO: test also folder and other edge cases
+                        f.file_info.name == orig_name_prefix
+                    }
+                    GrizolFSFileType::Folder(_f) => todo!(),
+                }) {
+            x
+        } else {
+            reply.error(ENOENT);
+            return;
+        };
 
         let mut collector: Collector = Default::default();
         let traverse_res = GrizolFsMem::traverse_post(orig_file.1, &mut collector);
 
         if let Err(e) = traverse_res {
             error!("Error occurred while traversing the dir tree: {}", e);
-            reply.error(ENOSYS);
+            reply.error(EIO);
             return;
         }
-
-        let _orig_files: Vec<String> = collector
-            .vec
-            .iter()
-            .map(|x| match &x.upgrade().unwrap().borrow().file_type {
-                GrizolFSFileType::File(f) => f.file_info.name.clone(),
-                GrizolFSFileType::Folder(f) => {
-                    error!("this should not happen: {}", f.folder.id);
-                    f.folder.id.clone()
-                }
-            })
-            .collect();
 
         let (_dest_parent_dir_name, dest_name_prefix) = match &dest_parent_dir.borrow().file_type {
             GrizolFSFileType::File(f) => (
@@ -811,7 +817,7 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
         for orig_file in collector.vec.iter() {
             match &orig_file.upgrade().unwrap().deref().borrow().file_type {
                 GrizolFSFileType::File(file) => {
-                    // TODO: path to join
+                    // TODO: deal with paths not with strings
                     let orig_file_name = format!("{}", file.file_info.name);
 
                     assert!(
@@ -829,11 +835,17 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
 
                     self.rt.block_on(async {
                         // TODO: better handle errors
-                        let file_locations = self
+                        let file_locations = match self
                             .storage_manager
                             .cp_remote_to_remote(&file, &dest_file_name)
                             .await
-                            .unwrap();
+                        {
+                            Ok(x) => x,
+                            Err(e) => {
+                                error!("Occurred error when copying to remote: {}", &e);
+                                return;
+                            }
+                        };
 
                         let mut state = self.state.lock().await;
                         state
@@ -846,10 +858,17 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
                             )
                             .await;
 
-                        self.storage_manager
+                        match self
+                            .storage_manager
                             .rm_remote(&file.folder, &file.file_info.name)
                             .await
-                            .unwrap();
+                        {
+                            Err(e) => {
+                                error!("Occurred error when removing from remote: {}", &e);
+                                return;
+                            }
+                            _ => {}
+                        };
                     });
                 }
                 _ => {
