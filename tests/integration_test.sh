@@ -239,7 +239,6 @@ run_diff() {
   assert_equal ${have} ${want}
 }
 
-
 @test "Fuse: mv dir: top dir to top dir" {
   want=$(fdfind ".*" tests/util/fuse_mountpoint/orig_dir/c_dir/ | sd "tests/util/fuse_mountpoint/orig_dir/c_dir/" "" | sort | paste -s -d ' ')
   run mv tests/util/fuse_mountpoint/orig_dir/{c_dir,c_dir_moved}
@@ -257,6 +256,46 @@ run_diff() {
   assert_equal "${have}" "${want}"
 
   run mv tests/util/fuse_mountpoint/orig_dir/{c_dir_moved,c_dir}
+  assert_success
+}
+
+@test "Fuse: mv dir: sub dir to top dir and back" {
+  want=$(fdfind ".*" tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1b/ | sd "tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1b/" "" | sort | paste -s -d ' ')
+  run mv tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1b tests/util/fuse_mountpoint/orig_dir/c_dir_sub_1b
+  assert_success
+
+  have=$(fdfind ".*" tests/util/fuse_mountpoint/orig_dir/c_dir_sub_1b/ | sd "tests/util/fuse_mountpoint/orig_dir/c_dir_sub_1b/" "" | sort | paste -s -d ' ')
+  assert_equal "${have}" "${want}"
+
+  want="1b_2b_3b_c"
+  have=$(cat tests/util/fuse_mountpoint/orig_dir/c_dir_sub_1b/c_dir_sub_2b/c_dir_sub_3b/c.txt)
+  assert_equal "${have}" "${want}"
+
+  want=$(fdfind ".*" tests/util/fuse_mountpoint/orig_dir/c_dir_sub_1b/ | sd "tests/util/fuse_mountpoint/orig_dir/c_dir_sub_1b/" "" | sort | paste -s -d ' ')
+  run mv tests/util/fuse_mountpoint/orig_dir/c_dir_sub_1b tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1b 
+  assert_success
+
+  have=$(fdfind ".*" tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1b/ | sd "tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1b/" "" | sort | paste -s -d ' ')
+  assert_equal "${have}" "${want}"
+
+  want="1b_2b_3b_c"
+  have=$(cat tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1b/c_dir_sub_2b/c_dir_sub_3b/c.txt)
+  assert_equal "${have}" "${want}"
+}
+
+@test "Fuse: mv dir: sub dir to sub dir" {
+  want=$(fdfind ".*" tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1b/ | sd "tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1b/" "" | sort | paste -s -d ' ')
+  run mv tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1b tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1c
+  assert_success
+
+  have=$(fdfind ".*" tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1c/ | sd "tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1c/" "" | sort | paste -s -d ' ')
+  assert_equal "${have}" "${want}"
+
+  want="1b_2b_3b_c"
+  have=$(cat tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1c/c_dir_sub_2b/c_dir_sub_3b/c.txt)
+  assert_equal "${have}" "${want}"
+
+  run mv tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1c tests/util/fuse_mountpoint/orig_dir/c_dir/c_dir_sub_1b
   assert_success
 }
 
