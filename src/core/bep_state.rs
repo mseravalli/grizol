@@ -1,6 +1,7 @@
 use crate::core::indices::FolderDevice;
 use crate::core::{
-    outgoing_requests::OutgoingRequests, GrizolFileInfo, GrizolFolder, UploadStatus,
+    outgoing_requests::OutgoingRequests, FileLocation, GrizolFileInfo, GrizolFolder,
+    StorageBackend, UploadStatus,
 };
 use crate::device_id::DeviceId;
 use crate::syncthing::{self, Folder};
@@ -674,36 +675,6 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
             }
         };
 
-        let storage_backend = "local".to_string();
-        if let Ok(UploadStatus::AllBlocks) = file_state {
-            let _insert_res = sqlx::query!(
-                "
-                INSERT INTO bep_file_location (
-                    loc_device,
-                    loc_folder,
-                    loc_name,
-                    storage_backend,
-                    location
-                )
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(loc_folder, loc_device, loc_name, storage_backend, location) DO UPDATE SET
-                    loc_device       = excluded.loc_device,
-                    loc_folder       = excluded.loc_folder,
-                    loc_name         = excluded.loc_name,
-                    storage_backend  = excluded.storage_backend,
-                    location         = excluded.location
-                ",
-                device_id,
-                request.folder,
-                request.name,
-                storage_backend,
-                request.name,
-            )
-            .execute(&mut *transaction)
-            .await
-            .expect("Failed to execute query");
-        }
-
         transaction.commit().await.unwrap();
 
         file_state
@@ -822,6 +793,7 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         transaction.commit().await.unwrap();
 
         // This type is used only within this method
+        // (folder, device, file_name) -> GrizolFileInfo
         let mut files_fuse: HashMap<(String, String, String), GrizolFileInfo> = Default::default();
 
         for file in files.unwrap().into_iter() {
@@ -851,14 +823,38 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
                 file_info: fin,
                 id: file.r_id,
                 folder: file.folder.clone(),
-                // TODO: add file locations
+                // Due to the join, file locations will be added later
                 file_locations: vec![],
             };
 
-            // TODO: add file locations
             files_fuse
-                .entry((file.folder, file.device, file.name))
+                .entry((file.folder.clone(), file.device.clone(), file.name.clone()))
                 .or_insert(g_fin);
+
+            if let Some("local") = file.storage_backend.as_ref().map(|x| x.as_str()) {
+                warn!("Found local state for {}", file.name);
+                continue;
+            }
+
+            file.location
+                .and_then(|loc| file.storage_backend.map(|stg_be| (loc, stg_be)))
+                .map(|(loc, stg_be)| {
+                    let storage_backend = if stg_be == "local" {
+                        todo!("this should not be the case")
+                    } else {
+                        StorageBackend::Remote(stg_be)
+                    };
+
+                    let file_location = FileLocation {
+                        location: loc,
+                        storage_backend,
+                    };
+
+                    files_fuse
+                        .get_mut(&(file.folder, file.device, file.name))
+                        .as_mut()
+                        .map(|x| x.file_locations.push(file_location));
+                });
         }
 
         files_fuse.into_values().collect()
@@ -1201,6 +1197,105 @@ impl<TS: TimeSource<Utc>> BepState<TS> {
         transaction.commit().await.unwrap();
 
         self.indices.insert_file_info(folder, device_id, file_info);
+    }
+
+    // Changes the name of a file info and updates the storage references.
+    pub async fn mv_file_info(
+        &mut self,
+        folder: &str,
+        device_id: &DeviceId,
+        orig_file_info: &FileInfo,
+        dest_file_name: &str,
+        dest_file_locations: &[FileLocation],
+    ) {
+        let device_id_str = device_id.to_string();
+
+        let next_sequence_id = self.next_sequence_id().await;
+
+        let mut transaction = self.db_pool_write.begin().await.unwrap();
+
+        // We have a cascading updates.
+        let _update_res = sqlx::query!(
+            "
+            PRAGMA foreign_keys = ON;
+            UPDATE OR ROLLBACK bep_file_info
+            SET name = ?, sequence = ?
+            WHERE folder = ? AND device = ? AND name = ?;
+            ",
+            dest_file_name,
+            next_sequence_id,
+            folder,
+            device_id_str,
+            orig_file_info.name,
+        )
+        .execute(&mut *transaction)
+        .await
+        .expect("Failed to execute query");
+
+        // TODO: decide the best stategy for updating the location, at the moment we remove and
+        // then we re-insert, we could also rename?
+        let _delete_res = sqlx::query!(
+            "
+            PRAGMA foreign_keys = ON;
+            DELETE FROM bep_file_location
+            WHERE loc_folder = ? AND loc_device = ? AND loc_name = ?; 
+            ",
+            folder,
+            device_id_str,
+            dest_file_name,
+        )
+        .execute(&mut *transaction)
+        .await
+        .expect("Failed to execute query");
+
+        let _delete_res = sqlx::query!(
+            "
+            PRAGMA foreign_keys = ON;
+            DELETE FROM bep_local_cache
+            WHERE cache_folder = ? AND cache_device = ? AND cache_file_name = ?; 
+            ",
+            folder,
+            device_id_str,
+            dest_file_name,
+        )
+        .execute(&mut *transaction)
+        .await
+        .expect("Failed to execute query");
+
+        for file_location in dest_file_locations.iter() {
+            let StorageBackend::Remote(storage_backend) = &file_location.storage_backend;
+
+            let _insert_res = sqlx::query!(
+                "
+                INSERT INTO bep_file_location (
+                    loc_folder      ,
+                    loc_device      ,
+                    loc_name        ,
+                    storage_backend ,
+                    location        
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(loc_folder, loc_device, loc_name, storage_backend, location) DO UPDATE SET
+                    loc_device      = excluded.loc_device     ,
+                    loc_folder      = excluded.loc_folder     ,
+                    loc_name        = excluded.loc_name       ,
+                    storage_backend = excluded.storage_backend,
+                    location        = excluded.location
+                ",
+                folder,
+                device_id_str,
+                dest_file_name,
+                storage_backend,
+                file_location.location,
+            )
+            .execute(&mut *transaction)
+            .await
+            .expect("Failed to execute query");
+        }
+
+        // TODO: re-insert the modified file with "deleted=true"
+
+        transaction.commit().await.unwrap();
     }
 
     // TODO: This should remove directly the file
