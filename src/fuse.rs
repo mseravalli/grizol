@@ -1107,7 +1107,7 @@ impl<TS: TimeSource<Utc>> GrizolFS<TS> {
 }
 
 impl<TS: TimeSource<Utc>> Filesystem for GrizolFS<TS> {
-    fn getattr(&mut self, req: &Request, ino: u64, reply: ReplyAttr) {
+    fn getattr(&mut self, req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
         if self.config.fuse_inmem {
             self.getattr_mem(req, ino, reply);
         } else {

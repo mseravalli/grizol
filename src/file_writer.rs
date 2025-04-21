@@ -247,6 +247,7 @@ mod test {
     use std::borrow::BorrowMut;
     use std::sync::Arc;
     use std::thread;
+    use tokio::fs::File;
 
     #[tokio::test]
     #[allow(clippy::non_snake_case)]

@@ -69,8 +69,7 @@ fn setup_logging() {
                 buf,
                 "{} {} {:?} {}:{}: {}",
                 ts,
-                buf.default_level_style(record.level())
-                    .value(record.level()),
+                buf.default_level_style(record.level()),
                 std::thread::current().id(),
                 record.file().unwrap_or("unknown"),
                 record.line().unwrap_or(0),

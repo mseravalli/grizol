@@ -2,7 +2,7 @@
 name = "grizol"
 description = "Grizol is a syncthing compatible client that can be used for affordable self hosting of backups."
 version = "0.2.1"
-edition = "2021"
+edition = "2024"
 license-file = "LICENSE"
 homepage = "https://gitlab.com/com.marcoseravalli/grizol"
 repository = "https://gitlab.com/com.marcoseravalli/grizol"
@@ -14,12 +14,12 @@ chrono-timesource = "0"
 clap = { version ="4", features = ["derive"] }
 dashmap = "6"
 data-encoding = "2"
-env_logger = "0.9.0" # 0.10 requires an MSRV bump to 1.60
+env_logger = "0" # 0.10 requires an MSRV bump to 1.60
 fuser = "0"
 futures = "0"
 libc = "0"
-log = { version = "0.4.4" }
-lz4_flex = { version = "0.10" }
+log = "0"
+lz4_flex = "0"
 mio = { version = "0.8", features = ["net", "os-poll"] }
 parse-size = "1"
 prost = "0"
@@ -27,15 +27,15 @@ prost-reflect = { version = "0", features = ["text-format", "derive"] }
 prost-types = "0"
 rand = "0"
 regex = "1"
-rustls-pemfile = "1.0.0"
-rustls = { version = "0.21", features = [ "logging", "dangerous_configuration" ]}
-sct = "0.7"
+rustls-pemfile = "1"
+rustls = { version = "0", features = [ "logging", "dangerous_configuration" ]}
+sct = "0"
 sha2 = "0"
 sqlx = { version = "0", features = [ "runtime-tokio", "sqlite" ] }
-tokio-rustls = "0"
+tokio-rustls = "0.24"
 tokio-util = { version = "0", features = ["io"] }
 tokio = { version = "1", features = ["full"] }
-webpki-roots = "0.23"
+webpki-roots = "0"
 
 [build-dependencies]
 prost-build = "0"
