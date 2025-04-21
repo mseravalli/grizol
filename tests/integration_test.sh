@@ -5,8 +5,16 @@
 GRIZOL_LOG="/tmp/grizol_log"
 SYNCTHING_LOG="/tmp/syncthing_log"
 
+if [[ -z "${GRIZOL_CONFIG_TYPE}" ]] ; then
+  echo "GRIZOL_CONFIG_TYPE was not set. To set it run e.g. 'source ./scripts/dev_dbg.sh'"
+  exit 1
+fi
+
 setup_file() {
   source scripts/dev_dbg.sh
+
+  echo "Running config type: '${GRIZOL_CONFIG_TYPE}'"
+  source "scripts/${GRIZOL_CONFIG_TYPE}.sh"
   export RUST_LOG=info,grizol=debug
 
   cargo build --release
