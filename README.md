@@ -24,10 +24,10 @@ cargo install sqlx-cli
 ```
 
 
-Export the desired configuration to be used during development. From the main dir run:
+Export a variable that will set the development config:
 
 ```shell
-source ./scripts/dev_dbg.sh
+export GRIZOL_CONFIG_TYPE="dev_dbg" 
 ```
 
 Run the following commands:
