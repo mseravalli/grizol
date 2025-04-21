@@ -167,9 +167,13 @@ async fn main() -> io::Result<()> {
 
         let cdid = client_device_id.clone();
         let dida = device_id_assigner.clone();
+        let peer_addr = tcp_stream
+            .peer_addr()
+            .map(|x| x.to_string())
+            .unwrap_or("UnknownAddress".to_string());
         tokio::spawn(async move {
             if let Err(err) = handle_incoming_data(bep, tcp_stream, acceptor, cdid, dida).await {
-                warn!("{:?}", err);
+                warn!("Connection error from {}: {:?}", peer_addr, err);
             }
         });
     }
