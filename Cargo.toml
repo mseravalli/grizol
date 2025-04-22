@@ -1,10 +1,12 @@
 [package]
 name = "grizol"
+description = "Grizol is a syncthing compatible client that can be used for affordable self hosting of backups."
 version = "0.2.1"
 edition = "2021"
-license = "Apache-2.0 OR ISC OR MIT"
-description = "Grizol"
-publish = false
+license-file = "LICENSE"
+homepage = "https://gitlab.com/com.marcoseravalli/grizol"
+repository = "https://gitlab.com/com.marcoseravalli/grizol"
+readme = "README.md"
 
 [dependencies]
 chrono = "0"
