@@ -1,0 +1,12 @@
+address: "0.0.0.0:23456"
+trusted_peers: []
+storage_strategy: 0
+cert:             "/var/lib/grizol/config/cert.pem"
+key:              "/var/lib/grizol/config/key.pem"
+rclone_config:    "/var/lib/grizol/config/rclone.conf"
+base_dir:         "/var/lib/grizol/staging_area"
+mountpoint:       "/var/lib/grizol/fuse_mountpoint"
+read_cache_dir:   "/var/lib/grizol/read_cache_dir"
+db_url:           "sqlite:/var/lib/grizol/state/grizol.db"
+remote_base_dir:  ""
+fuse_inmem: true

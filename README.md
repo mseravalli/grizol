@@ -41,3 +41,7 @@ Then start the development instance with
 ```shell
 ./scripts/run.sh run
 ```
+
+I prefer to run a custom version of grizol with the following changes in `lib/protocol/protocol.go`:
+* `MinBlockSize = 8 << MiB`
+* `DesiredPerFileBlocks = 1`

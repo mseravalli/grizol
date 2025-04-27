@@ -1,5 +1,6 @@
 *.key
 /target
+./sqlx
 **/*.db*
 tests/util/grizol
 tests/util/dest_dir

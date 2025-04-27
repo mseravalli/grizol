@@ -1,0 +1,6 @@
+#!/bin/sh
+
+rm /var/lib/grizol/config/cert.pem
+rm /var/lib/grizol/config/key.pem
+
+#DEBHELPER#
