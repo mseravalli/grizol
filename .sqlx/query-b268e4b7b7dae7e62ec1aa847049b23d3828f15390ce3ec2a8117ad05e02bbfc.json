@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            PRAGMA foreign_keys = ON;\n            DELETE FROM bep_file_location\n            WHERE loc_folder = ? AND loc_device = ? AND loc_name = ?; \n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "b268e4b7b7dae7e62ec1aa847049b23d3828f15390ce3ec2a8117ad05e02bbfc"
+}

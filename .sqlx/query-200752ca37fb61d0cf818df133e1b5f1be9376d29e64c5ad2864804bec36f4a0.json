@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT lc.cache_folder, lc.cache_file_name, lc.cache_device, lc.timestamp_added, fi.size\n            FROM bep_local_cache lc JOIN bep_file_info fi ON TRUE\n              AND lc.cache_folder = fi.folder\n              AND lc.cache_file_name = fi.name\n              AND lc.cache_device = fi.device\n            WHERE fi.type = 0\n            ORDER BY lc.timestamp_added ASC\n        ;",
+  "describe": {
+    "columns": [
+      {
+        "name": "cache_folder",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "cache_file_name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "cache_device",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "timestamp_added",
+        "ordinal": 3,
+        "type_info": "Int64"
+      },
+      {
+        "name": "size",
+        "ordinal": 4,
+        "type_info": "Int64"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "200752ca37fb61d0cf818df133e1b5f1be9376d29e64c5ad2864804bec36f4a0"
+}

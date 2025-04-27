@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                INSERT INTO bep_file_location (\n                    loc_folder      ,\n                    loc_device      ,\n                    loc_name        ,\n                    storage_backend ,\n                    location        \n                )\n                VALUES (?, ?, ?, ?, ?)\n                ON CONFLICT(loc_folder, loc_device, loc_name, storage_backend, location) DO UPDATE SET\n                    loc_device      = excluded.loc_device     ,\n                    loc_folder      = excluded.loc_folder     ,\n                    loc_name        = excluded.loc_name       ,\n                    storage_backend = excluded.storage_backend,\n                    location        = excluded.location\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "0cdb995ac27e86d21dcbb484423ed0de5d01bd5820bfc44fe6a48f72d96b6262"
+}

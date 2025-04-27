@@ -1,0 +1,140 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT fin.rowid as r_id, *\n            FROM bep_file_location flo RIGHT JOIN bep_file_info fin ON\n              flo.loc_folder = fin.folder AND flo.loc_device = fin.device AND flo.loc_name = fin.name\n            WHERE fin.device = ?\n            ;",
+  "describe": {
+    "columns": [
+      {
+        "name": "r_id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "loc_folder",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "loc_device",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "loc_name",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "storage_backend",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "location",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "folder",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "device",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "name",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "type",
+        "ordinal": 9,
+        "type_info": "Int64"
+      },
+      {
+        "name": "size",
+        "ordinal": 10,
+        "type_info": "Int64"
+      },
+      {
+        "name": "permissions",
+        "ordinal": 11,
+        "type_info": "Int64"
+      },
+      {
+        "name": "modified_s",
+        "ordinal": 12,
+        "type_info": "Int64"
+      },
+      {
+        "name": "modified_ns",
+        "ordinal": 13,
+        "type_info": "Int64"
+      },
+      {
+        "name": "modified_by",
+        "ordinal": 14,
+        "type_info": "Blob"
+      },
+      {
+        "name": "deleted",
+        "ordinal": 15,
+        "type_info": "Int64"
+      },
+      {
+        "name": "invalid",
+        "ordinal": 16,
+        "type_info": "Int64"
+      },
+      {
+        "name": "no_permissions",
+        "ordinal": 17,
+        "type_info": "Int64"
+      },
+      {
+        "name": "sequence",
+        "ordinal": 18,
+        "type_info": "Int64"
+      },
+      {
+        "name": "block_size",
+        "ordinal": 19,
+        "type_info": "Int64"
+      },
+      {
+        "name": "symlink_target",
+        "ordinal": 20,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e22ab30b5e7b63ad837dc833a78f0cdc82fa5111afb3e0e2b879119814993203"
+}

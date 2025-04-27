@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            PRAGMA foreign_keys = ON;\n            UPDATE OR ROLLBACK bep_file_info\n            SET name = ?, sequence = ?\n            WHERE folder = ? AND device = ? AND name = ?;\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "6c3cb2e6b5ea279f7402ec887aa307b7d17604d5a6bbb55193199b79dcf12ee0"
+}

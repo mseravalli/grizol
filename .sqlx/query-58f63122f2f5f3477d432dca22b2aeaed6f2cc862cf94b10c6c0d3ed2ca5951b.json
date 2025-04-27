@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                    INSERT INTO bep_devices (\n                        folder                     ,\n                        id                         ,\n                        name                       ,\n                        addresses                  ,\n                        compression                ,\n                        cert_name                  ,\n                        max_sequence               ,\n                        introducer                 ,\n                        index_id                   ,\n                        skip_introduction_removals ,\n                        encryption_password_token  \n                    )\n                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n                    ON CONFLICT(id) DO UPDATE SET\n                        folder                     = excluded.folder                     ,\n                        id                         = excluded.id                         ,\n                        name                       = excluded.name                       ,\n                        addresses                  = excluded.addresses                  ,\n                        compression                = excluded.compression                ,\n                        cert_name                  = excluded.cert_name                  ,\n                        max_sequence               = excluded.max_sequence               ,\n                        introducer                 = excluded.introducer                 ,\n                        index_id                   = excluded.index_id                   ,\n                        skip_introduction_removals = excluded.skip_introduction_removals ,\n                        encryption_password_token  = excluded.encryption_password_token  \n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 11
+    },
+    "nullable": []
+  },
+  "hash": "58f63122f2f5f3477d432dca22b2aeaed6f2cc862cf94b10c6c0d3ed2ca5951b"
+}

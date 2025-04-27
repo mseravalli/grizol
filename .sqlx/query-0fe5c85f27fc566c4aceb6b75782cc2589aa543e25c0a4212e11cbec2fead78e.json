@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n        INSERT INTO bep_index (\n            device,\n            folder\n        )\n        VALUES (?, ?)\n        ON CONFLICT(folder, device) DO UPDATE SET\n            device = excluded.device,\n            folder = excluded.folder\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "0fe5c85f27fc566c4aceb6b75782cc2589aa543e25c0a4212e11cbec2fead78e"
+}

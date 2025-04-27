@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                INSERT INTO bep_local_cache (\n                    cache_folder    ,\n                    cache_device    ,\n                    cache_file_name ,\n                    timestamp_added \n                )\n                VALUES (?, ?, ?, ?)\n                ON CONFLICT(cache_folder, cache_device, cache_file_name) DO UPDATE SET\n                    cache_folder    = excluded.cache_folder    ,\n                    cache_device    = excluded.cache_device    ,\n                    cache_file_name = excluded.cache_file_name \n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "562c13d1d63e0e617731df75c705334d2818640d5181c8d761ba6128dadea565"
+}

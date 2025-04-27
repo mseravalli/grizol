@@ -1,0 +1,20 @@
+#!/bin/bash
+
+LIB_DIR="/var/lib/grizol/config"
+
+groupadd grizol
+useradd -g grizol -m grizol  
+
+mkdir -p ${LIB_DIR}
+
+pushd ${LIB_DIR}
+if [[ -s key.pem  ]] ; then
+  echo "Key already present won't overwrite."
+else
+  openssl req -newkey rsa:2048 -subj "/C=GR/CN=grizol" -new -nodes -x509 -days 3650 -keyout key.pem -out cert.pem
+  chown grizol key.pem cert.pem
+  chmod 444 key.pem cert.pem
+fi
+popd
+
+#DEBHELPER#

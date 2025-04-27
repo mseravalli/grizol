@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                DELETE FROM bep_file_info\n                WHERE folder = ? AND device = ?;\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "2ebec854cfdba2819fff976a6828331ca034797e3c3b2fb162ffc67b591cb627"
+}

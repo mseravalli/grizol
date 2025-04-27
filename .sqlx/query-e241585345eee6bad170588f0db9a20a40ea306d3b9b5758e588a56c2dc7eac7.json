@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                SELECT device\n                FROM bep_index\n                WHERE folder = ?\n                ;",
+  "describe": {
+    "columns": [
+      {
+        "name": "device",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e241585345eee6bad170588f0db9a20a40ea306d3b9b5758e588a56c2dc7eac7"
+}

@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                SELECT ind_a.folder\n                FROM bep_index ind_a JOIN bep_index ind_b ON ind_a.folder = ind_b.folder\n                WHERE ind_a.device = ? and ind_b.device = ?\n                ;",
+  "describe": {
+    "columns": [
+      {
+        "name": "folder",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1df587b51f4b95d825a1f6558eb7068cbfffb25a84a1a9e27708ef8427fb0bf2"
+}

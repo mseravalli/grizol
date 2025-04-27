@@ -1,0 +1,80 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT *\n            FROM bep_devices\n            WHERE id = ? OR id = ?\n            ;",
+  "describe": {
+    "columns": [
+      {
+        "name": "folder",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "name",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "addresses",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "compression",
+        "ordinal": 4,
+        "type_info": "Int64"
+      },
+      {
+        "name": "cert_name",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "max_sequence",
+        "ordinal": 6,
+        "type_info": "Int64"
+      },
+      {
+        "name": "introducer",
+        "ordinal": 7,
+        "type_info": "Int64"
+      },
+      {
+        "name": "index_id",
+        "ordinal": 8,
+        "type_info": "Blob"
+      },
+      {
+        "name": "skip_introduction_removals",
+        "ordinal": 9,
+        "type_info": "Int64"
+      },
+      {
+        "name": "encryption_password_token",
+        "ordinal": 10,
+        "type_info": "Blob"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e3382031cf0d340eea7c2fb3634b92f0aadedbc3fbf0c98e986d0cc9d01f8ee0"
+}

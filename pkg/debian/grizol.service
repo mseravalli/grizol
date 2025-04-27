@@ -1,0 +1,14 @@
+[Unit]
+Description=Grizol, a Syncthing compatible client
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+User=grizol
+ExecStart=bash -c "export RUST_LOG=info,grizol=debug; export RUST_BACKTRACE=full; /usr/bin/grizol --config /etc/grizol/config.textproto"
+
+[Install]
+WantedBy=multi-user.target

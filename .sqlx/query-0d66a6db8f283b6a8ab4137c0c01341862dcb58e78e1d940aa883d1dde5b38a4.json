@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO bep_file_info (\n                folder        ,\n                device        ,\n                name          ,\n                type          ,\n                size          ,\n                permissions   ,\n                modified_s    ,\n                modified_ns   ,\n                modified_by   ,\n                deleted       ,\n                invalid       ,\n                no_permissions,\n                sequence      ,\n                block_size    ,\n                symlink_target\n            )\n            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n            ON CONFLICT(folder, device, name) DO UPDATE SET\n                folder         = excluded.folder          ,\n                device         = excluded.device          ,\n                name           = excluded.name            ,\n                type           = excluded.type            ,\n                size           = excluded.size            ,\n                permissions    = excluded.permissions     ,\n                modified_s     = excluded.modified_s      ,\n                modified_ns    = excluded.modified_ns     ,\n                modified_by    = excluded.modified_by     ,\n                deleted        = excluded.deleted         ,\n                invalid        = excluded.invalid         ,\n                no_permissions = excluded.no_permissions  ,\n                sequence       = excluded.sequence        ,\n                block_size     = excluded.block_size      ,\n                symlink_target = excluded.symlink_target\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 15
+    },
+    "nullable": []
+  },
+  "hash": "0d66a6db8f283b6a8ab4137c0c01341862dcb58e78e1d940aa883d1dde5b38a4"
+}

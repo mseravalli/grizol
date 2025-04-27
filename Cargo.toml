@@ -7,6 +7,19 @@ license-file = "LICENSE"
 homepage = "https://gitlab.com/com.marcoseravalli/grizol"
 repository = "https://gitlab.com/com.marcoseravalli/grizol"
 readme = "README.md"
+authors = ["Marco Seravalli"]
+exclude = ["bench/*", "tests/*"]  
+
+[package.metadata.deb]
+maintainer-scripts = "pkg/debian/"
+systemd-units = { enable = true }
+assets = [
+    # binary
+    ["target/release/grizol", "usr/bin/", "755"],
+    # assets
+    ["pkg/config/default.textproto", "etc/grizol/default.textproto", "444"],
+    ["pkg/config/default.textproto", "etc/grizol/config.textproto", "644"],
+]
 
 [dependencies]
 chrono = "0"

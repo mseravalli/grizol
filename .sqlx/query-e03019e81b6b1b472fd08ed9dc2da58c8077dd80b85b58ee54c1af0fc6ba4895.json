@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                INSERT INTO bep_folders (\n                    id,\n                    label,\n                    read_only,\n                    ignore_permissions,\n                    ignore_delete,\n                    disable_temp_indexes,\n                    paused\n                )\n                VALUES (?, ?, ?, ?, ?, ?, ?)\n                ON CONFLICT(id) DO UPDATE SET\n                    id                   = excluded.id,\n                    label                = excluded.label,\n                    read_only            = excluded.read_only,\n                    ignore_permissions   = excluded.ignore_permissions,\n                    ignore_delete        = excluded.ignore_delete,\n                    disable_temp_indexes = excluded.disable_temp_indexes,\n                    paused               = excluded.paused\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "e03019e81b6b1b472fd08ed9dc2da58c8077dd80b85b58ee54c1af0fc6ba4895"
+}

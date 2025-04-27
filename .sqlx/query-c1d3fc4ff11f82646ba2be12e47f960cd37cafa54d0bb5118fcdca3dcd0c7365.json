@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT *\n            FROM  bep_file_version\n            WHERE file_name = ? AND file_folder = ? AND file_device = ?\n            ;",
+  "describe": {
+    "columns": [
+      {
+        "name": "file_name",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_folder",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_device",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "id",
+        "ordinal": 3,
+        "type_info": "Blob"
+      },
+      {
+        "name": "value",
+        "ordinal": 4,
+        "type_info": "Int64"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c1d3fc4ff11f82646ba2be12e47f960cd37cafa54d0bb5118fcdca3dcd0c7365"
+}

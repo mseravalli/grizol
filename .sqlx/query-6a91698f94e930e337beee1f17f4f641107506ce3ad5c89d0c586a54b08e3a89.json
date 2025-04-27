@@ -1,0 +1,152 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT f.*, bi.*\n            FROM bep_file_info f\n                LEFT JOIN bep_block_info bi ON f.name = bi.file_name AND f.folder = bi.file_folder AND f.device = bi.file_device\n            WHERE f.folder = ? AND f.device = ?\n            ;",
+  "describe": {
+    "columns": [
+      {
+        "name": "folder",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "device",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "name",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "type",
+        "ordinal": 3,
+        "type_info": "Int64"
+      },
+      {
+        "name": "size",
+        "ordinal": 4,
+        "type_info": "Int64"
+      },
+      {
+        "name": "permissions",
+        "ordinal": 5,
+        "type_info": "Int64"
+      },
+      {
+        "name": "modified_s",
+        "ordinal": 6,
+        "type_info": "Int64"
+      },
+      {
+        "name": "modified_ns",
+        "ordinal": 7,
+        "type_info": "Int64"
+      },
+      {
+        "name": "modified_by",
+        "ordinal": 8,
+        "type_info": "Blob"
+      },
+      {
+        "name": "deleted",
+        "ordinal": 9,
+        "type_info": "Int64"
+      },
+      {
+        "name": "invalid",
+        "ordinal": 10,
+        "type_info": "Int64"
+      },
+      {
+        "name": "no_permissions",
+        "ordinal": 11,
+        "type_info": "Int64"
+      },
+      {
+        "name": "sequence",
+        "ordinal": 12,
+        "type_info": "Int64"
+      },
+      {
+        "name": "block_size",
+        "ordinal": 13,
+        "type_info": "Int64"
+      },
+      {
+        "name": "symlink_target",
+        "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_name",
+        "ordinal": 15,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_folder",
+        "ordinal": 16,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_device",
+        "ordinal": 17,
+        "type_info": "Text"
+      },
+      {
+        "name": "offset",
+        "ordinal": 18,
+        "type_info": "Int64"
+      },
+      {
+        "name": "bi_size",
+        "ordinal": 19,
+        "type_info": "Int64"
+      },
+      {
+        "name": "hash",
+        "ordinal": 20,
+        "type_info": "Blob"
+      },
+      {
+        "name": "weak_hash",
+        "ordinal": 21,
+        "type_info": "Int64"
+      },
+      {
+        "name": "storage_status",
+        "ordinal": 22,
+        "type_info": "Int64"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "6a91698f94e930e337beee1f17f4f641107506ce3ad5c89d0c586a54b08e3a89"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            UPDATE OR ROLLBACK bep_block_info\n            SET storage_status = ?\n            WHERE file_name = ? AND file_folder = ? AND file_device = ? AND hash = ?\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "479885b0a90f8bb10dcbf5eeab8776cfaec75d7ede07d55719603a5c6b49ac29"
+}

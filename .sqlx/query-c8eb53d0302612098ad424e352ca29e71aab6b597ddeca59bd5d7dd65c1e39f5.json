@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                DELETE FROM bep_file_location \n                WHERE TRUE\n                    AND loc_folder       = ?\n                    AND loc_device       = ?\n                    AND loc_name         = ?\n                    AND storage_backend  = ?\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "c8eb53d0302612098ad424e352ca29e71aab6b597ddeca59bd5d7dd65c1e39f5"
+}

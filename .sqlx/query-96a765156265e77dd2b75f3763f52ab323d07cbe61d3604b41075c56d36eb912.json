@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT fo.*\n            FROM bep_folders fo JOIN bep_devices de ON fo.id = de.folder\n            WHERE de.id = ? ;",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "label",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "read_only",
+        "ordinal": 2,
+        "type_info": "Int64"
+      },
+      {
+        "name": "ignore_permissions",
+        "ordinal": 3,
+        "type_info": "Int64"
+      },
+      {
+        "name": "ignore_delete",
+        "ordinal": 4,
+        "type_info": "Int64"
+      },
+      {
+        "name": "disable_temp_indexes",
+        "ordinal": 5,
+        "type_info": "Int64"
+      },
+      {
+        "name": "paused",
+        "ordinal": 6,
+        "type_info": "Int64"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "96a765156265e77dd2b75f3763f52ab323d07cbe61d3604b41075c56d36eb912"
+}

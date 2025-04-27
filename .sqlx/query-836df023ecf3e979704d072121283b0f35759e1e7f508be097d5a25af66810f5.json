@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                DELETE FROM bep_local_cache WHERE TRUE\n                    AND cache_device = ?\n                    AND cache_folder = ?\n                    AND cache_file_name = ?\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "836df023ecf3e979704d072121283b0f35759e1e7f508be097d5a25af66810f5"
+}

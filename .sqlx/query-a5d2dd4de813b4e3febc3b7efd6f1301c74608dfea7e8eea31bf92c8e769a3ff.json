@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                    INSERT INTO bep_file_version (\n                        file_folder ,\n                        file_device ,\n                        file_name   ,\n                        id          ,\n                        value\n                    )\n                    VALUES (?, ?, ?, ?, ?)\n                    ON CONFLICT(file_folder, file_device, file_name, id, value) DO NOTHING\n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "a5d2dd4de813b4e3febc3b7efd6f1301c74608dfea7e8eea31bf92c8e769a3ff"
+}

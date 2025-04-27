@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT f.name, v.id, v.value\n            FROM bep_file_info f\n                JOIN bep_file_version v ON f.name = v.file_name AND f.folder = v.file_folder AND f.device = v.file_device\n            WHERE f.folder = ? and f.device = ?\n            ;",
+  "describe": {
+    "columns": [
+      {
+        "name": "name",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "id",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "value",
+        "ordinal": 2,
+        "type_info": "Int64"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a2056c889e42b2b2aba90ae0303717e053435d4549b5d049ecc7ca78cfb8a6b5"
+}

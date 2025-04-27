@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                SELECT MAX(sequence) as max_seq FROM bep_file_info;\n                ",
+  "describe": {
+    "columns": [
+      {
+        "name": "max_seq",
+        "ordinal": 0,
+        "type_info": "Int64"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "ef747dd8faa8c6ca47ea40d823b79d5e393c855ce60d3df218fefc3e8abbeeab"
+}

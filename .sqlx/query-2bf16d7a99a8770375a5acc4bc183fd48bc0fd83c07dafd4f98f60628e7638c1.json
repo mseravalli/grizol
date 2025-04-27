@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                    INSERT INTO bep_block_info (\n                        file_name,  \n                        file_folder,  \n                        file_device,  \n                        offset,\n                        bi_size,\n                        hash,\n                        weak_hash,\n                        storage_status\n                    )\n                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)\n                    ON CONFLICT(file_name, file_folder, file_device, offset, bi_size, hash) DO NOTHING\n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "2bf16d7a99a8770375a5acc4bc183fd48bc0fd83c07dafd4f98f60628e7638c1"
+}

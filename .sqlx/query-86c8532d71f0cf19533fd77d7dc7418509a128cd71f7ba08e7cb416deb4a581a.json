@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT *\n            FROM  bep_block_info\n            WHERE file_name = ? AND file_folder = ? AND file_device = ?\n            ;",
+  "describe": {
+    "columns": [
+      {
+        "name": "file_name",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_folder",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_device",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "offset",
+        "ordinal": 3,
+        "type_info": "Int64"
+      },
+      {
+        "name": "bi_size",
+        "ordinal": 4,
+        "type_info": "Int64"
+      },
+      {
+        "name": "hash",
+        "ordinal": 5,
+        "type_info": "Blob"
+      },
+      {
+        "name": "weak_hash",
+        "ordinal": 6,
+        "type_info": "Int64"
+      },
+      {
+        "name": "storage_status",
+        "ordinal": 7,
+        "type_info": "Int64"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "86c8532d71f0cf19533fd77d7dc7418509a128cd71f7ba08e7cb416deb4a581a"
+}

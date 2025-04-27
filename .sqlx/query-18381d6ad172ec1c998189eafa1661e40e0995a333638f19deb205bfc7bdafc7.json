@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                SELECT COUNT(cache_file_name) as c\n                FROM bep_local_cache\n                WHERE TRUE\n                  AND cache_folder = ?\n                  AND cache_device = ?\n                  AND cache_file_name = ?\n                ;\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "c",
+        "ordinal": 0,
+        "type_info": "Int"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "18381d6ad172ec1c998189eafa1661e40e0995a333638f19deb205bfc7bdafc7"
+}

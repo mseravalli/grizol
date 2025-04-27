@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT fi.block_size AS block_size, fi.size AS byte_size, COUNT(*) as stored_blocks\n            FROM bep_file_info AS fi JOIN bep_block_info AS bi ON\n                fi.name = bi.file_name\n                AND fi.folder = bi.file_folder\n                AND fi.device = bi.file_device\n            WHERE bi.file_name = ? AND bi.file_folder = ? AND bi.file_device = ? AND bi.storage_status = 1\n            GROUP BY 1, 2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "block_size",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "byte_size",
+        "ordinal": 1,
+        "type_info": "Int64"
+      },
+      {
+        "name": "stored_blocks",
+        "ordinal": 2,
+        "type_info": "Int64"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f8ec621d6ca1d72da3aa4b189afe5d4ab38882e6992ff06cb1563f3b281a44a6"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            PRAGMA foreign_keys = ON;\n            DELETE FROM bep_local_cache\n            WHERE cache_folder = ? AND cache_device = ? AND cache_file_name = ?; \n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "6dfa911394d12ae9d294acd9c7622afbfb438c0d45961126c985e7c6b49ce1d0"
+}
